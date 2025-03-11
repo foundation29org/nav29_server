@@ -1,0 +1,25 @@
+{
+    "data":{
+        "drugs":{
+            "daysToUpdate":180
+        },
+        "phenotypes":{
+            "daysToUpdate":180
+        },
+        "feels":{
+            "daysToUpdate":30
+        },
+        "seizures":{
+            "daysToUpdate":30
+        },
+        "weight": {
+            "daysToUpdate":180
+        },
+        "height":{
+            "daysToUpdate":180
+        }
+    },    
+    "meta":{
+        "id":"Undiagnosed"
+    }
+}
