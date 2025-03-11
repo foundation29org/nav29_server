@@ -2,6 +2,10 @@
 
 Backend server for the Nav29 platform, designed to improve medical information management through the use of generative artificial intelligence.
 
+## Related Repositories
+
+- **Client Application**: [https://github.com/foundation29org/nav29_client](https://github.com/foundation29org/nav29_client)
+
 ## Development Environment Setup
 
 ### Prerequisites
