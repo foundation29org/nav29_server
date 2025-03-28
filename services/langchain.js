@@ -20,7 +20,6 @@ const { ChatGoogleGenerativeAI } = require("@langchain/google-genai");
 const axios = require('axios');
 
 const O_A_K = config.O_A_K;
-const O_A_K_J = config.O_A_K_J;
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
 const OPENAI_API_BASE = config.OPENAI_API_BASE;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
@@ -79,7 +78,7 @@ function createModels(projectName, modelType = null) {
               azureOpenAIApiKey: O_A_K_GPT4O,
               azureOpenAIApiVersion: OPENAI_API_VERSION,
               azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
-              azureOpenAIApiDeploymentName: "gpt-4o",
+              azureOpenAIApiDeploymentName: "gpt-4o-mini-nav29",
               temperature: 0,
               timeout: 140000,
               callbacks: tracer ? [tracer] : undefined
@@ -87,19 +86,6 @@ function createModels(projectName, modelType = null) {
             //poner  azureOpenAIEndpoint  undefined
             model.azureOpenAIEndpoint = undefined;
             break;
-        case 'model':
-          model = new ChatOpenAI({
-            modelName: "gpt-4-0613",
-            azureOpenAIApiKey: O_A_K,
-            azureOpenAIApiVersion: OPENAI_API_VERSION,
-            azureOpenAIApiInstanceName: OPENAI_API_BASE,
-            azureOpenAIApiDeploymentName: "nav29",
-            temperature: 0,
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          model.azureOpenAIEndpoint = undefined;
-          break;
         case 'model32k':
           model = new ChatOpenAI({
             modelName: "gpt-4-32k-0613",
@@ -127,16 +113,6 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           break;
-        case 'model128k':
-          model = new ChatOpenAI({
-            modelName: "gpt-4-1106-preview",
-            openAIApiKey: O_A_K_J,
-            temperature: 0,
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          model.azureOpenAIEndpoint = undefined;
-          break;
         case 'azure128k':
           model = new ChatOpenAI({
             modelName: "gpt-4-turbo",
@@ -149,17 +125,6 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           model.azureOpenAIEndpoint = undefined;
-          break;
-        case 'gemini15pro':
-          model = new ChatGoogleGenerativeAI({
-            model: "gemini-1.5-pro-001",
-            project: "nav29-21389",
-            location: "europe-southwest1",
-            apiKey: config.GOOGLE_API_KEY,
-            temperature: 0,
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
           break;
         case 'gemini15pro_2':
           model = new ChatGoogleGenerativeAI({
@@ -205,19 +170,6 @@ function createModels(projectName, modelType = null) {
             temperature: 0,
             callbacks: tracer ? [tracer] : undefined
           });
-          break;
-        case 'o1preview':
-          model = new ChatOpenAI({
-            modelName: "o1-preview",
-            azureOpenAIApiKey: O_A_K_GPT4O,
-            azureOpenAIApiVersion: OPENAI_API_VERSION,
-            azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
-            azureOpenAIApiDeploymentName: "o1-preview",
-            temperature: 1,
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          model.azureOpenAIEndpoint = undefined;
           break;
         // Añadir otros casos según necesidad
       }
@@ -679,12 +631,12 @@ async function categorizeDocs(userId, content, patientId, containerName, url, do
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { gpt4omini } = createModels(projectName, 'gpt4omini');
+      let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
 
       // Format and call the prompt to categorize each document
       clean_doc = content.replace(/{/g, '{{').replace(/}/g, '}}');
 
-      let selectedModel = gpt4omini;
+      let selectedModel = azuregpt4o;
 
       chatPrompt = await pull("foundation29/categorize_docs_base_v1");
 
@@ -941,8 +893,6 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azure128k } = createModels(projectName, 'azure128k');
-      let { model32k} = createModels(projectName, 'model32k');
       let { gemini15pro_2} = createModels(projectName, 'gemini15pro_2');
 
       // Decrypt the patientId
@@ -997,15 +947,6 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
     const tokens = countTokens.countTokens(clean_patient_info + "\n\n" + event_summary);
 
     let selectedModel;
-    /*if (tokens > 2000000) {
-      throw new Error("Input exceeds maximum token limit for available models.");
-    } else if (tokens > 100000) {
-      selectedModel = gemini15pro_2; // Gemini 2.0 Flash, hasta 1M tokens
-    } else if (tokens > 32000) {
-      selectedModel = azure128k; // GPT-4 1106-Preview, hasta 128k tokens
-    } else {
-      selectedModel = model32k; // GPT-4 32k, hasta 32k tokens
-    }*/
       if (tokens > 2000000) {
         throw new Error("Input exceeds maximum token limit for available models.");
       } else{
@@ -1078,263 +1019,6 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
       const patientIdCrypt = crypt.encrypt(patientId);
       const message = { "time": new Date().toISOString(), "status": "patient card fail", "step": "summary" , "patientId": patientIdCrypt}
       pubsub.sendToUser(idWebpubsub, message)
-      reject(error);
-    }
-  });
-}
-
-async function summarizePatient(patientId, userId, medicalLevel, lang) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const patientIdCrypt = crypt.encrypt(patientId);
-      const message = { "time": new Date().toISOString(), "status": "patient card started", "step": "summary" , "patientId": patientIdCrypt}
-      pubsub.sendToUser(userId, message)
-
-      // Create the models
-      const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azure128k } = createModels(projectName, 'azure128k');
-      let { model32k } = createModels(projectName, 'model32k');
-
-      // Decrypt the patientId
-      const patientIdEncrypted = crypt.encrypt(patientId);
-      const containerName = patientIdEncrypted.substr(1)
-
-      // Get all the verified events for this patient
-      const events = await getAllEvents(patientId);
-      const actualEvents = await getActualEvents(patientId);
-      const eventsMinusDeleted = events.filter(event => event.status !== "deleted");
-      const patientData = await getPatientData(patientId);
-
-      const gender = patientData.gender;
-      const birthDate = patientData.birthDate;
-      const patientName = patientData.patientName;
-
-      // Generate the event summary with updated event structure considering new keys
-      let event_summary = eventsMinusDeleted.reduce((summary, event) => {
-        const formattedDate = event.date ? new Date(event.date).toISOString().split('T')[0] : "unknown";
-        return summary + `Event: ${event.name}, Date: ${formattedDate}\n`;
-      }, "");
-
-      // Extract the date of birth from the 'name' field of the event with key 'dob', parse it, and calculate the patient's current age
-      let age = "";
-      if (birthDate) {
-        const dob = new Date(birthDate);
-        const today = new Date();
-
-        if (dob > today) {
-          age = "0 years and 0 months";
-        } else {
-          let years = today.getFullYear() - dob.getFullYear();
-          let months = today.getMonth() - dob.getMonth();
-          if (months < 0 || (months === 0 && today.getDate() < dob.getDate())) {
-            years--;
-            months += 12; // Adjust months when year decrement
-          }
-          months = today.getDate() < dob.getDate() ? months - 1 : months; // Adjust months for day difference
-          age = `${years} years and ${months} months`; // Combine years and months for age
-        }
-      }
-
-      // Get all the summaries for this patient
-      // List all blobs from the patient folder
-      const blobs = await azure_blobs.listContainerFiles(containerName);
-      const summary_translated_blobs = blobs.filter(blob => blob.endsWith("clean_translated.txt"));
-      const summaries = await Promise.all(summary_translated_blobs.map(blob => azure_blobs.downloadBlob(containerName, blob)));
-      const clean_patient_info = summaries.map((doc, index) =>
-        `<Complete Summary ${index + 1}>\n${JSON.stringify(doc)}\n</Complete Summary ${index + 1}>`
-      ).join("\n");
-
-    const tokens = countTokens.countTokens(clean_patient_info + "\n\n" + event_summary);
-
-     let selectedModel = tokens > 30000 ? azure128k : model32k;
-
-    let medical_level_text = "";
-    if (medicalLevel == "0") {
-        medical_level_text = `IMPORTANT: The reader has low literacy and does not understand medical terminology. It is CRUCIAL that you provide the summary in extremely simple language, avoiding all medical jargon. Use basic terms and explanations that a child could understand.`;
-      } else if (medicalLevel == "1") {
-        medical_level_text = `IMPORTANT: The reader is a basic patient with limited understanding of medical terminology. It is ESSENTIAL that you provide the summary in simple, everyday language. Avoid complex medical terms and explain any necessary medical concepts in plain English.`;
-      } else if (medicalLevel == "2") {
-        medical_level_text = `IMPORTANT: The reader is an advanced patient who understands some medical terminology. While you can use more advanced terms, it is CRITICAL that you still explain complex concepts clearly. Strike a balance between medical accuracy and accessibility.`;
-      } else if (medicalLevel == "3") {
-        medical_level_text = `IMPORTANT: The reader is a science expert or clinician with advanced medical knowledge. You MUST use precise medical terminology and provide a detailed, scientifically accurate summary. However, ensure that the information is still presented in a clear and organized manner.`;
-      }
-
-      // Create a langchain prompt with the summaries of the summaries and the event summary to generate a summary
-      let final_card_summary_prompt = await pull("foundation29/final_card_summary_old_v1");
-
-      const chainFinalCardSummary = final_card_summary_prompt.pipe(selectedModel);
-
-      const finalCardSummary = await chainFinalCardSummary.invoke({
-        summaries: clean_patient_info,
-        event_summary: event_summary,
-        medical_level: medical_level_text,
-        actualEvents: actualEvents,
-        patientName: patientName,
-        age: age,
-        gender: gender
-      });
-
-      // console.log(finalCardSummary)
-      
-      let mostCommonLanguage = await getMostCommonLanguage(blobs, containerName);
-      if(mostCommonLanguage == null){
-        mostCommonLanguage = lang
-      }
-      // Extract JSON from the string
-      let match = finalCardSummary.content.match(/\{(.|\n)*\}/);
-      if (!match) {
-        throw new Error('No JSON object found in the final card summary');
-      }
-
-      let summaryJson;
-      try {
-        summaryJson = JSON.parse(match[0]);
-      } catch (error) {
-        throw new Error(`Failed to parse JSON from final card summary: ${match[0]}`);
-      }
-
-      if (birthDate) {
-        summaryJson['Age'] = age;
-      }
-
-      summaryJson['version'] = config.version + ' - ' + config.subversion
-
-      let deepl_code;
-      deepl_code = await translate.getDeeplCode(mostCommonLanguage);
-
-      let translatedSummary;
-      try {
-        translatedSummary = await translatePatientSummary(summaryJson, deepl_code, mostCommonLanguage);
-      } catch (error) {
-        throw new Error('Failed to translate patient summary');
-      }
-
-      try {
-        await azure_blobs.createBlob(containerName, 'raitofile/summary/final_card_translated.txt', JSON.stringify(summaryJson));
-        await azure_blobs.createBlob(containerName, 'raitofile/summary/final_card.txt', JSON.stringify(translatedSummary));
-      } catch (error) {
-        throw new Error('Failed to create blob for final card summary');
-      }
-      message["time"] = new Date().toISOString();
-      message["status"] = "patient card ready"
-      message["patientId"] = patientIdCrypt
-      pubsub.sendToUser(userId, message)
-      resolve(true);
-    } catch (error) {
-      insights.error({ message: 'Failed to summarize patient card', error: error.message || error, stack: error.stack || 'No stack trace available' });
-      console.error(error);
-      const patientIdCrypt = crypt.encrypt(patientId);
-      const message = { "time": new Date().toISOString(), "status": "patient card fail", "step": "summary" , "patientId": patientIdCrypt}
-      pubsub.sendToUser(userId, message)
-      reject(error);
-    }
-  });
-}
-
-async function summarizePatientSimple(patientId, userId, lang) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const patientIdCrypt = crypt.encrypt(patientId);
-      const message = { "time": new Date().toISOString(), "status": "patient card started", "step": "summary" , "patientId": patientIdCrypt}
-      pubsub.sendToUser(userId, message)
-
-      // Decrypt the patientId
-      const patientIdEncrypted = crypt.encrypt(patientId);
-      const containerName = patientIdEncrypted.substr(1)
-
-      // Get all the verified events for this patient
-      const events = await getAllEvents(patientId);
-      const eventsMinusDeleted = events.filter(event => event.status !== "deleted");
-      const patientData = await getPatientData(patientId);
-
-      const gender = patientData.gender;
-      const birthDate = patientData.birthDate;
-      const patientName = patientData.patientName;
-
-      // console.log(eventsMinusDeleted)
-
-      // Calculate age
-      let age = "";
-      if (birthDate) {
-        const dob = new Date(birthDate);
-        const today = new Date();
-        let years = today.getFullYear() - dob.getFullYear();
-        let months = today.getMonth() - dob.getMonth();
-        if (months < 0 || (months === 0 && today.getDate() < dob.getDate())) {
-          years--;
-          months += 12;
-        }
-        months = today.getDate() < dob.getDate() ? months - 1 : months;
-        age = `${years} years and ${months} months`;
-      }
-
-      // Get current diagnoses and medications
-      const currentDiagnoses = eventsMinusDeleted
-        .filter(event => event.key === 'diagnosis' && event.status === 'true')
-        .map(event => event.name);
-
-      const currentMedications = eventsMinusDeleted
-        .filter(event => event.key === 'medication' && event.status === 'true')
-        .map(event => event.name);
-
-      // Sort events from oldest to newest
-      const sortedEvents = eventsMinusDeleted.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-      // Create the summary object
-      const summaryJson = {
-        "Name": patientName,
-        "Age": age,
-        "Gender": gender,
-        "Diagnoses": currentDiagnoses,
-        "Treatments": "",
-        "LaboratoryFindings": "",
-        "CurrentStatus": "",
-        "Medication": currentMedications,
-        "AdditionalInformation": sortedEvents.map(event => ({
-          date: new Date(event.date).toISOString().split('T')[0],
-          event: event.name,
-          type: event.key
-        })),
-        "version": config.version + ' - ' + config.subversion
-      };
-
-      //console.log(summaryJson)
-
-      let mostCommonLanguage = await getMostCommonLanguage(await azure_blobs.listContainerFiles(containerName), containerName);
-      if (mostCommonLanguage == null) {
-        mostCommonLanguage = lang;
-      }
-
-      let deepl_code = await translate.getDeeplCode(mostCommonLanguage);
-
-      let translatedSummary;
-      try {
-        //create a copy of the summaryJson
-        let summaryJsonCopy = JSON.parse(JSON.stringify(summaryJson));
-        translatedSummary = await translatePatientSummary(summaryJsonCopy, deepl_code, mostCommonLanguage);
-      } catch (error) {
-        console.error('Failed to translate patient summary:', error);
-        translatedSummary = summaryJson; // Fallback to untranslated summary
-      }
-
-      try {
-        await azure_blobs.createBlob(containerName, 'raitofile/summary/final_card_translated.txt', JSON.stringify(summaryJson));
-        await azure_blobs.createBlob(containerName, 'raitofile/summary/final_card.txt', JSON.stringify(translatedSummary));
-      } catch (error) {
-        console.error('Failed to create blob for final card summary:', error);
-      }
-
-      message["time"] = new Date().toISOString();
-      message["status"] = "patient card ready"
-      message["patientId"] = patientIdCrypt
-      pubsub.sendToUser(userId, message)
-      resolve(true);
-    } catch (error) {
-      insights.error({ message: 'Failed to summarize patient card', error: error.message || error, stack: error.stack || 'No stack trace available' });
-      console.error(error);
-      const patientIdCrypt = crypt.encrypt(patientId);
-      const message = { "time": new Date().toISOString(), "status": "patient card fail", "step": "summary" , "patientId": patientIdCrypt}
-      pubsub.sendToUser(userId, message)
       reject(error);
     }
   });
@@ -1817,8 +1501,6 @@ module.exports = {
   processDocument,
   categorizeDocs,
   anonymize,
-  summarizePatient,
-  summarizePatientSimple,
   summarizePatientBrute,
   summarySuggestions,
   extractEvents,
