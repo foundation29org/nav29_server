@@ -290,14 +290,11 @@ async function createPatientSummary(patientId, userId, idWebpubsub) {
 	let medicalLevel = '1';
 	if (user) {
 		medicalLevel = user.medicalLevel;
-		// await langchain.summarizePatient(patientId, idWebpubsub, medicalLevel, user.lang)
 		let preferredLang = user.lang;
 		if(user.preferredResponseLanguage != null){
 			preferredLang = user.preferredResponseLanguage;
 		}
 		await langchain.summarizePatientBrute(patientId, idWebpubsub, medicalLevel, preferredLang)
-		// console.log('summarizePatientSimple')
-		// await langchain.summarizePatientSimple(patientId, idWebpubsub, medicalLevel, user.lang)
 		.then((summary) => {
 			setStatePatientSummary(patientId, 'true');
 		})
