@@ -531,41 +531,6 @@ async function callNavigator(req, res) {
 		insights.error(error);
 		res.status(500).send({ message: `Error` })
 	}
-	// const configcall = {
-	// 	params: {
-	// 		question: req.body.question,
-	// 		//context: req.body.context,
-	// 		containerName: containerName,
-	// 		index: index,
-	// 		patientId: patientId,
-	// 		userId: req.body.userId,
-	// 		assistantTest: assistantTest,
-	// 	},
-	// 	headers: {
-	// 		'Content-Type': 'application/json'
-	// 	},
-	// };
-	// let body = {context: content, docs: docs}
-	// const functionUrl = config.AF29URL + `/api/HttpTriggerCallNavigator?code=${config.functionKey}`;
-	// axios.post(functionUrl, body, configcall)
-	// 	.then(response => {
-	// 		if (response.data.suggestions != null) {
-	// 			res.status(200).send(response.data);
-	// 		} else {
-	// 			/*
-	// 			action --> Data, Question, Share, Quiz
-	// 			let sampleResp = {
-	// 				"action": "Data",
-	// 				"data": ""
-	// 			}*/
-	// 			res.status(200).send(response.data);
-	// 		}
-	// 	})
-	// 	.catch(error => {
-	// 		console.error(error);
-	// 		insights.error(error);
-	// 		res.status(500).send({ message: `Error` })
-	// 	});
 }
 
 async function getInitialEvents(req, res) {
