@@ -113,19 +113,6 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           break;
-        case 'azure128k':
-          model = new ChatOpenAI({
-            modelName: "gpt-4-turbo",
-            azureOpenAIApiKey: O_A_K,
-            azureOpenAIApiVersion: OPENAI_API_VERSION,
-            azureOpenAIApiInstanceName: OPENAI_API_BASE,
-            azureOpenAIApiDeploymentName: "nav29turbo",
-            temperature: 0,
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          model.azureOpenAIEndpoint = undefined;
-          break;
         case 'gemini15pro_2':
           model = new ChatGoogleGenerativeAI({
             model: "gemini-1.5-pro-002",
@@ -358,11 +345,11 @@ async function timelineServer(patientId, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azure128k } = createModels(projectName, 'azure128k');
+    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
 
   const timeline_prompt = await pull("foundation29/timeline-single_prompt_v1");
 
-  const chatPrompt = timeline_prompt.pipe(azure128k);
+  const chatPrompt = timeline_prompt.pipe(azuregpt4o);
   
   const timeline = await chatPrompt.invoke({
     referenceDocs: docs
@@ -379,11 +366,11 @@ async function anomaliesServer(patientId, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azure128k } = createModels(projectName, 'azure128k');
+    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
 
   const anomalies_prompt = await pull("foundation29/anomalies-single_prompt_v1");
 
-  const chatPrompt = anomalies_prompt.pipe(azure128k);
+  const chatPrompt = anomalies_prompt.pipe(azuregpt4o);
   
   const anomalies = await chatPrompt.invoke({
     referenceDocs: docs
@@ -1248,8 +1235,7 @@ async function extractInitialEvents(patientId, ogLang) {
     // pubsub.sendToUser(userId, {"status": "analizando inicio", "step": "extract events"})
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k } = createModels(projectName, 'model32k');
-    let { azure128k} = createModels(projectName, 'azure128k');
+    let { azuregpt4o} = createModels(projectName, 'azuregpt4o');
     try {
       // Get all the documents for this patient
       // Decrypt the patientId
@@ -1276,8 +1262,6 @@ async function extractInitialEvents(patientId, ogLang) {
       const tokens = countTokens.countTokens(summaries.join(" "));
       // console.log(tokens)
 
-      let selectedModel = tokens > 30000 ? azure128k : model32k;
-
       if (tokens > 120000) {
         summaries = summaries.map((doc, index) => 
           `<Complete Document ${index + 1}>\n${doc}\n</Complete Document ${index + 1}>`
@@ -1288,7 +1272,7 @@ async function extractInitialEvents(patientId, ogLang) {
         ).join("\n");
       }
   
-      const chainExtractEvents = initial_events_prompt.pipe(selectedModel);
+      const chainExtractEvents = initial_events_prompt.pipe(azuregpt4o);
   
       const extractedEvents = await chainExtractEvents.invoke({
         documents: summaries,
