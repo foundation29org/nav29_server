@@ -6,7 +6,7 @@ const { OpenAIEmbeddings } = require("@langchain/openai");
 const { HumanMessage, AIMessage, SystemMessage } = require("@langchain/core/messages");
 const { MessagesAnnotation, StateGraph, Annotation } = require("@langchain/langgraph");
 const { ToolNode } = require("@langchain/langgraph/prebuilt");
-const { perplexityTool, mediSearchTool, createIndexIfNone, curateContext } = require('../services/tools');
+const { perplexityTool, mediSearchTool, clinicalTrialsTool, createIndexIfNone, curateContext } = require('../services/tools');
 const { Document } = require("@langchain/core/documents");
 const { setContextVariable } = require("@langchain/core/context");
 
@@ -19,7 +19,7 @@ const AgentState = Annotation.Root({
   ...AttributesState.spec,
 })
 
-const TOOLS = [perplexityTool, mediSearchTool];
+const TOOLS = [perplexityTool, mediSearchTool, clinicalTrialsTool];
 
 const vectorStoreAddress = config.SEARCH_API_ENDPOINT;
 const vectorStorePassword = config.SEARCH_API_KEY;
@@ -156,6 +156,21 @@ async function prettify(state, config) {
   // TODO: Also use the medicalLevel variable to improve the readability of the output
   // Clean the ```html ``` tags
   let cleanOutput = formattedOutput.content.replace(/```html/g, '').replace(/```/g, '');
+  
+  // Convertir enlaces Markdown a HTML con target="_blank" para trialgpt.app
+  // Detecta formato [texto](https://trialgpt.app) y lo convierte a HTML
+  cleanOutput = cleanOutput.replace(
+    /\[([^\]]+)\]\((https:\/\/trialgpt\.app)\)/gi,
+    '<a href="$2" target="_blank">$1</a>'
+  );
+  
+  // Asegurar que los enlaces HTML a trialgpt.app tengan target="_blank"
+  // Busca enlaces <a href="https://trialgpt.app" o <a href='https://trialgpt.app' que no tengan ya target=
+  cleanOutput = cleanOutput.replace(
+    /<a\s+href=['"]https:\/\/trialgpt\.app['"](?![^>]*target=)/gi,
+    '<a href="https://trialgpt.app" target="_blank"'
+  );
+  
   state.messages[state.messages.length - 1].content = cleanOutput;
   return state;
 }

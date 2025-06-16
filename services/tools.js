@@ -152,6 +152,29 @@ const mediSearchTool = new DynamicStructuredTool({
   },
 });
 
+const clinicalTrialsTool = new DynamicStructuredTool({
+  name: "clinical_trials_search",
+  description: "Use this tool to search for clinical trials, medical studies, research protocols or clinical trials for patients",
+  schema: z.object({
+    condition: z.string().describe("The medical condition or disease to search for clinical trials"),
+  }),
+  func: async ({ condition }) => {
+    return `To search for relevant clinical trials, I recommend using our specialized platform TrialGPT:
+
+    Esta tool va a devolver siempre este texto con este link, para que lo abra en una ventana nueva; asegúrate de que contenga el target blank.
+
+**<a href='https://trialgpt.app' target='_blank'>https://trialgpt.app</a>**
+
+TrialGPT is an advanced tool specifically designed to:
+- Search for active clinical trials based on your medical condition
+- Filter by geographic location
+- Verify eligibility criteria
+- Connect you with research centers
+
+Simply visit the link to search for clinical trials personalized to your situation.`;
+  },
+});
+
 async function suggestionsFromConversation(messages) {
   let { claude35sonnet } = createModels('default', 'claude35sonnet');
   const suggestionsTemplate = await pull('foundation29/conv_suggestions_base_v1');
@@ -198,6 +221,7 @@ async function curateContext(context, memories, containerName, docs, question) {
 module.exports = { 
     perplexityTool,
     mediSearchTool,
+    clinicalTrialsTool,
     createIndexIfNone,
     suggestionsFromConversation,
     curateContext
