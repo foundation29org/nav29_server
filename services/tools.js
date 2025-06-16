@@ -159,7 +159,7 @@ const clinicalTrialsTool = new DynamicStructuredTool({
     condition: z.string().describe("The medical condition or disease to search for clinical trials"),
   }),
   func: async ({ condition }) => {
-    return `To search for relevant clinical trials, I recommend using our specialized platform <a href='https://trialgpt.app' target='_blank'>https://trialgpt.app</a>: Simply visit the link to search for clinical trials personalized to your situation.`;
+    return `Para encontrar ensayos clínicos relevantes para ${condition}, puedes usar nuestra plataforma especializada <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, que te permite buscar estudios activos, filtrar por ubicación y verificar criterios de elegibilidad de forma personalizada.`;
   },
 });
 

@@ -148,7 +148,19 @@ async function prettify(state, config) {
   const { azuregpt4o } = createModels('default', 'azuregpt4o');
   console.log('azuregpt4o:', azuregpt4o);
   output = state.messages[state.messages.length - 1];
-  // Call LLM to format to html
+  
+  // Check if this is a TrialGPT response - if so, use it directly without reformatting
+  if (/https:\/\/trialgpt\.app/.test(output.content) && /<a\s+href=/.test(output.content)) {
+    const cleanOutput = output.content.replace(
+      /<a\s+href=(["'])https:\/\/trialgpt\.app\1(?![^>]*target=)/gi,
+      '<a href="https://trialgpt.app" target="_blank"'
+    );
+    state.messages[state.messages.length - 1].content = cleanOutput;
+    return state;
+  }
+  
+  
+  // For other content, proceed with normal formatting
   const htmlFormatter = await pull("foundation29/html_formatter_v1");
   const runnable = htmlFormatter.pipe(azuregpt4o);
   console.log('prettify:');
