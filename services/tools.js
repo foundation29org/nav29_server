@@ -159,19 +159,7 @@ const clinicalTrialsTool = new DynamicStructuredTool({
     condition: z.string().describe("The medical condition or disease to search for clinical trials"),
   }),
   func: async ({ condition }) => {
-    return `To search for relevant clinical trials, I recommend using our specialized platform TrialGPT:
-
-    Esta tool va a devolver siempre este texto con este link, para que lo abra en una ventana nueva; asegúrate de que contenga el target blank.
-
-**<a href='https://trialgpt.app' target='_blank'>https://trialgpt.app</a>**
-
-TrialGPT is an advanced tool specifically designed to:
-- Search for active clinical trials based on your medical condition
-- Filter by geographic location
-- Verify eligibility criteria
-- Connect you with research centers
-
-Simply visit the link to search for clinical trials personalized to your situation.`;
+    return `To search for relevant clinical trials, I recommend using our specialized platform <a href='https://trialgpt.app' target='_blank'>https://trialgpt.app</a>: Simply visit the link to search for clinical trials personalized to your situation.`;
   },
 });
 
