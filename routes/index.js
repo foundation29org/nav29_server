@@ -23,6 +23,7 @@ const pubsubCtrl = require('../services/pubsub')
 
 const eventsCtrl = require('../controllers/user/patient/events')
 const appointmentsCtrl = require('../controllers/user/patient/appointments')
+const aiFeaturesCtrl = require('../controllers/user/patient/aiFeaturesController')
 const f29azureserviceCtrl = require('../services/f29azure')
 const openShareCtrl = require('../controllers/all/openshare')
 const feedbackCtrl = require('../services/feedback')
@@ -148,6 +149,10 @@ api.delete('/deletesummary/:patientId', auth.isAuthPatient(roles.All), checkApiK
 
 api.post('/callnavigator/:patientId', auth.isAuthPatient(roles.All), checkApiKey, bookServiceCtrl.callNavigator)
 api.post('/getinitialevents/:patientId', auth.isAuthPatient(roles.All), checkApiKey, bookServiceCtrl.getInitialEvents)
+
+// AI features routes
+api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleRarescopeRequest)
+api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
 
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)
