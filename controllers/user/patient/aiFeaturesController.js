@@ -16,7 +16,7 @@ async function handleRarescopeRequest(req, res) {
     const decryptedPatientId = crypt.decrypt(encryptedPatientId);
     
     // Get patient context
-    const patientContext = await patientContextService.aggregatePatientContext(decryptedPatientId);
+    const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
     
     // Check if AI services are properly configured
     if (!config.LANGSMITH_API_KEY || !config.O_A_K) {
@@ -140,11 +140,11 @@ async function handleDxGptRequest(req, res) {
     }
     
     // 4. Step: Get patient context
-    const patientContext = await patientContextService.aggregatePatientContext(decryptedPatientId);
+    const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
     
     // 5. Step: Prepare DxGPT API request
     const body = {
-      description: "El paciente tiene trece meses. Primera convulsión focal a los tres meses. Convulsiones múltiples tónico-clónicas. Convulsiones febriles. Un estado epiléptico a los ocho meses.", // Using raw context as description
+      description: patientContext, // El paciente tiene trece meses. Primera convulsión focal a los tres meses. Convulsiones múltiples tónico-clónicas. Convulsiones febriles. Un estado epiléptico a los ocho meses.
       myuuid: generateUUID(),
       lang: lang,
       timezone: 'Europe/Madrid',

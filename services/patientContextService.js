@@ -1,199 +1,360 @@
+// models
 const Patient = require('../models/patient');
-const User = require('../models/user');
 const Document = require('../models/document');
 const Events = require('../models/events');
-const PatientNotes = require('../models/notes');
+const config = require('../config');
+const axios = require('axios');
+const crypto = require('crypto');
 
-async function aggregatePatientContext(patientId) {
-  try {
-    console.log('=== PATIENT CONTEXT DEBUG START ===');
-    console.log('Patient ID:', patientId);
-    
-    const contextData = {};
+/* =========================================================
+ * SIMPLE UTILITIES
+ * ========================================================= */
 
-    // Fetch Patient Profile
-    console.log('Fetching patient profile...');
-    const patient = await Patient.findById(patientId);
-    if (!patient) {
-      console.log('ERROR: Patient not found');
-      throw new Error('Patient not found');
-    }
-    console.log('Patient found:', patient.patientName);
+/**
+ * Generates a consistent UUID for a patient
+ */
+function generatePatientUUID(patientId) {
+  const namespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+  const hash = crypto.createHash('sha1')
+    .update(namespace + patientId)
+    .digest('hex');
+  
+  return [
+    hash.substring(0, 8),
+    hash.substring(8, 12),
+    '4' + hash.substring(13, 16),
+    ((parseInt(hash.substring(16, 18), 16) & 0x3f) | 0x80).toString(16) + hash.substring(18, 20),
+    hash.substring(20, 32)
+  ].join('-');
+}
 
-    contextData.patientProfile = {
-      patientName: patient.patientName,
-      birthDate: patient.birthDate,
-      gender: patient.gender,
-      chronicConditions: patient.chronicConditions,
-      allergies: patient.allergies
-    };
+/**
+ * Formats a date in a readable way
+ */
+function formatDate(date) {
+  if (!date) return 'N/A';
+  return new Date(date).toLocaleDateString('en-GB');
+}
 
-    const userId = patient.createdBy;
-    console.log('User ID from patient:', userId);
+/* =========================================================
+ * STEP 1: GET PATIENT DATA
+ * ========================================================= */
 
-    // Fetch User Preferences
-    console.log('Fetching user preferences...');
-    const user = await User.findById(userId);
-    if (!user) {
-      console.warn(`User not found for userId: ${userId}`);
-    } else {
-      console.log('User found:', user.email, 'Role:', user.role);
-      contextData.userPreferences = {
-        lang: user.lang,
-        role: user.role,
-        medicalLevel: user.medicalLevel
-      };
-    }
+/**
+ * Gets the basic patient profile
+ */
+async function getPatientProfile(patientId) {
+  const patient = await Patient.findById(patientId);
+  if (!patient) throw new Error(`Patient ${patientId} not found`);
 
-    // Fetch relevant Documents
-    console.log('Fetching documents...');
-    const documents = await Document.find({
-      createdBy: patientId,
-      status: { $in: ['finished', 'processed'] }
+  return {
+    name: patient.patientName,
+    birthDate: patient.birthDate,
+    gender: patient.gender,
+    chronicConditions: patient.chronicConditions,
+    allergies: patient.allergies,
+  };
+}
+
+/* =========================================================
+ * STEP 2: GET MEDICAL EVENTS
+ * ========================================================= */
+
+/**
+ * Gets clinical events (diagnoses, medication, symptoms)
+ */
+async function getPatientEvents(patientId, limit = 50) {
+  const events = await Events
+    .find({ 
+      createdBy: patientId, 
+      key: { $in: ['diagnosis', 'medication', 'symptom'] } 
     })
-    // .sort({ createdDate: -1 }) // TEMP: Comentado por problema de índices en CosmosDB
-    .limit(5);
+    .limit(limit);
 
-    console.log(`Found ${documents.length} documents`);
-    contextData.documents = documents.map(doc => ({
-      originalName: doc.originalName,
-      categoryTag: doc.categoryTag,
-      summary: doc.summary || (doc.extractedText ? doc.extractedText.substring(0, 500) : ''),
-      date: doc.createdDate
-    }));
+  const sortedEvents = events.sort((a, b) => {
+    const dateA = new Date(a.date || 0);
+    const dateB = new Date(b.date || 0);
+    return dateB - dateA; // Most recent first
+  });
 
-    if (contextData.documents.length === 0) {
-      console.log(`No documents found for patient ${patientId}`);
+  return sortedEvents.map(event => ({
+    type: event.key,
+    name: event.name,
+    date: event.date,
+    notes: event.notes || ''
+  }));
+}
+
+/* =========================================================
+ * STEP 3: GET FULL-CONTENT DOCUMENTS
+ * ========================================================= */
+
+/**
+ * Gets medical documents with extracted full text
+ */
+async function getPatientDocuments(patientId, limit = 10) {
+  const documents = await Document
+    .find({ 
+      createdBy: patientId, 
+      status: { $in: ['finished', 'processed'] },
+      extractedText: { $exists: true, $ne: '' }
+    })
+    .limit(limit);
+
+  const sortedDocuments = documents.sort((a, b) => {
+    const dateA = new Date(a.createdDate || 0);
+    const dateB = new Date(b.createdDate || 0);
+    return dateB - dateA; // Most recent first
+  });
+
+  return sortedDocuments.map(doc => ({
+    name: doc.originalName,
+    category: doc.categoryTag || 'General',
+    fullContent: doc.extractedText,
+    date: doc.createdDate
+  }));
+}
+
+/* =========================================================
+ * STEP 4: PROCESS DOCUMENTS WITH AI
+ * ========================================================= */
+
+/**
+ * Calls the medical summarization API
+ */
+async function callSummaryAPI(text, patientId) {
+  console.log('Calling summary API');
+  const url = 'https://dxgpt-apim.azure-api.net/v1/medical/summarize';
+  
+  const body = {
+    description: text,
+    myuuid: generatePatientUUID(patientId),
+    timezone: 'Europe/Madrid',
+    lang: 'es'
+  };
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+  };
+
+  try {
+    const response = await axios.post(url, body, { headers });
+    
+    if (response.data.result === 'success') {
+      return response.data.data.summary;
+    } else {
+      throw new Error(response.data.message || 'API error');
     }
+  } catch (error) {
+    console.error('Error calling summary API:', error.message);
+    return null;
+  }
+}
 
-    // Fetch key Events
-    console.log(`Fetching events for patientId: ${patientId}`);
-    let events = [];
-    try {
-      events = await Events.find({
-        createdBy: patientId,
-        key: { $in: ['diagnosis', 'medication', 'symptom'] }
-      })
-      // .sort({ date: -1 }) // TEMP: Comentado por problema de índices en CosmosDB
-      .limit(30);
-      console.log(`Found ${events.length} events`);
-    } catch (eventsError) {
-      console.error('Error fetching events:', eventsError);
-      console.error('Events query params:', { createdBy: patientId });
-      throw eventsError;
+/**
+ * Processes an individual document with AI
+ */
+async function processDocumentWithAI(document, patientId) {
+  if (!document.fullContent || document.fullContent.length < 100) {
+    return null;
+  }
+
+  console.log(`Processing document: ${document.name}`);
+  
+  const textWithContext = `
+    Medical Document: ${document.name}
+    Date: ${formatDate(document.date)}
+    
+    CONTENT:
+    ${document.fullContent}
+  `;
+
+  console.log('Text with context:', textWithContext);
+
+
+  const summary = await callSummaryAPI(textWithContext, patientId);
+  
+  if (summary) {
+    return {
+      documentName: document.name,
+      date: document.date,
+      aiSummary: summary
+    };
+  }
+  
+  return null;
+}
+
+/**
+ * Processes all patient documents with AI
+ */
+async function processDocumentsWithAI(documents, patientId) {
+  const results = [];
+
+  console.log('processDocumentsWithAI: Processing documents with AI');
+  
+  for (const doc of documents) {
+    console.log('processDocumentsWithAI: Processing document:', doc.name);
+    const result = await processDocumentWithAI(doc, patientId);
+    if (result) {
+      results.push(result);
     }
+  }
+  
+  return results;
+}
 
-    contextData.events = events.map(event => ({
-      name: event.name,
-      date: event.date,
-      key: event.key,
-      notes: event.notes && event.notes.length < 200 ? event.notes : ''
-    }));
+/* =========================================================
+ * STEP 5: BUILD CONTEXT FOR DIAGNOSIS
+ * ========================================================= */
 
-    if (contextData.events.length === 0) {
-      console.log(`No events found for patient ${patientId}`);
-    }
+/**
+ * Builds the patient profile section
+ */
+function buildProfileSection(profile) {
+  let text = 'PATIENT DATA:\n';
+  
+  if (profile.name) text += `- Name: ${profile.name}\n`;
+  if (profile.birthDate) {
+    const age = calculateAge(profile.birthDate);
+    text += `- Age: ${age}\n`;
+    text += `- Birthdate: ${formatDate(profile.birthDate)}\n`;
+  }
+  if (profile.gender) text += `- Gender: ${profile.gender}\n`;
+  if (profile.chronicConditions) text += `- Chronic Conditions: ${profile.chronicConditions}\n`;
+  if (profile.allergies) text += `- Allergies: ${profile.allergies}\n`;
+  
+  return text + '\n';
+}
 
-    // Fetch Patient Notes
-    console.log(`Fetching patient notes for patientId: ${patientId}`);
-    let patientNotes = [];
-    try {
-      patientNotes = await PatientNotes.find({
-        createdBy: patientId
-      })
-      // .sort({ date: -1 }) // TEMP: Comentado por problema de índices en CosmosDB
-      .limit(10);
-      console.log(`Found ${patientNotes.length} patient notes`);
-    } catch (notesError) {
-      console.error('Error fetching patient notes:', notesError);
-      console.error('PatientNotes query params:', { createdBy: patientId });
-      throw notesError;
-    }
+/**
+ * Calculates the patient's age
+ */
+function calculateAge(birthDate) {
+  const today = new Date();
+  const birth = new Date(birthDate);
+  let age = today.getFullYear() - birth.getFullYear();
+  const month = today.getMonth() - birth.getMonth();
+  
+  if (month < 0 || (month === 0 && today.getDate() < birth.getDate())) {
+    age--;
+  }
+  
+  if (age < 2) {
+    const months = (today.getFullYear() - birth.getFullYear()) * 12 + 
+                  (today.getMonth() - birth.getMonth());
+    return `${months} months`;
+  }
+  
+  return `${age} years`;
+}
 
-    contextData.patientNotes = patientNotes.map(note => ({
-      date: note.date,
-      content: note.content
-    }));
+/**
+ * Builds the medical events section
+ */
+function buildEventsSection(events) {
+  if (!events || events.length === 0) return '';
+  
+  let text = 'MEDICAL HISTORY:\n';
+  
+  const diagnoses = events.filter(e => e.type === 'diagnosis');
+  const symptoms = events.filter(e => e.type === 'symptom');
+  const medications = events.filter(e => e.type === 'medication');
+  
+  if (diagnoses.length > 0) {
+    text += '\nDiagnoses:\n';
+    diagnoses.forEach(d => {
+      text += `- ${d.name} (${formatDate(d.date)})`;
+      if (d.notes) text += `. ${d.notes}`;
+      text += '\n';
+    });
+  }
+  
+  if (symptoms.length > 0) {
+    text += '\nReported Symptoms:\n';
+    symptoms.forEach(s => {
+      text += `- ${s.name} (${formatDate(s.date)})`;
+      if (s.notes) text += `. ${s.notes}`;
+      text += '\n';
+    });
+  }
+  
+  if (medications.length > 0) {
+    text += '\nMedications:\n';
+    medications.forEach(m => {
+      text += `- ${m.name} (${formatDate(m.date)})`;
+      if (m.notes) text += `. ${m.notes}`;
+      text += '\n';
+    });
+  }
+  
+  return text + '\n';
+}
 
-    if (contextData.patientNotes.length === 0) {
-      console.log(`No patient notes found for patient ${patientId}`);
-    }
+/**
+ * Builds the processed documents section
+ */
+function buildDocumentsSection(processedDocuments) {
+  if (!processedDocuments || processedDocuments.length === 0) return '';
+  
+  let text = 'MEDICAL DOCUMENTS INFORMATION:\n';
+  
+  processedDocuments.forEach(doc => {
+    text += `\nDocument: ${doc.documentName} (${formatDate(doc.date)})\n`;
+    text += `Summary: ${doc.aiSummary}\n`;
+  });
+  
+  return text + '\n';
+}
 
-    // Format context data into a structured string
-    console.log('Formatting context data...');
-    let formattedContext = '';
+/* =========================================================
+ * MAIN FUNCTION
+ * ========================================================= */
 
-    // Patient Profile section
-    if (contextData.patientProfile) {
-      formattedContext += '=== PATIENT PROFILE ===\n';
-      formattedContext += `Name: ${contextData.patientProfile.patientName || 'N/A'}\n`;
-      formattedContext += `DoB: ${contextData.patientProfile.birthDate ? new Date(contextData.patientProfile.birthDate).toLocaleDateString() : 'N/A'}\n`;
-      formattedContext += `Gender: ${contextData.patientProfile.gender || 'N/A'}\n`;
-      if (contextData.patientProfile.chronicConditions) {
-        formattedContext += `Chronic Conditions: ${contextData.patientProfile.chronicConditions}\n`;
-      }
-      if (contextData.patientProfile.allergies) {
-        formattedContext += `Allergies: ${contextData.patientProfile.allergies}\n`;
-      }
-      if (contextData.userPreferences && contextData.userPreferences.medicalLevel) {
-        formattedContext += `User Medical Knowledge Level: ${contextData.userPreferences.medicalLevel}\n`;
-      }
-      formattedContext += '\n';
-    }
-
-    // Key Medical Events section
-    if (contextData.events && contextData.events.length > 0) {
-      formattedContext += '=== KEY MEDICAL EVENTS (Recent First) ===\n';
-      contextData.events.forEach(event => {
-        formattedContext += `- Event: ${event.name} (${event.key}) on ${new Date(event.date).toLocaleDateString()}`;
-        if (event.notes) {
-          formattedContext += `. Notes: ${event.notes}`;
-        }
-        formattedContext += '\n';
-      });
-      formattedContext += '\n';
-    }
-
-    // Relevant Documents section
-    if (contextData.documents && contextData.documents.length > 0) {
-      formattedContext += '=== RELEVANT DOCUMENTS (Summaries) ===\n';
-      contextData.documents.forEach(doc => {
-        formattedContext += `Document: ${doc.originalName}`;
-        if (doc.categoryTag) {
-          formattedContext += ` (Category: ${doc.categoryTag})`;
-        }
-        formattedContext += '\n';
-        if (doc.summary) {
-          formattedContext += `Summary: ${doc.summary}\n`;
-        }
-        formattedContext += '\n';
-      });
-    }
-
-    // Recent Patient Notes section
-    if (contextData.patientNotes && contextData.patientNotes.length > 0) {
-      formattedContext += '=== RECENT PATIENT NOTES ===\n';
-      contextData.patientNotes.forEach(note => {
-        formattedContext += `- Note on ${new Date(note.date).toLocaleDateString()}: ${note.content}\n`;
-      });
-      formattedContext += '\n';
-    }
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`Successfully aggregated context for patient ${patientId}, length: ${formattedContext.length} characters`);
+/**
+ * Aggregates the complete clinical context for a patient
+ * @param {string} patientId - Patient ID
+ * @returns {Promise<string>} Full clinical context as text
+ */
+async function aggregateClinicalContext(patientId) {
+  try {
+    console.log(`Starting context aggregation for patient: ${patientId}`);
+    
+    const profile = await getPatientProfile(patientId);
+    const events = await getPatientEvents(patientId);
+    const documents = await getPatientDocuments(patientId);
+    
+    let processedDocuments = [];
+    console.log('DXGPT_SUBSCRIPTION_KEY:', config.DXGPT_SUBSCRIPTION_KEY);
+    console.log('documents:', documents);
+    if (config.DXGPT_SUBSCRIPTION_KEY) {
+      console.log('Processing documents with AI');
+      processedDocuments = await processDocumentsWithAI(documents, patientId);
+    } else {
+      console.log('DXGPT_SUBSCRIPTION_KEY not configured - skipping AI processing');
+      console.warn('DXGPT_SUBSCRIPTION_KEY not configured - skipping AI processing');
     }
     
-    console.log('=== PATIENT CONTEXT DEBUG END SUCCESS ===');
-    return formattedContext;
+    let finalContext = '';
+    finalContext += buildProfileSection(profile);
+    finalContext += buildEventsSection(events);
+    finalContext += buildDocumentsSection(processedDocuments);
+    
+    console.log(`Context successfully generated. Length: ${finalContext.length} characters`);
+    
+    return finalContext;
+    
   } catch (error) {
-    console.log('=== PATIENT CONTEXT DEBUG ERROR ===');
-    console.error('Error aggregating patient context:', error);
-    console.error('Patient ID:', patientId);
-    console.error('Error stack:', error.stack);
+    console.error('Error aggregating clinical context:', error);
     throw error;
   }
 }
 
+/* =========================================================
+ * EXPORT
+ * ========================================================= */
+
 module.exports = {
-  aggregatePatientContext
+  aggregateClinicalContext
 };
