@@ -125,142 +125,51 @@ Usa el siguiente formato con títulos en markdown:
 
 async function handleDxGptRequest(req, res) {
   try {
-    console.log('=== DXGPT DEBUG START ===');
-    
-    // Get and decrypt patientId
+    // 1. Step: Get and decrypt patientId
     const encryptedPatientId = req.params.patientId;
     const decryptedPatientId = crypt.decrypt(encryptedPatientId);
-    console.log('1. Patient ID decrypted:', decryptedPatientId);
     
-    // Optional useSummary parameter from request body
-    const useSummary = req.body && req.body.useSummary || false;
-    console.log('2. UseSummary:', useSummary);
+    // 2. Step: Get language from request (default to 'en')
+    const lang = req.body && req.body.lang || 'en';
     
-    // Get patient context
-    console.log('3. Attempting to aggregate patient context...');
-    const patientContext = await patientContextService.aggregatePatientContext(decryptedPatientId);
-    console.log('4. Context aggregated successfully, length:', patientContext.length);
-    console.log('5. Context preview (first 200 chars):', patientContext.substring(0, 200));
-    
-    // Check if AI services are properly configured
-    console.log('6. Checking AI configuration...');
-    console.log('   LANGSMITH_API_KEY exists:', !!config.LANGSMITH_API_KEY);
-    console.log('   O_A_K exists:', !!config.O_A_K);
-    
-    if (!config.LANGSMITH_API_KEY || !config.O_A_K) {
-      console.log('7. ERROR: AI services not configured');
+    // 3. Step: Check if DxGPT API is properly configured
+    if (!config.DXGPT_SUBSCRIPTION_KEY) {
       return res.status(500).json({ 
-        error: 'AI services not configured. Missing LANGSMITH_API_KEY or O_A_K',
-        details: {
-          langsmith: !config.LANGSMITH_API_KEY,
-          openai: !config.O_A_K
-        }
+        error: 'DxGPT service not configured. Missing DXGPT_SUBSCRIPTION_KEY'
       });
     }
     
-    console.log('7. AI services configured, preparing prompt...');
+    // 4. Step: Get patient context
+    const patientContext = await patientContextService.aggregatePatientContext(decryptedPatientId);
     
-    // If services are configured, try the full analysis
-    const dxGptPromptTemplate = `Actúa como un médico experto en diagnóstico diferencial. Analiza el historial médico del paciente y proporciona un análisis estructurado de posibles diagnósticos.
-
-**INSTRUCCIONES:**
-1. Lee cuidadosamente toda la información médica proporcionada
-2. Identifica síntomas, signos y hallazgos relevantes
-3. Genera una lista de diagnósticos diferenciales ordenada por probabilidad
-4. Justifica cada diagnóstico con evidencia del historial
-5. Sugiere próximos pasos para confirmar o descartar cada diagnóstico
-
-**FORMATO DE RESPUESTA:**
-Usa el siguiente formato con títulos en markdown:
-
-## Resumen del Caso
-
-### Síntomas y Signos Principales
-[Lista de los hallazgos más relevantes]
-
-### Diagnóstico Diferencial
-
-#### 1. [Diagnóstico más probable] - Probabilidad: Alta
-**Justificación:** [Evidencia del historial que apoya este diagnóstico]
-**Criterios diagnósticos:** [Si aplica]
-**Próximos pasos:** [Estudios o pruebas recomendadas]
-
-#### 2. [Segundo diagnóstico] - Probabilidad: Media
-**Justificación:** [Evidencia]
-**Criterios diagnósticos:** [Si aplica]
-**Próximos pasos:** [Recomendaciones]
-
-[Continuar con otros diagnósticos relevantes...]
-
-### Estudios Recomendados
-[Lista priorizada de estudios o pruebas]
-
-### Consideraciones Adicionales
-[Factores de riesgo, antecedentes relevantes, etc.]
-
-**HISTORIAL DEL PACIENTE:**
-{context}`;
-
-    const finalPrompt = dxGptPromptTemplate.replace('{context}', patientContext);
-    console.log('8. Final prompt prepared, length:', finalPrompt.length);
+    // 5. Step: Prepare DxGPT API request
+    const body = {
+      description: "El paciente tiene trece meses. Primera convulsión focal a los tres meses. Convulsiones múltiples tónico-clónicas. Convulsiones febriles. Un estado epiléptico a los ocho meses.", // Using raw context as description
+      myuuid: generateUUID(),
+      lang: lang,
+      timezone: 'Europe/Madrid',
+      diseases_list: '',
+      model: 'gpt4o'
+    };
     
-    const projectName = `DXGPT - ${config.LANGSMITH_PROJECT} - ${decryptedPatientId}`;
-    const client2 = new Client({
-      apiUrl: "https://api.smith.langchain.com",
-      apiKey: config.LANGSMITH_API_KEY,
-    });
+    const headers = {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+      'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+    };
     
-    let tracer = new LangChainTracer({
-      projectName: projectName,
-      client2,
-    });
+    // 6. Step: Make API call to DxGPT
+    const axios = require('axios');
+    const response = await axios.post('https://dxgpt-apim.azure-api.net/api/diagnose', body, { headers });
     
-    // Get userId from request headers or body
-    const userId = req.headers['user-id'] || req.body.userId || 'anonymous';
-    console.log('9. UserId:', userId);
-    
-    console.log('10. Invoking AI agent...');
-    const resAgent = await graph.invoke({
-      messages: [
-        {
-          role: "user",
-          content: finalPrompt,
-        },
-      ],
-    },
-    { 
-      configurable: { 
-        patientId: decryptedPatientId,
-        systemTime: new Date().toISOString(),
-        tracer: tracer,
-        context: [],
-        docs: [],
-        indexName: decryptedPatientId,
-        containerName: '',
-        userId: userId,
-        pubsubClient: pubsub
-      },
-      callbacks: [tracer]
-    });
-    
-    console.log('11. AI agent response received');
-    const aiResponse = resAgent.messages[resAgent.messages.length - 1].content;
-    console.log('12. AI response length:', aiResponse.length);
-    console.log('13. AI response preview (first 200 chars):', aiResponse.substring(0, 200));
-    
-    console.log('14. Sending success response');
+    // 7. Step: Return response
     res.status(200).send({ 
       success: true, 
-      analysis: aiResponse 
+      analysis: response.data 
     });
     
-    console.log('=== DXGPT DEBUG END SUCCESS ===');
-    
   } catch (error) {
-    console.log('=== DXGPT DEBUG ERROR ===');
     console.error('Error processing DxGPT request:', error);
-    console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
     insights.error(error);
     
     res.status(500).json({
@@ -270,6 +179,15 @@ Usa el siguiente formato con títulos en markdown:
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
+}
+
+// Helper function to generate UUID
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
 }
 
 module.exports = {
