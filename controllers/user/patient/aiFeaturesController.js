@@ -152,7 +152,7 @@ async function handleDxGptRequest(req, res) {
       myuuid: generateUUID(),
       lang: lang,
       timezone: 'Europe/Madrid',
-      diseases_list: '',
+      diseases_list: req.body && req.body.diseases_list || '',
       model: 'gpt4o'
     };
     
