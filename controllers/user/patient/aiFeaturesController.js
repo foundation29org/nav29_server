@@ -129,8 +129,9 @@ async function handleDxGptRequest(req, res) {
     const encryptedPatientId = req.params.patientId;
     const decryptedPatientId = crypt.decrypt(encryptedPatientId);
     
-    // 2. Step: Get language from request (default to 'en')
+    // 2. Step: Get language and custom description from request
     const lang = req.body && req.body.lang || 'en';
+    const customMedicalDescription = req.body && req.body.customMedicalDescription;
     
     // 3. Step: Check if DxGPT API is properly configured
     if (!config.DXGPT_SUBSCRIPTION_KEY) {
@@ -139,12 +140,15 @@ async function handleDxGptRequest(req, res) {
       });
     }
     
-    // 4. Step: Get patient context
-    const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
+    // 4. Step: Get patient context (only if no custom description provided)
+    let patientContext;
+    if (!customMedicalDescription) {
+      patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
+    }
     
     // 5. Step: Prepare DxGPT API request
     const body = {
-      description: patientContext, // El paciente tiene trece meses. Primera convulsión focal a los tres meses. Convulsiones múltiples tónico-clónicas. Convulsiones febriles. Un estado epiléptico a los ocho meses.
+      description: customMedicalDescription || patientContext, // Use custom description if provided
       myuuid: generateUUID(),
       lang: lang,
       timezone: 'Europe/Madrid',
@@ -190,7 +194,90 @@ function generateUUID() {
   });
 }
 
+
+// For each section of the disease results where the user asks default questions about the disease
+async function handleDiseaseInfoRequest(req, res) {
+  try {
+    // Get and decrypt patientId
+    const encryptedPatientId = req.params.patientId;
+    const decryptedPatientId = crypt.decrypt(encryptedPatientId);
+    
+    // Get request body
+    const { questionType, disease, lang = 'en', medicalDescription } = req.body;
+    
+    // Validate required fields
+    if (questionType === undefined || !disease) {
+      return res.status(400).json({
+        error: 'Missing required fields: questionType and disease'
+      });
+    }
+    
+    // Validate questionType
+    if (questionType < 0 || questionType > 4) {
+      return res.status(400).json({
+        error: 'Invalid questionType. Must be between 0 and 4'
+      });
+    }
+    
+    // For questionTypes 3 and 4, medicalDescription is required
+    if ((questionType === 3 || questionType === 4) && !medicalDescription) {
+      // Get patient context if medicalDescription not provided
+      const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
+      if (!patientContext || !patientContext.summary) {
+        return res.status(400).json({
+          error: 'Medical description required for questionType 3 and 4'
+        });
+      }
+    }
+    
+    // Prepare request body for DxGPT API
+    const requestBody = {
+      questionType: questionType,
+      disease: disease,
+      myuuid: generateUUID(),
+      timezone: req.body.timezone || 'UTC',
+      lang: lang
+    };
+    
+    // Add medicalDescription if needed
+    if (questionType === 3 || questionType === 4) {
+      if (medicalDescription) {
+        requestBody.medicalDescription = medicalDescription;
+      } else {
+        // Use patient context if available
+        const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
+        requestBody.medicalDescription = patientContext.summary || '';
+      }
+    }
+    
+    // Make request to DxGPT API
+    const axios = require('axios');
+    const dxgptResponse = await axios.post(
+      'https://dxgpt-apim.azure-api.net/api/disease/info',
+      requestBody,
+      {
+        headers: {
+          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    // Return response
+    return res.json(dxgptResponse.data);
+    
+  } catch (error) {
+    console.error('Error in handleDiseaseInfoRequest:', error);
+    
+    return res.status(500).json({
+      error: 'Error processing disease info request',
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   handleRarescopeRequest,
-  handleDxGptRequest
+  handleDxGptRequest,
+  handleDiseaseInfoRequest
 };

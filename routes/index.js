@@ -153,6 +153,7 @@ api.post('/getinitialevents/:patientId', auth.isAuthPatient(roles.All), checkApi
 // AI features routes
 api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleRarescopeRequest)
 api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
+api.post('/ai/disease-info/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDiseaseInfoRequest)
 
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)
