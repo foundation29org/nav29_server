@@ -24,6 +24,7 @@ const pubsubCtrl = require('../services/pubsub')
 const eventsCtrl = require('../controllers/user/patient/events')
 const appointmentsCtrl = require('../controllers/user/patient/appointments')
 const aiFeaturesCtrl = require('../controllers/user/patient/aiFeaturesController')
+const patientContextService = require('../services/patientContextService')
 const f29azureserviceCtrl = require('../services/f29azure')
 const openShareCtrl = require('../controllers/all/openshare')
 const feedbackCtrl = require('../services/feedback')
@@ -154,6 +155,7 @@ api.post('/getinitialevents/:patientId', auth.isAuthPatient(roles.All), checkApi
 api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleRarescopeRequest)
 api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
 api.post('/ai/disease-info/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDiseaseInfoRequest)
+api.post('/ai/aggregate-context/:patientId', auth.isAuthPatient(roles.All), checkApiKey, patientContextService.aggregateClinicalContext)
 
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)

@@ -1,260 +1,299 @@
-'use strict'
+/**
+ * =========================================================
+ *  AI FEATURES CONTROLLER
+ *  ---------------------------------------------------------
+ *  Orquestra los distintos flujos de IA (Rarescope, DxGPT…)
+ *  ▸ Obtiene el contexto RAW del paciente
+ *  ▸ Opcionalmente resume documentos (DxGPT)
+ *  ▸ Construye prompts y lanza las peticiones a LLMs
+ * =========================================================
+ */
+'use strict';
 
+/*--------------------------------------------------------------------
+ * 1. DEPENDENCIAS
+ *------------------------------------------------------------------*/
 const patientContextService = require('../../../services/patientContextService');
-const { graph } = require('../../../services/agent');
-const crypt = require('../../../services/crypt');
-const insights = require('../../../services/insights');
-const { LangChainTracer } = require("@langchain/core/tracers/tracer_langchain");
-const { Client } = require("langsmith");
-const config = require('../../../config');
-const pubsub = require('../../../services/pubsub');
+const { graph }             = require('../../../services/agent');
+const crypt                 = require('../../../services/crypt');
+const config                = require('../../../config');
+const pubsub                = require('../../../services/pubsub');
+const insights              = require('../../../services/insights');
+const axios                 = require('axios');
 
+const { Client }            = require('langsmith');
+const { LangChainTracer }   = require('@langchain/core/tracers/tracer_langchain');
+
+const { generatePatientUUID } = require('../../../services/uuid');
+
+/*--------------------------------------------------------------------
+ * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
+
+/** (a) Formatea edad (en años o meses) */
+const getAge = birthDate => {
+  if (!birthDate) return 'N/A';
+  const now   = new Date();
+  const birth = new Date(birthDate);
+  let years   = now.getFullYear() - birth.getFullYear();
+  const mDiff = now.getMonth() - birth.getMonth();
+  if (mDiff < 0 || (mDiff === 0 && now.getDate() < birth.getDate())) years--;
+  if (years < 2) {
+    const months = years * 12 + (now.getMonth() - birth.getMonth());
+    return `${months} months`;
+  }
+  return `${years} years`;
+};
+
+/** (b) Resumen IA de un documento largo (>100 chars) */
+async function summarizeWithDxgpt({ text, name, patientId }) {
+  if (!config.DXGPT_SUBSCRIPTION_KEY || !text || text.length < 100) return null;
+
+  console.debug(`    ↳ Summarising "${name}" (${text.length} chars)…`);
+  const { data } = await axios.post(
+    'https://dxgpt-apim.azure-api.net/api/medical/summarize',
+    {
+      description: text,
+      myuuid: generatePatientUUID(patientId),
+      timezone: 'Europe/Madrid',
+      lang: 'es'
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+      }
+    }
+  );
+  return data?.result === 'success' ? data.data.summary : null;
+}
+
+/** (c) Construye string legible a partir del contexto RAW */
+async function buildContextString(raw, patientId) {
+  const { profile, events, documents } = raw;
+
+  /* ▸ Perfil ------------------------------------------------------ */
+  let out = `PATIENT DATA:
+- Name: ${profile.name}
+- Age: ${getAge(profile.birthDate)}
+- Birthdate: ${profile.birthDate ? new Date(profile.birthDate).toLocaleDateString('en-GB') : 'N/A'}
+- Gender: ${profile.gender}
+- Chronic Conditions: ${profile.chronicConditions || 'N/A'}
+- Allergies: ${profile.allergies || 'N/A'}
+
+`;
+
+  /* ▸ Eventos ----------------------------------------------------- */
+  if (events.length) {
+    const section = { diagnosis: 'Diagnoses', symptom: 'Symptoms', medication: 'Medications' };
+    out += 'MEDICAL HISTORY:\n';
+    for (const type of ['diagnosis', 'symptom', 'medication']) {
+      const rows = events.filter(e => e.type === type);
+      if (!rows.length) continue;
+      out += `  ${section[type]}:\n`;
+      rows.forEach(e =>
+        out += `  - ${e.name} (${e.date || 'N/A'})${e.notes ? `. ${e.notes}` : ''}\n`
+      );
+    }
+    out += '\n';
+  }
+
+  /* ▸ Documentos -------------------------------------------------- */
+  if (documents.length) {
+    out += 'MEDICAL DOCUMENTS INFORMATION:\n';
+    for (const doc of documents) {
+      const summary = await summarizeWithDxgpt({ ...doc, patientId });
+      out += `
+  Document: ${doc.name} (${doc.date || 'N/A'})
+  ${summary ? `Summary: ${summary}` : '⚠ No summary (short or missing OCR text)'}
+`;
+    }
+  }
+  return out;
+}
+
+/*--------------------------------------------------------------------
+ * 3. CONTROLADORES MAIN
+ *------------------------------------------------------------------*/
+
+/*--------------------------------------------*
+ * 3.1  RARESCOPE                             *
+ *--------------------------------------------*/
 async function handleRarescopeRequest(req, res) {
   try {
-    // Get and decrypt patientId
-    const encryptedPatientId = req.params.patientId;
-    const decryptedPatientId = crypt.decrypt(encryptedPatientId);
-    
-    // Get patient context
-    const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
-    
-    // Check if AI services are properly configured
-    if (!config.LANGSMITH_API_KEY || !config.O_A_K) {
-      return res.status(500).json({ 
-        error: 'AI services not configured. Missing LANGSMITH_API_KEY or O_A_K',
-        details: {
-          langsmith: !config.LANGSMITH_API_KEY,
-          openai: !config.O_A_K
-        }
-      });
-    }
-    
-    // If services are configured, try the full analysis
-    const rarescopePromptTemplate = `Actúa como un especialista médico experto en enfermedades raras. Analiza los documentos médicos del paciente y proporciona un resumen estructurado.
+    /* STEP 0 · Security -------------------------------------------------- */
+    const encryptedId   = req.params.patientId;
+    const patientId     = crypt.decrypt(encryptedId);
+    console.log(`🩺  RARESCOPE » Patient ${patientId}`);
 
-**INSTRUCCIONES:**
+    /* STEP 1 · Context RAW ---------------------------------------------- */
+    const rawCtx = await patientContextService.aggregateClinicalContext(patientId);
+    const ctxStr = await buildContextString(rawCtx, patientId);
+
+    /* STEP 2 · LLM Prompt ------------------------------------------------ */
+    const prompt = `
+Actúa como un especialista médico experto en enfermedades raras. Analiza los documentos médicos del paciente y proporciona un resumen estructurado.
+
+**INSTRUCCIONES**
 1. Lee cuidadosamente todos los documentos médicos proporcionados
 2. Crea un resumen completo y bien estructurado de la información médica
 3. Identifica y lista los fenotipos clave observados
 4. Sugiere posibles diagnósticos o enfermedades raras candidatas basándote en los síntomas y hallazgos
 5. Presenta la información de forma clara y organizada
 
-**FORMATO DE RESPUESTA:**
-Usa el siguiente formato con títulos en markdown:
-
+**FORMATO DE RESPUESTA**
 ## Resumen del Caso
-
 ### Información del Paciente
-[Resumen de datos demográficos y contexto relevante]
-
 ### Resumen de Documentos Médicos
-[Síntesis de la información más relevante de los documentos]
-
 ### Hallazgos Principales
-[Lista de los hallazgos médicos más significativos]
-
 ### Fenotipos Identificados
-[Lista detallada de fenotipos observados con códigos HPO si es posible]
-
 ### Posibles Diagnósticos
-[Lista de enfermedades raras candidatas con justificación breve]
-
 ### Recomendaciones
-[Sugerencias para próximos pasos o estudios adicionales]
 
-**CONTEXTO DEL PACIENTE:**
-{context}`;
-    const finalPrompt = rarescopePromptTemplate.replace('{context}', patientContext);
-    
-    const projectName = `RARESCOPE - ${config.LANGSMITH_PROJECT} - ${decryptedPatientId}`;
-    const client2 = new Client({
-      apiUrl: "https://api.smith.langchain.com",
-      apiKey: config.LANGSMITH_API_KEY,
+**CONTEXTO DEL PACIENTE**
+${ctxStr}`.trim();
+
+    /* STEP 3 · LangSmith Tracing ---------------------------------------- */
+    if (!config.LANGSMITH_API_KEY || !config.O_A_K) {
+      return res.status(500).json({
+        error: 'AI services not configured. Missing LANGSMITH_API_KEY or O_A_K',
+        details: {
+          langsmith: !config.LANGSMITH_API_KEY,
+          openai   : !config.O_A_K
+        }
+      });
+    }
+    const projectName = `RARESCOPE - ${config.LANGSMITH_PROJECT} - ${patientId}`;
+    const tracer      = new LangChainTracer({
+      projectName,
+      client2: new Client({
+        apiUrl: 'https://api.smith.langchain.com',
+        apiKey: config.LANGSMITH_API_KEY
+      })
     });
-    
-    let tracer = new LangChainTracer({
-      projectName: projectName,
-      client2,
-    });
-    
-    // Get userId from request headers or params (not body since it's a GET request)
-    const userId = req.headers['user-id'] || req.query.userId || 'anonymous';
-    
-    const resAgent = await graph.invoke({
-      messages: [
-        {
-          role: "user",
-          content: finalPrompt,
+
+    /* STEP 4 · LLM Call -------------------------------------------------- */
+    const userId   = req.headers['user-id'] || req.query.userId || 'anonymous';
+    const response = await graph.invoke(
+      { messages: [{ role: 'user', content: prompt }] },
+      {
+        configurable: {
+          patientId,
+          systemTime  : new Date().toISOString(),
+          tracer,
+          context     : rawCtx,  // raw object for advanced chains
+          docs        : rawCtx.documents,
+          indexName   : patientId,
+          containerName: '',
+          userId,
+          pubsubClient: pubsub
         },
-      ],
-    },
-    { 
-      configurable: { 
-        patientId: decryptedPatientId,
-        systemTime: new Date().toISOString(),
-        tracer: tracer,
-        context: [],
-        docs: [],
-        indexName: decryptedPatientId,
-        containerName: '',
-        userId: userId,
-        pubsubClient: pubsub
-      },
-      callbacks: [tracer]
-    });
-    
-    const aiResponse = resAgent.messages[resAgent.messages.length - 1].content;
-    
-    res.status(200).send({ 
-      success: true, 
-      analysis: aiResponse 
-    });
-    
-  } catch (error) {
-    console.error('Error processing Rarescope request:', error);
-    insights.error(error);
-    
+        callbacks: [tracer]
+      }
+    );
+
+    const aiAnswer = response.messages.at(-1).content;
+    res.json({ success: true, analysis: aiAnswer });
+  } catch (err) {
+    console.error('❌ RAREScope error:', err);
+    insights.error(err);
     res.status(500).json({
       error: 'Failed to process Rarescope analysis',
-      message: error.message,
-      code: error.code || 'RARESCOPE_ERROR',
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      message: err.message,
+      code: err.code || 'RARESCOPE_ERROR',
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 }
 
+/*--------------------------------------------*
+ * 3.2  DXGPT – GLOBAL DIAGNÓSTICO            *
+ *--------------------------------------------*/
 async function handleDxGptRequest(req, res) {
   try {
-    // 1. Step: Get and decrypt patientId
-    const encryptedPatientId = req.params.patientId;
-    const decryptedPatientId = crypt.decrypt(encryptedPatientId);
-    
-    // 2. Step: Get language and custom description from request
-    const lang = req.body && req.body.lang || 'en';
-    const customMedicalDescription = req.body && req.body.customMedicalDescription;
-    
-    // 3. Step: Check if DxGPT API is properly configured
-    if (!config.DXGPT_SUBSCRIPTION_KEY) {
-      return res.status(500).json({ 
-        error: 'DxGPT service not configured. Missing DXGPT_SUBSCRIPTION_KEY'
-      });
+    // console.log('req.body', req.body);
+    const patientId = crypt.decrypt(req.params.patientId);
+    const lang      = req.body?.lang || 'en';
+    const custom    = req.body?.customMedicalDescription;
+
+    /* ▸ Context (solo si no lo trae el caller) ------------------------- */
+    let description = custom;
+    if (!description) {
+      const raw  = await patientContextService.aggregateClinicalContext(patientId);
+      // console.log(`>> (from f:aggregateClinicalContext) raw data from patient ${patientId}:`);
+      // console.log(raw);
+      description = await buildContextString(raw, patientId);
     }
-    
-    // 4. Step: Get patient context (only if no custom description provided)
-    let patientContext;
-    if (!customMedicalDescription) {
-      patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
-    }
-    
-    // 5. Step: Prepare DxGPT API request
+
     const body = {
-      description: customMedicalDescription || patientContext, // Use custom description if provided
-      myuuid: generateUUID(),
-      lang: lang,
-      timezone: 'Europe/Madrid',
-      diseases_list: req.body && req.body.diseases_list || '',
-      model: 'gpt4o'
+      description,
+      myuuid   : generatePatientUUID(patientId),
+      lang,
+      timezone : 'Europe/Madrid',
+      diseases_list: req.body?.diseases_list || '',
+      model    : 'gpt4o'
     };
-    
-    const headers = {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache',
-      'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
-    };
-    
-    // 6. Step: Make API call to DxGPT
-    const axios = require('axios');
-    const response = await axios.post('https://dxgpt-apim.azure-api.net/api/diagnose', body, { headers });
-    
-    // 7. Step: Return response
-    res.status(200).send({ 
-      success: true, 
-      analysis: response.data 
-    });
-    
-  } catch (error) {
-    console.error('Error processing DxGPT request:', error);
-    insights.error(error);
-    
+
+    const { data } = await axios.post(
+      'https://dxgpt-apim.azure-api.net/api/diagnose',
+      body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+        }
+      }
+    );
+    res.json({ success: true, analysis: data });
+  } catch (err) {
+    console.error('❌ DxGPT error:', err);
+    insights.error(err);
     res.status(500).json({
       error: 'Failed to process DxGPT analysis',
-      message: error.message,
-      code: error.code || 'DXGPT_ERROR',
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      message: err.message,
+      code: err.code || 'DXGPT_ERROR',
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 }
 
-// Helper function to generate UUID
-function generateUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0;
-    const v = c == 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
-
-
-// For each section of the disease results where the user asks default questions about the disease
+/*--------------------------------------------*
+ * 3.3  DXGPT – INFO SOBRE ENFERMEDAD         *
+ *--------------------------------------------*/
 async function handleDiseaseInfoRequest(req, res) {
   try {
-    // Get and decrypt patientId
-    const encryptedPatientId = req.params.patientId;
-    const decryptedPatientId = crypt.decrypt(encryptedPatientId);
-    
-    // Get request body
+    const patientId = crypt.decrypt(req.params.patientId);
     const { questionType, disease, lang = 'en', medicalDescription } = req.body;
-    
-    // Validate required fields
-    if (questionType === undefined || !disease) {
-      return res.status(400).json({
-        error: 'Missing required fields: questionType and disease'
-      });
+
+    /* ▸ Validaciones --------------------------------------------------- */
+    if (questionType === undefined || !disease)
+      return res.status(400).json({ error: 'Missing questionType or disease' });
+
+    if (questionType < 0 || questionType > 4)
+      return res.status(400).json({ error: 'questionType must be 0-4' });
+
+    /* ▸ Context para 3/4 ---------------------------------------------- */
+    let description = medicalDescription;
+    if ((questionType === 3 || questionType === 4) && !description) {
+      const raw       = await patientContextService.aggregateClinicalContext(patientId);
+      description = await buildContextString(raw, patientId);
+      if (!description.trim())
+        return res.status(400).json({ error: 'Medical description required' });
     }
-    
-    // Validate questionType
-    if (questionType < 0 || questionType > 4) {
-      return res.status(400).json({
-        error: 'Invalid questionType. Must be between 0 and 4'
-      });
-    }
-    
-    // For questionTypes 3 and 4, medicalDescription is required
-    if ((questionType === 3 || questionType === 4) && !medicalDescription) {
-      // Get patient context if medicalDescription not provided
-      const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
-      if (!patientContext || !patientContext.summary) {
-        return res.status(400).json({
-          error: 'Medical description required for questionType 3 and 4'
-        });
-      }
-    }
-    
-    // Prepare request body for DxGPT API
-    const requestBody = {
-      questionType: questionType,
-      disease: disease,
-      myuuid: generateUUID(),
+
+    /* ▸ Call DxGPT ----------------------------------------------------- */
+    const body = {
+      questionType,
+      disease,
+      lang,
+      myuuid: generatePatientUUID(patientId),
       timezone: req.body.timezone || 'UTC',
-      lang: lang
+      ...(description ? { medicalDescription: description } : {})
     };
-    
-    // Add medicalDescription if needed
-    if (questionType === 3 || questionType === 4) {
-      if (medicalDescription) {
-        requestBody.medicalDescription = medicalDescription;
-      } else {
-        // Use patient context if available
-        const patientContext = await patientContextService.aggregateClinicalContext(decryptedPatientId);
-        requestBody.medicalDescription = patientContext.summary || '';
-      }
-    }
-    
-    // Make request to DxGPT API
-    const axios = require('axios');
-    const dxgptResponse = await axios.post(
+
+    const { data } = await axios.post(
       'https://dxgpt-apim.azure-api.net/api/disease/info',
-      requestBody,
+      body,
       {
         headers: {
           'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
@@ -262,20 +301,19 @@ async function handleDiseaseInfoRequest(req, res) {
         }
       }
     );
-    
-    // Return response
-    return res.json(dxgptResponse.data);
-    
-  } catch (error) {
-    console.error('Error in handleDiseaseInfoRequest:', error);
-    
-    return res.status(500).json({
+    res.json(data);
+  } catch (err) {
+    console.error('❌ DiseaseInfo error:', err);
+    res.status(500).json({
       error: 'Error processing disease info request',
-      details: error.message
+      details: err.message
     });
   }
 }
 
+/*--------------------------------------------------------------------
+ * 4. EXPORTS
+ *------------------------------------------------------------------*/
 module.exports = {
   handleRarescopeRequest,
   handleDxGptRequest,
