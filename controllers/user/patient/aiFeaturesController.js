@@ -14,15 +14,11 @@
  * 1. DEPENDENCIAS
  *------------------------------------------------------------------*/
 const patientContextService = require('../../../services/patientContextService');
-const { graph }             = require('../../../services/agent');
 const crypt                 = require('../../../services/crypt');
 const config                = require('../../../config');
 const pubsub                = require('../../../services/pubsub');
 const insights              = require('../../../services/insights');
 const axios                 = require('axios');
-
-const { Client }            = require('langsmith');
-const { LangChainTracer }   = require('@langchain/core/tracers/tracer_langchain');
 
 const { generatePatientUUID } = require('../../../services/uuid');
 
@@ -120,87 +116,79 @@ async function buildContextString(raw, patientId) {
  *--------------------------------------------*/
 async function handleRarescopeRequest(req, res) {
   try {
-    /* STEP 0 · Security -------------------------------------------------- */
-    const encryptedId   = req.params.patientId;
-    const patientId     = crypt.decrypt(encryptedId);
-    console.log(`🩺  RARESCOPE » Patient ${patientId}`);
+    /* 0 · Validación configuración básica ------------------------------*/
+    const azureInstance = config.OPENAI_API_BASE_GPT4O || config.OPENAI_API_BASE;
+    const azureKey      = config.O_A_K_GPT4O          || config.O_A_K;
+    if (!azureInstance || !azureKey) {
+      return res.status(500).json({ error: 'Azure OpenAI not configured' });
+    }
 
-    /* STEP 1 · Context RAW ---------------------------------------------- */
-    const rawCtx = await patientContextService.aggregateClinicalContext(patientId);
-    const ctxStr = await buildContextString(rawCtx, patientId);
+    /* 1 · Seguridad ----------------------------------------------------*/
+    const patientId = crypt.decrypt(req.params.patientId);
 
-    /* STEP 2 · LLM Prompt ------------------------------------------------ */
-    const prompt = `
-Actúa como un especialista médico experto en enfermedades raras. Analiza los documentos médicos del paciente y proporciona un resumen estructurado.
+    /* 2 · Descripción clínica (puede venir del caller) -----------------*/
+    const customDescription = req.body?.customPatientDescription || req.body?.customMedicalDescription;
+    let ctxStr = customDescription;
+    if (!ctxStr) {
+      const raw = await patientContextService.aggregateClinicalContext(patientId);
+      ctxStr = await buildContextString(raw, patientId);
+    }
 
-**INSTRUCCIONES**
-1. Lee cuidadosamente todos los documentos médicos proporcionados
-2. Crea un resumen completo y bien estructurado de la información médica
-3. Identifica y lista los fenotipos clave observados
-4. Sugiere posibles diagnósticos o enfermedades raras candidatas basándote en los síntomas y hallazgos
-5. Presenta la información de forma clara y organizada
+    /* 3 · Prompt -------------------------------------------------------*/
+    const prompt = `Actúa como un experto en enfermedades raras. Lee la información clínica y extrae exclusivamente un ARRAY JSON de cadenas, donde cada cadena represente una necesidad no cubierta real y concreta de las personas con enfermedades raras. No añadas explicaciones ni formato extra.
 
-**FORMATO DE RESPUESTA**
-## Resumen del Caso
-### Información del Paciente
-### Resumen de Documentos Médicos
-### Hallazgos Principales
-### Fenotipos Identificados
-### Posibles Diagnósticos
-### Recomendaciones
+Estas necesidades deben reflejar la falta de diagnóstico, tratamiento, conocimiento o apoyo real que enfrentan los pacientes, más allá de lo que suele declararse superficialmente. Ejemplo de salida válida: ["Necesidad 1","Necesidad 2"]
 
-**CONTEXTO DEL PACIENTE**
+
+## Contexto del Paciente
 ${ctxStr}`.trim();
 
-    /* STEP 3 · LangSmith Tracing ---------------------------------------- */
-    if (!config.LANGSMITH_API_KEY || !config.O_A_K) {
-      return res.status(500).json({
-        error: 'AI services not configured. Missing LANGSMITH_API_KEY or O_A_K',
-        details: {
-          langsmith: !config.LANGSMITH_API_KEY,
-          openai   : !config.O_A_K
-        }
-      });
-    }
-    const projectName = `RARESCOPE - ${config.LANGSMITH_PROJECT} - ${patientId}`;
-    const tracer      = new LangChainTracer({
-      projectName,
-      client2: new Client({
-        apiUrl: 'https://api.smith.langchain.com',
-        apiKey: config.LANGSMITH_API_KEY
-      })
-    });
+    /* 4 · Llamada REST a Azure OpenAI ---------------------------------*/
+    const deployment = 'gpt-4o';
+    const url = `https://${azureInstance}.openai.azure.com/openai/deployments/${deployment}/chat/completions?api-version=${config.OPENAI_API_VERSION}`;
 
-    /* STEP 4 · LLM Call -------------------------------------------------- */
-    const userId   = req.headers['user-id'] || req.query.userId || 'anonymous';
-    const response = await graph.invoke(
-      { messages: [{ role: 'user', content: prompt }] },
+    const { data } = await axios.post(
+      url,
       {
-        configurable: {
-          patientId,
-          systemTime  : new Date().toISOString(),
-          tracer,
-          context     : rawCtx,  // raw object for advanced chains
-          docs        : rawCtx.documents,
-          indexName   : patientId,
-          containerName: '',
-          userId,
-          pubsubClient: pubsub
-        },
-        callbacks: [tracer]
+        messages: [
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 800
+      },
+      {
+        headers: {
+          'api-key': azureKey,
+          'Content-Type': 'application/json'
+        }
       }
     );
 
-    const aiAnswer = response.messages.at(-1).content;
-    res.json({ success: true, analysis: aiAnswer });
+    let answerRaw = data?.choices?.[0]?.message?.content?.trim() || '';
+
+    let unmetNeeds;
+    try {
+      unmetNeeds = JSON.parse(answerRaw);
+      if (!Array.isArray(unmetNeeds)) throw new Error('Not array');
+    } catch (e) {
+      // Fallback: split by newline or semicolon
+      unmetNeeds = answerRaw.split(/\n|\r|\u2028|\u2029/)
+        .map(s => s.replace(/^[\-•\d\.\s]+/, '').trim())
+        .filter(Boolean);
+    }
+
+    console.log('### Unmet Needs', unmetNeeds); // ARRAY
+    console.log('### Unmet Needs Type:', typeof unmetNeeds, 'Is Array:', Array.isArray(unmetNeeds));
+    res.json({
+      success: true,
+      unmetNeeds,
+      analysis: unmetNeeds
+    });
   } catch (err) {
     console.error('❌ RAREScope error:', err);
-    insights.error(err);
     res.status(500).json({
       error: 'Failed to process Rarescope analysis',
-      message: err.message,
-      code: err.code || 'RARESCOPE_ERROR',
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      message: err.message
     });
   }
 }
