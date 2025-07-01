@@ -158,9 +158,22 @@ const clinicalTrialsTool = new DynamicStructuredTool({
   schema: z.object({
     // No input parameters required - condition is now optional and will be handled internally
   }),
-  func: async () => {
-    // Return generic clinical trials platform information without requiring specific condition
-    return `Para encontrar ensayos clínicos relevantes, puedes usar nuestra plataforma especializada <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, que te permite buscar estudios activos, filtrar por ubicación y verificar criterios de elegibilidad de forma personalizada.`;
+  func: async (_, config) => {
+    // Get user language from configuration
+    const userLang = config?.configurable?.userLang || 'en';
+    
+    // Define translations for different languages
+    const translations = {
+      'en': `To find relevant clinical trials, you can use our specialized platform <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, which allows you to search for active studies, filter by location, and verify eligibility criteria in a personalized way.`,
+      'es': `Para encontrar ensayos clínicos relevantes, puedes usar nuestra plataforma especializada <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, que te permite buscar estudios activos, filtrar por ubicación y verificar criterios de elegibilidad de forma personalizada.`,
+      'fr': `Pour trouver des essais cliniques pertinents, vous pouvez utiliser notre plateforme spécialisée <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, qui vous permet de rechercher des études actives, de filtrer par localisation et de vérifier les critères d'éligibilité de manière personnalisée.`,
+      'de': `Um relevante klinische Studien zu finden, können Sie unsere spezialisierte Plattform <a href='https://trialgpt.app' target='_blank'>TrialGPT</a> nutzen, mit der Sie aktive Studien suchen, nach Standort filtern und Zulassungskriterien personalisiert überprüfen können.`,
+      'it': `Per trovare studi clinici rilevanti, puoi utilizzare la nostra piattaforma specializzata <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, che ti permette di cercare studi attivi, filtrare per posizione e verificare i criteri di idoneità in modo personalizzato.`,
+      'pt': `Para encontrar ensaios clínicos relevantes, você pode usar nossa plataforma especializada <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, que permite pesquisar estudos ativos, filtrar por localização e verificar critérios de elegibilidade de forma personalizada.`
+    };
+    
+    // Return message in user's language, default to English if language not supported
+    return translations[userLang] || translations['en'];
   },
 });
 
