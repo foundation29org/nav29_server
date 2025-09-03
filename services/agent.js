@@ -28,9 +28,9 @@ const embeddings = new OpenAIEmbeddings({
     azureOpenAIApiKey: config.O_A_K,
     azureOpenAIApiVersion: config.OPENAI_API_VERSION,
     azureOpenAIApiInstanceName: config.OPENAI_API_BASE,
-    azureOpenAIApiDeploymentName: "nav29embeddings",
-    model: "text-embedding-ada-002",
-    modelName: "ada-002",
+    azureOpenAIApiDeploymentName: "nav29embeddings-large",
+    model: "text-embedding-3-large",
+    modelName: "text-embedding-3-large",
 });
 const cogsearchIndex = config.cogsearchIndex;
 
