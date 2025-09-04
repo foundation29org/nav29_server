@@ -24,6 +24,7 @@ const pubsubCtrl = require('../services/pubsub')
 const eventsCtrl = require('../controllers/user/patient/events')
 const appointmentsCtrl = require('../controllers/user/patient/appointments')
 const aiFeaturesCtrl = require('../controllers/user/patient/aiFeaturesController')
+const rarescopeCtrl = require('../controllers/user/patient/rarescope')
 const patientContextService = require('../services/patientContextService')
 const f29azureserviceCtrl = require('../services/f29azure')
 const openShareCtrl = require('../controllers/all/openshare')
@@ -156,6 +157,12 @@ api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey,
 api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
 api.post('/ai/disease-info/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDiseaseInfoRequest)
 api.post('/ai/aggregate-context/:patientId', auth.isAuthPatient(roles.All), checkApiKey, patientContextService.aggregateClinicalContext)
+
+// Rarescope routes
+api.post('/rarescope/save/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.saveRarescopeData)
+api.get('/rarescope/load/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.loadRarescopeData)
+api.get('/rarescope/history/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.getRarescopeHistory)
+api.delete('/rarescope/delete/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.deleteRarescopeData)
 
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)

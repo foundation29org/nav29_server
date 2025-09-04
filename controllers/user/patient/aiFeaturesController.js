@@ -218,7 +218,8 @@ async function handleDxGptRequest(req, res) {
       lang,
       timezone : 'Europe/Madrid',
       diseases_list: req.body?.diseases_list || '',
-      model    : 'gpt4o'
+      model    : 'gpt4o',
+      response_mode: 'direct'
     };
 
     const { data } = await axios.post(
