@@ -32,6 +32,7 @@ const form_recognizer_endpoint = config.FORM_RECOGNIZER_ENDPOINT
 
 const Document = require('../models/document')
 const Patient = require('../models/patient')
+const User = require('../models/user')
 
 
 async function analizeDoc(containerName, url, documentId, filename, patientId, userId, saveTimeline, medicalLevel) {
@@ -484,6 +485,21 @@ async function callNavigator(req, res) {
 		var containerName = req.body.containerName;
 		var content = req.body.context;
 		var docs = req.body.docs;
+		
+		// Get user language - try from request body first, then from user model
+		let userLang = req.body.lang || req.body.userLang || 'en';
+		if (!req.body.lang && req.body.userId) {
+			try {
+				const userId = crypt.decrypt(req.body.userId);
+				const user = await User.findById(userId, { "lang": true, "preferredResponseLanguage": true });
+				if (user) {
+					userLang = user.preferredResponseLanguage || user.lang || 'en';
+				}
+			} catch (error) {
+				console.log('Error getting user language:', error);
+			}
+		}
+		
 		const projectName = `AGENT - ${config.LANGSMITH_PROJECT} - ${patientId}`;
 		console.log("projectName: ", projectName);
 		console.log("config.LANGSMITH_API_KEY: ", config.LANGSMITH_API_KEY);
@@ -513,6 +529,7 @@ async function callNavigator(req, res) {
 				indexName: index,
 				containerName: containerName,
 				userId: req.body.userId,
+				userLang: userLang,
 				pubsubClient: pubsub
 			},
 			callbacks: [tracer] 

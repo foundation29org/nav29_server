@@ -12,6 +12,8 @@ async function detectLang(text) {
       try {
         let substring = text.substring(0, 5000);
 
+        console.log('substring', substring);
+
         let content = [
           { role: "system", content: "You are an AI model trained to recognize languages from text snippets. Respond only with the language code of the text. If you cannot identify the language confidently, respond with 'null'." },
           { role: "user", content: "What is the language of this text: 'Hello, how are you?'" },
@@ -46,12 +48,13 @@ async function detectLang(text) {
           let lang = null;
           if (response.data.choices[0].message.content) {
             lang = response.data.choices[0].message.content.trim();
-            console.log(response.data.choices[0])
+            // console.log(response.data.choices[0])
             resolve(lang);
           } else {
             reject(new Error('Invalid response format from OpenAI'));
           }
         } catch (error) {
+          console.log('error', error);
           reject('Error from OpenAI');
         }
 
