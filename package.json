@@ -8,7 +8,8 @@
     "serve": "nodemon index.js -V",
     "servedev": "cross-env NODE_ENV=development nodemon index.js -V",
     "test": "jasmine",
-    "crondatagroups": "node -e \"require('./controllers/user/patient/export.js').cronSendData()\""
+    "crondatagroups": "node -e \"require('./controllers/user/patient/export.js').cronSendData()\"",
+    "create-indexes": "node scripts/create-indexes.js"
   },
   "author": "LOA",
   "license": "MIT",
