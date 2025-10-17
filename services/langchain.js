@@ -115,7 +115,7 @@ function createModels(projectName, modelType = null) {
           break;
         case 'gemini15pro_2':
           model = new ChatGoogleGenerativeAI({
-            model: "gemini-1.5-pro-002",
+            model: "gemini-2.5-pro",
             project: "nav29-21389",
             location: "europe-southwest1",
             apiKey: config.GOOGLE_API_KEY,

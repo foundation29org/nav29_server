@@ -9,7 +9,7 @@ const config = require('./config')
 if(config.client_server!='http://localhost:4200'){
 	appInsights.setup(config.INSIGHTS)
 	.setAutoDependencyCorrelation(true)
-    .setAutoCollectRequests(false)
+    .setAutoCollectRequests(true)
     .setAutoCollectPerformance(true, true)
     .setAutoCollectExceptions(true)
     .setAutoCollectDependencies(false)

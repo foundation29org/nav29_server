@@ -63,7 +63,44 @@ async function summarizeWithDxgpt({ text, name, patientId }) {
   return data?.result === 'success' ? data.data.summary : null;
 }
 
-/** (c) Construye string legible a partir del contexto RAW */
+/** (c) Resumir contexto completo cuando es demasiado largo */
+async function summarizeContext(contextText, patientId) {
+  try {
+    console.log(`🔄 Iniciando resumen de contexto (${contextText.length} caracteres)...`);
+    
+    const { data } = await axios.post(
+      'https://dxgpt-apim.azure-api.net/api/medical/summarize',
+      {
+        description: contextText,
+        myuuid: generatePatientUUID(patientId),
+        timezone: 'Europe/Madrid',
+        lang: 'es'
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+        }
+      }
+    );
+
+    if (data?.result === 'success' && data.data?.summary) {
+      const summary = data.data.summary;
+      console.log(`✅ Contexto resumido exitosamente (${summary.length} caracteres)`);
+      return summary;
+    } else {
+      console.warn('⚠️ No se pudo resumir el contexto, usando contexto original truncado');
+      // Si falla el resumen, devolver los primeros 8000 caracteres
+      return contextText.substring(0, 8000);
+    }
+  } catch (error) {
+    console.error('❌ Error al resumir contexto:', error.message);
+    // En caso de error, devolver los primeros 8000 caracteres
+    return contextText.substring(0, 8000);
+  }
+}
+
+/** (d) Construye string legible a partir del contexto RAW */
 async function buildContextString(raw, patientId) {
   const { profile, events, documents } = raw;
 
@@ -104,6 +141,13 @@ async function buildContextString(raw, patientId) {
 `;
     }
   }
+
+  /* ▸ Verificar longitud y resumir si es necesario ------------------ */
+  if (out.length > 3000) {
+    console.log(`📊 Contexto demasiado largo (${out.length} caracteres), aplicando resumen...`);
+    out = await summarizeContext(out, patientId);
+  }
+
   return out;
 }
 
