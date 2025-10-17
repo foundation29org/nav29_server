@@ -10,37 +10,33 @@ const azureApiKey = config.O_A_K
 async function detectLang(text) {
   return new Promise(async (resolve, reject) => {
       try {
-        let substring = text.substring(0, 5000);
+        let substring = text.substring(0, 1000); // Reducir a 1000 caracteres para evitar filtros
 
-        console.log('substring', substring);
 
-        let content = [
-          { role: "system", content: "You are an AI model trained to recognize languages from text snippets. Respond only with the language code of the text. If you cannot identify the language confidently, respond with 'null'." },
-          { role: "user", content: "What is the language of this text: 'Hello, how are you?'" },
-          { role: "assistant", content: "en" },
-          { role: "user", content: "What is the language of this text: 'Bonjour, comment ça va?'" },
-          { role: "assistant", content: "fr" },
-          { role: "user", content: "What is the language of this text: 'Hola, ¿cómo estás?'" },
-          { role: "assistant", content: "es" },
-          { role: "user", content: `What is the language of this text: "${substring}"` },
-          { role: "assistant", content: "" } // La respuesta del modelo irá aquí
+        const messages = [
+          {
+            role: "system",
+            content: `Identify the language of the provided text. Respond only with the language code: es, en, fr, de, it, pt, ru, zh, ja, ko. If uncertain, respond "null".`
+          },
+          {
+            role: "user",
+            content: `Identify the language of the following text:\n\n${substring}`
+          }
         ];
         const apiKey = azureApiKey; // Reemplaza esto con tu clave API real
-        const endpoint = 'https://nav29.openai.azure.com/openai/deployments/nav29/chat/completions?api-version=2023-07-01-preview';
+        const endpoint = 'https://nav29.openai.azure.com/openai/deployments/nav29/chat/completions?api-version=2023-06-01-preview';
 
         const data = {
-          messages: content,
-          max_tokens: 800,
+          messages: messages,
           temperature: 0,
           frequency_penalty: 0,
           presence_penalty: 0,
-          top_p: 0.95,
-          stop: null
+          top_p: 1
         };
 
         const headers = {
           'Content-Type': 'application/json',
-          'api-key': apiKey
+          'Authorization': `Bearer ${apiKey}`
         };
           
         try {
@@ -54,7 +50,9 @@ async function detectLang(text) {
             reject(new Error('Invalid response format from OpenAI'));
           }
         } catch (error) {
-          console.log('error', error);
+          console.error('OpenAI API Error:', error.response?.data || error.message);
+          console.error('Status:', error.response?.status);
+          console.error('Headers:', error.response?.headers);
           reject('Error from OpenAI');
         }
 
