@@ -19,7 +19,8 @@ const AgentState = Annotation.Root({
   ...AttributesState.spec,
 })
 
-const TOOLS = [perplexityTool, mediSearchTool, clinicalTrialsTool];
+//const TOOLS = [perplexityTool, mediSearchTool, clinicalTrialsTool];
+const TOOLS = [perplexityTool, clinicalTrialsTool];
 
 const vectorStoreAddress = config.SEARCH_API_ENDPOINT;
 const vectorStorePassword = config.SEARCH_API_KEY;

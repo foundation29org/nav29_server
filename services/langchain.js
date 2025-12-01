@@ -840,28 +840,82 @@ async function summarySuggestions(patientId, containerName, url) {
       });
       console.log("Suggestions: ", suggestions);
       //resolve(suggestions.content);
-      if (suggestions.suggestions) {
-        // Si suggestions existe, puede ser un array o un string
-        if (Array.isArray(suggestions.suggestions)) {
-          resolve(suggestions.suggestions);
-        } else if (typeof suggestions.suggestions === 'string') {
-          const suggestionsArray = suggestions.suggestions
-            .split('?') // Dividir por '?' 
-            .map(question => question.trim()) // Eliminar espacios
-            .filter(question => question.length > 0) // Eliminar elementos vacíos
-            .map(question => question + '?'); // Añadir el signo de interrogación de nuevo
-          resolve(suggestionsArray);
+      // Normalizar y parsear la salida de forma robusta
+      const tryJSON = (text) => {
+        try { return JSON.parse(text); } catch { return null; }
+      };
+      const cleanFences = (text) => {
+        if (!text) return "";
+        let t = String(text).trim();
+        // eliminar ```json ... ```
+        if (t.startsWith("```")) {
+          t = t.replace(/^```(?:json|JSON)?\s*/i, "").replace(/```$/i, "").trim();
         }
+        // eliminar prefijo "suggestions:" o "Suggestions:" si aparece
+        t = t.replace(/^\s*suggestions?\s*:\s*/i, "").trim();
+        return t;
+      };
+      const extractArrayFromText = (text) => {
+        const cleaned = cleanFences(text);
+        // 1) Intento directo
+        let parsed = tryJSON(cleaned);
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && Array.isArray(parsed.suggestions)) return parsed.suggestions;
+        // 2) Buscar un array JSON dentro del texto
+        const match = cleaned.match(/\[\s*"(?:[^"\\]|\\.)*"(?:\s*,\s*"(?:[^"\\]|\\.)*")*\s*\]/s);
+        if (match) {
+          const arr = tryJSON(match[0]);
+          if (Array.isArray(arr)) return arr;
+        }
+        // 3) Si parece un objeto sin llaves { suggestions: [...] } sin comillas en la clave
+        if (/^suggestions\s*:/i.test(String(text).trim())) {
+          const maybeObj = tryJSON(`{${String(text).trim()}}`);
+          if (maybeObj && Array.isArray(maybeObj.suggestions)) return maybeObj.suggestions;
+        }
+        return null;
+      };
+
+      let finalSuggestions = [];
+
+      // A) Caso 1: estructura ya parseada { suggestions: [...] }
+      if (suggestions && Array.isArray(suggestions.suggestions)) {
+        finalSuggestions = suggestions.suggestions;
       } else {
-        // Último intento de extraer un array de strings
-        try {
-          const possibleArray = Object.values(suggestions).filter(value => typeof value === 'string');
-          resolve(possibleArray.length > 0 ? possibleArray : []);
-        } catch (error) {
-          console.error('Error extracting suggestions array:', error);
-          resolve([]);
+        // B) Caso 2: la propiedad suggestions existe pero es string
+        if (suggestions && typeof suggestions.suggestions === "string") {
+          const fromProp = extractArrayFromText(suggestions.suggestions);
+          if (Array.isArray(fromProp)) finalSuggestions = fromProp;
+        }
+        // C) Caso 3: el contenido viene en .content (AIMessage)
+        if (finalSuggestions.length === 0 && suggestions && typeof suggestions.content === "string") {
+          const fromContent = extractArrayFromText(suggestions.content);
+          if (Array.isArray(fromContent)) finalSuggestions = fromContent;
+        }
+        // D) Caso 4: intentar con el objeto entero serializado
+        if (finalSuggestions.length === 0) {
+          const serialized = JSON.stringify(suggestions);
+          const fromSerialized = extractArrayFromText(serialized);
+          if (Array.isArray(fromSerialized)) finalSuggestions = fromSerialized;
         }
       }
+
+      // E) Último recurso: dividir por '?', evitando restos de comas y comillas
+      if (finalSuggestions.length === 0) {
+        const baseText = (suggestions?.content || suggestions?.suggestions || "").toString();
+        finalSuggestions = baseText
+          .split('?')
+          .map(q => q.replace(/^[\s,"']+|[\s,"']+$/g, ''))
+          .filter(q => q.length > 0)
+          .map(q => `${q}?`);
+      }
+
+      // Normalizar: quitar espacios, limitar a 4 y asegurar strings
+      finalSuggestions = finalSuggestions
+        .map(s => typeof s === 'string' ? s.trim() : String(s))
+        .filter(Boolean)
+        .slice(0, 4);
+
+      resolve(finalSuggestions);
     }
     catch (error) {
       console.log("Error happened: ", error)
