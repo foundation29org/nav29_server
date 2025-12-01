@@ -43,7 +43,11 @@ async function callModel(
   /** Call the LLM powering our agent. **/
   const SYSTEM_PROMPT_TEMPLATE = await pull("foundation29/agent_system_prompt_v1");
 
-  let { azuregpt4o } = createModels('default', 'azuregpt4o');
+  // Intentar usar gpt5mini; si no está disponible, caer a gpt-4o
+  //let { azuregpt4o } = createModels('default', 'azuregpt4o');
+  let { gpt5mini } = createModels('default', 'gpt5mini');
+  let baseModel = gpt5mini;
+
 
   console.log('cogsearchIndex:', cogsearchIndex);
   let vectorStore = await createIndexIfNone(cogsearchIndex, embeddings, vectorStoreAddress, vectorStorePassword);
@@ -63,7 +67,7 @@ async function callModel(
   const question = state.messages[state.messages.length - 1].content;
   const memories = await retriever.invoke(question);
   const curatedContext = await curateContext(config.configurable.context, memories, config.configurable.containerName, config.configurable.docs, question);
-  const model = azuregpt4o.bindTools(TOOLS);
+  const model = baseModel.bindTools(TOOLS);
   const prompt = await SYSTEM_PROMPT_TEMPLATE.format({ systemTime: config.configurable.systemTime, curatedContext: curatedContext.content });
   
   

@@ -24,6 +24,7 @@ const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
 const OPENAI_API_BASE = config.OPENAI_API_BASE;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
 const OPENAI_API_BASE_GPT4O = config.OPENAI_API_BASE_GPT4O;
+const O_A_K_GPT5MINI = config.O_A_K_GPT5MINI;
 
 const BEDROCK_API_KEY = config.BEDROCK_USER_KEY;
 const BEDROCK_API_SECRET = config.BEDROCK_USER_SECRET;
@@ -86,6 +87,19 @@ function createModels(projectName, modelType = null) {
             //poner  azureOpenAIEndpoint  undefined
             model.azureOpenAIEndpoint = undefined;
             break;
+        case 'gpt5mini':
+          model = new ChatOpenAI({
+            modelName: "gpt-5-mini",
+            azure: true,
+            azureOpenAIApiKey: O_A_K_GPT5MINI,
+            azureOpenAIApiVersion: '2024-12-01-preview',
+            // Endpoint completo en región distinta
+            azureOpenAIEndpoint: 'https://foundation29-ai-aiservices.cognitiveservices.azure.com/',
+            azureOpenAIApiDeploymentName: "gpt-5-mini",
+            timeout: 140000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          break;
         case 'model32k':
           model = new ChatOpenAI({
             modelName: "gpt-4-32k-0613",
