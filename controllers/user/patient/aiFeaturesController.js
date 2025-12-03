@@ -280,6 +280,14 @@ async function handleDxGptRequest(req, res) {
         }
       }
     );
+    // Si no hay datos personales detectados, devolver el texto original como anonymizedText
+    try {
+      if (data && data.anonymization && data.anonymization.hasPersonalInfo === false) {
+        data.anonymization.anonymizedText = description;
+      }
+    } catch (_) {
+      // sin-op
+    }
     res.json({ success: true, analysis: data });
   } catch (err) {
     console.error('❌ DxGPT error:', err);
