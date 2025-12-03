@@ -56,7 +56,8 @@ async function summarizeWithDxgpt({ text, name, patientId }) {
     {
       headers: {
         'Content-Type': 'application/json',
-        'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+        'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
+        'X-Tenant-Id': 'Nav29 AI'
       }
     }
   );
@@ -79,7 +80,8 @@ async function summarizeContext(contextText, patientId) {
       {
         headers: {
           'Content-Type': 'application/json',
-          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
+          'X-Tenant-Id': 'Nav29 AI'
         }
       }
     );
@@ -262,7 +264,7 @@ async function handleDxGptRequest(req, res) {
       lang,
       timezone : 'Europe/Madrid',
       diseases_list: req.body?.diseases_list || '',
-      model    : 'gpt4o',
+      model    : 'gpt5mini',
       response_mode: 'direct'
     };
 
@@ -273,7 +275,8 @@ async function handleDxGptRequest(req, res) {
         headers: {
           'Content-Type': 'application/json',
           'Cache-Control': 'no-cache',
-          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY
+          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
+          'X-Tenant-Id': 'Nav29 AI'
         }
       }
     );
@@ -330,7 +333,8 @@ async function handleDiseaseInfoRequest(req, res) {
       {
         headers: {
           'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'X-Tenant-Id': 'Nav29 AI'
         }
       }
     );
