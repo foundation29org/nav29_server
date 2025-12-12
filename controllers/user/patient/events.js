@@ -87,8 +87,7 @@ async function updateEventDocument(req, res) {
 		let eventId = crypt.decrypt(req.params.eventId);
 		const eventdbUpdated = await Events.findByIdAndUpdate (eventId,{ status: req.body.status}, { new: true });
 		if (eventdbUpdated) {
-			let patientIdEncrypted = crypt.encrypt(eventdbUpdated.createdBy.toString());
-			let containerName = patientIdEncrypted.substr(1).toString();
+			let containerName = crypt.getContainerName(eventdbUpdated.createdBy.toString());
 			var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 			res.status(200).send({ message: 'Eventdb updated' })
 		} else {
@@ -133,7 +132,7 @@ function saveEvent(req, res) {
 			res.status(500).send({ message: `Failed to save in the database: ${err} ` })
 		}
 		if (eventdbStored) {
-			let containerName = req.params.patientId.substr(1).toString();
+			let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 			var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 			res.status(200).send({ message: 'Eventdb created'})
 		}else{
@@ -160,7 +159,7 @@ function saveEventDoc(req, res) {
 			res.status(500).send({ message: `Failed to save in the database: ${err} ` })
 		}
 		if (eventdbStored) {
-			let containerName = req.params.patientId.substr(1).toString();
+			let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 			var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 			res.status(200).send({ message: 'Eventdb created'})
 		}else{
@@ -252,8 +251,7 @@ function updateEvent(req, res) {
 		if (eventObj.docId) {
 			eventObj.docId = crypt.encrypt(eventObj.docId.toString());
 		}
-		let patientIdEncrypted = crypt.encrypt(eventdbUpdated.createdBy.toString());
-		let containerName = patientIdEncrypted.substr(1).toString();
+		let containerName = crypt.getContainerName(eventdbUpdated.createdBy.toString());
 		var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 		//dont return the createdBy field
 		delete eventObj.createdBy;
@@ -273,8 +271,7 @@ function deleteEvent(req, res) {
 			return res.status(500).send({ message: `Error making the request: ${err}` })
 		}
 		if (eventdb) {
-			let patientIdEncrypted = crypt.encrypt(eventdb.createdBy.toString());
-			let containerName = patientIdEncrypted.substr(1).toString();
+			let containerName = crypt.getContainerName(eventdb.createdBy.toString());
 			var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 			eventdb.remove(err => {
 				if (err){
@@ -327,7 +324,7 @@ async function deleteEvents(req, res) {
                 console.log({message: `Error deleting an event: ${err}`});
             }
         }
-        let containerName = req.params.patientId.substr(1).toString();
+        let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
         var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
         res.status(200).send({ message: `The eventdb has been deleted` });
     } catch (err) {

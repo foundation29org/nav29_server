@@ -20,13 +20,16 @@ admin.initializeApp({
 });
 
 function deleteAccount(req, res) {
-	req.body.email = (req.body.email).toLowerCase();
-	User.getAuthenticated(req.body.email, req.body.uid, function (err, user, reason) {
+	const email = (req.body.email).toLowerCase();
+	const firebaseUid = req.body.uid;
+	
+	User.getAuthenticatedByFirebase(email, firebaseUid, function (err, user, reason) {
 		if (err) {
 			insights.error(err);
 			return res.status(500).send({ message: err })
 		}
-		// login was successful if we have a user
+		
+		// Verificación exitosa si tenemos usuario
 		if (user) {
 			let userId = crypt.decrypt(req.params.userId);
 			Patient.find({ "createdBy": userId }, (err, patients) => {
@@ -37,8 +40,7 @@ function deleteAccount(req, res) {
 
 				patients.forEach(async function (u) {
 					var patientId = u._id.toString();
-					var patientIdCrypt = crypt.encrypt(u._id.toString());
-					var containerName = patientIdCrypt.substr(1).toString();
+					var containerName = crypt.getContainerName(u._id.toString());
 					deleteEvents(patientId);
 					deleteDocs(patientId);
 					await bookService.deleteIndexAzure(patientId);
@@ -46,17 +48,20 @@ function deleteAccount(req, res) {
 				});
 				deleteAppointments(userId);
 				deleteLocations(userId);
-				deleteUser(res, userId, req.body.uid);
-
+				// Usar firebaseUid del usuario para eliminar de Firebase
+				deleteUser(res, userId, user.firebaseUid || firebaseUid);
 			})
 		} else {
-			res.status(200).send({ message: `fail` })
+			// Manejar diferentes razones de fallo
+			if (reason === User.failedLogin.NOT_FOUND) {
+				res.status(404).send({ message: 'User not found' })
+			} else if (reason === User.failedLogin.BLOCKED) {
+				res.status(403).send({ message: 'Account blocked' })
+			} else {
+				res.status(401).send({ message: 'Authentication failed' })
+			}
 		}
 	})
-
-
-	/*User.findById(userId, (err, user) => {
-	})*/
 }
 
 
@@ -211,15 +216,43 @@ function verifyToken(req, res, next) {
 	}
 	admin.auth().verifyIdToken(idToken)
 		.then(decodedToken => {
-			// Guarda el uid o cualquier otra información en el objeto req para su uso posterior
-			let lang = req.body.lang
-			let mode = req.body.mode
-			req.body = decodedToken;
-			req.body.lang = lang;
-			req.body.mode = mode;
+			// Extraer datos del body ANTES de reemplazarlo
+			const bodyEmail = req.body.email;
+			const lang = req.body.lang;
+			const mode = req.body.mode;
+			
+			// Usar SIEMPRE el email del token de Firebase (verificado y seguro)
+			const verifiedEmail = decodedToken.email;
+			
+			// Verificación de seguridad: si el cliente envió un email, debe coincidir
+			if (bodyEmail && verifiedEmail && bodyEmail.toLowerCase() !== verifiedEmail.toLowerCase()) {
+				console.log(`Security warning: Email mismatch. Body: ${bodyEmail}, Token: ${verifiedEmail}`);
+				return res.status(403).send('Email mismatch');
+			}
+			
+			// Verificar que el token tiene email (algunos providers podrían no tenerlo)
+			if (!verifiedEmail) {
+				console.log('Token does not contain email');
+				return res.status(403).send('Token does not contain email');
+			}
+			
+			// Reemplazar body con datos verificados del token
+			req.body = {
+				// Datos verificados del token de Firebase (SEGUROS)
+				uid: decodedToken.uid,
+				email: verifiedEmail,
+				email_verified: decodedToken.email_verified,
+				name: decodedToken.name || '',
+				picture: decodedToken.picture || '',
+				firebase: decodedToken.firebase,
+				// Datos adicionales del body original (no sensibles)
+				lang: lang,
+				mode: mode
+			};
+			
 			next();
 		}).catch(error => {
-			console.log(error)
+			console.log('Token verification error:', error.message);
 			// Token inválido o ha expirado
 			res.status(403).send('Unauthorized');
 		});
@@ -238,8 +271,7 @@ function removePatient(req, res) {
 			insights.error(`The patient does not exist`);
 			return res.status(202).send({ message: `The patient does not exist` })
 		} else {
-			var patientIdCrypt = crypt.encrypt(patientId);
-			var containerName = patientIdCrypt.substr(1).toString();
+			var containerName = crypt.getContainerName(patientId);
 			deleteEvents(patientId);
 			deleteDocs(patientId);
 			await bookService.deleteIndexAzure(patientId)

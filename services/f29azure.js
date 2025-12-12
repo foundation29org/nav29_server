@@ -240,6 +240,37 @@ function getAzureBlobSasTokenWithContainer(req, res) {
   res.status(200).send({ containerSAS: containerSAS })
 }
 
+/**
+ * Genera SAS token para un paciente usando el containerName SHA256
+ * El cliente envía el patientId encriptado y recibe el containerName correcto + SAS token
+ */
+function getAzureBlobSasTokenForPatient(req, res) {
+  const crypt = require('./crypt');
+  const encryptedPatientId = req.params.patientId;
+  
+  // Calcular el containerName correcto usando SHA256
+  const containerName = crypt.getContainerNameFromEncrypted(encryptedPatientId);
+
+  var startDate = new Date();
+  var expiryDate = new Date();
+  startDate.setTime(startDate.getTime() - 5 * 60 * 1000);
+  expiryDate.setTime(expiryDate.getTime() + 24 * 60 * 60 * 1000);
+
+  var containerSAS = storage.generateBlobSASQueryParameters({
+    expiresOn: expiryDate,
+    permissions: storage.ContainerSASPermissions.parse("rlc"),
+    protocol: storage.SASProtocol.Https,
+    containerName: containerName,
+    startsOn: startDate,
+    version: "2017-11-09"
+  }, sharedKeyCredentialGenomics).toString();
+  
+  res.status(200).send({ 
+    containerSAS: containerSAS,
+    containerName: containerName
+  });
+}
+
 async function listBlobsInRoot(containerName) {
   const containerClient = blobServiceClientGenomics.getContainerClient(containerName);
 
@@ -319,6 +350,7 @@ module.exports = {
   downloadBlobBuffer,
   listContainerFiles,
   getAzureBlobSasTokenWithContainer,
+  getAzureBlobSasTokenForPatient,
   listBlobsInRoot,
   moveBlob,
   renameBlob

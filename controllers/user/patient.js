@@ -124,8 +124,7 @@ async function createPatient(userId) {
                 reject(false)
             } else {
                 var id = patientStored._id.toString();
-                var idencrypt = crypt.encrypt(id);
-                let containerName = (idencrypt).substr(1);
+                let containerName = crypt.getContainerName(id);
                 var result = await f29azureService.createContainers(containerName);
                 if (result) {
                     resolve(patientStored)

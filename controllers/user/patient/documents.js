@@ -105,8 +105,7 @@ async function updateTitle(req, res) {
 			
 			try {
 				// Renombrar el blob en Azure
-				let patientIdEnc = crypt.encrypt(documentUpdated.createdBy.toString());
-				let containerName = patientIdEnc.substr(1).toString();
+				let containerName = crypt.getContainerName(documentUpdated.createdBy.toString());
 				console.log(containerName)
 				await f29azureService.renameBlob(
 					containerName,
@@ -144,8 +143,7 @@ function deleteDocument(req, res) {
 				return res.status(200).send({ message: 'Access denied' });
 			}
 
-			let patientIdEnc = crypt.encrypt((documentdb.createdBy).toString());
-			let containerName = patientIdEnc.substr(1).toString();
+			let containerName = crypt.getContainerName((documentdb.createdBy).toString());
 			await f29azureService.deleteBlobsInFolder(containerName, documentdb.url);
 			
 			documentdb.remove(async err => {
@@ -183,7 +181,9 @@ function deleteEvents (docId){
 async function uploadFile(req, res) {
 	if (req.files != null) {
 		let patientId = crypt.decrypt(req.params.patientId);
-		var data1 = await saveBlob(req.body.containerName, req.body.url, req.files.thumbnail);
+		// Calcular containerName desde patientId encriptado (ignorar lo que envía el cliente)
+		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
+		var data1 = await saveBlob(containerName, req.body.url, req.files.thumbnail);
 		if (data1) {
 			//save document
 			var document = await saveDocument(patientId, req.body.url, req.body.userId);
@@ -197,14 +197,14 @@ async function uploadFile(req, res) {
 				if (req.files.thumbnail.mimetype == 'text/plain') {
 					isTextFile = true;
 				}
-				bookService.form_recognizer(patientId, docId, req.body.containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
+				bookService.form_recognizer(patientId, docId, containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
 				let docIdEnc = crypt.encrypt(docId);
 				res.status(200).send({ message: "Done", docId: docIdEnc })
 				
 
 			} else {
 				//delete blob
-				var data5 = await f29azureService.deleteBlobsInFolder(req.body.containerName, req.body.url);
+				var data5 = await f29azureService.deleteBlobsInFolder(containerName, req.body.url);
 				insights.error('error saving the document');
 				res.status(500).send({ message: `Error` })
 			}
@@ -223,7 +223,9 @@ async function uploadFile(req, res) {
 async function uploadFileWizard(req, res) {
 	if (req.files != null) {
 		let patientId = crypt.decrypt(req.params.patientId);
-		var data1 = await saveBlob(req.body.containerName, req.body.url, req.files.thumbnail);
+		// Calcular containerName desde patientId encriptado (ignorar lo que envía el cliente)
+		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
+		var data1 = await saveBlob(containerName, req.body.url, req.files.thumbnail);
 		if (data1) {
 			//save document
 			var document = await saveDocument(patientId, req.body.url, req.body.userId);
@@ -239,12 +241,12 @@ async function uploadFileWizard(req, res) {
 				if (req.files.thumbnail.mimetype == 'text/plain') {
 					isTextFile = true;
 				}
-				let reponse = await bookService.form_recognizerwizard(patientId, docId, req.body.containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
+				let reponse = await bookService.form_recognizerwizard(patientId, docId, containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
 				let docIdEnc = crypt.encrypt(docId);
 				res.status(200).send({ message: reponse.msg, docId: docIdEnc })
 			} else {
 				//delete blob
-				var data5 = await f29azureService.deleteBlobsInFolder(req.body.containerName, req.body.url);
+				var data5 = await f29azureService.deleteBlobsInFolder(containerName, req.body.url);
 				insights.error('error saving the document');
 				res.status(500).send({ message: `Error` })
 			}
@@ -277,7 +279,7 @@ async function continueanalizedocs(req, res) {
 		console.log(document.dataFile.url);
 		document.docId = crypt.decrypt(document.docId);
 		let url2 = document.dataFile.url.replace(/\/[^\/]*$/, '/extracted_translated.txt');
-		let containerName = req.params.patientId.substr(1).toString();
+		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 		let urlsummary = document.dataFile.url.replace(/\/[^\/]*$/, '/summary_translated.txt');
   
 		try {
@@ -380,6 +382,8 @@ function updateDocumentStatus(documentId, status) {
 
 async function trySummarize(req, res) {
 	let patientId = crypt.decrypt(req.params.patientId);
+	// Calcular containerName desde patientId encriptado
+	let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 	//create blob
 	var document = await findDocument(req.body.docId);
 	if (document) {
@@ -393,7 +397,7 @@ async function trySummarize(req, res) {
 				medicalLevel = user.medicalLevel;
 			}
 
-			langchain.processDocument(patientId, req.body.containerName, document.url, req.body.docId, req.body.docName, req.body.userId, true, medicalLevel);
+			langchain.processDocument(patientId, containerName, document.url, req.body.docId, req.body.docName, req.body.userId, true, medicalLevel);
 			res.status(200).send({ message: "Done", docId: req.body.docId })
 		}else{
 			insights.error("Error 1 trySummarize");
@@ -409,11 +413,13 @@ async function trySummarize(req, res) {
 
 async function summarySuggest(req, res) {
 	let patientId = crypt.decrypt(req.params.patientId);
+	// Calcular containerName desde patientId encriptado
+	let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 	let documentId = crypt.decrypt(req.params.documentId);
 	var document = await findDocument(documentId);
 	if (document) {
 		if(patientId == document.createdBy){
-			let suggestions = await langchain.summarySuggestions(patientId, req.body.containerName, document.url);
+			let suggestions = await langchain.summarySuggestions(patientId, containerName, document.url);
 			res.status(200).send({ message: "Done", docId: req.params.documentId, suggestions: suggestions})
 		}else{
 			console.log("Error 1")
@@ -461,7 +467,7 @@ async function anonymizeDocument(req, res) {
 }
 
 function deleteSummary(req, res) {
-	let containerName = req.params.patientId.substr(1);
+	let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 	let patientId = crypt.decrypt(req.params.patientId);
 	Patient.findById(patientId, async (err, patientdb) => {
 		if (err){

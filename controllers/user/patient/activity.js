@@ -80,7 +80,7 @@ async function getRecentActivity(req, res) {
     const userMap = new Map(users.map(user => [user._id.toString(), user]));
 
     // Obtener los resúmenes de los documentos
-    const containerName = req.params.patientId.substr(1);
+    const containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
     const documentSummaries = await Promise.all(recentDocs.map(async doc => {
       try {
         //const summaryUrl = doc.url.replace(/\/[^\/]*$/, '/summary_translated.txt');
@@ -161,7 +161,7 @@ async function getRecentActivity(req, res) {
         const responseLanguage = user.preferredResponseLanguage || user.lang;
 
         const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-        const { gemini15flash_2 } = await langchain.createModels(projectName, 'gemini15flash_2');
+        const { gemini3propreview } = await langchain.createModels(projectName, 'gemini3propreview');
 
         // Actualizar lastUpdated
         const now = new Date();
@@ -244,7 +244,7 @@ async function getRecentActivity(req, res) {
             Devuelve solo el HTML en ${responseLanguage}, sin markdown ni otros formatos.`;
 
             const messages = [new HumanMessage({ content: promptText })];
-            const summary = await gemini15flash_2.invoke(messages);
+            const summary = await gemini3propreview.invoke(messages);
             summaries.push(summary.content.replace(/```html/g, '').replace(/```/g, ''));
         }
 
