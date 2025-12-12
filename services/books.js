@@ -374,8 +374,7 @@ async function anonymizeDocument(document) {
 			if (userId != null) {
 				userId = crypt.encrypt(userId.toString());
 				let patientId = document.createdBy.toString();
-				let idencrypt = crypt.encrypt(patientId);
-				let containerName = (idencrypt).substr(1);
+				let containerName = crypt.getContainerName(patientId);
 				let filename = document.url.split("/").pop();
 				setStateAnonymizedDoc(document._id, 'inProcess')
 				let docId = document._id.toString();
@@ -482,7 +481,8 @@ async function callNavigator(req, res) {
 	try{
 		var index = crypt.decrypt(req.body.index);
 		var patientId = req.body.index;
-		var containerName = req.body.containerName;
+		// Calcular containerName desde patientId encriptado (usar req.params.patientId)
+		var containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 		var content = req.body.context;
 		var docs = req.body.docs;
 		

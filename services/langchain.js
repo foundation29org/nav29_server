@@ -127,33 +127,27 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           break;
-        case 'gemini15pro_2':
+        case 'gemini25pro':
           model = new ChatGoogleGenerativeAI({
             model: "gemini-2.5-pro",
-            project: "nav29-21389",
-            location: "europe-southwest1",
             apiKey: config.GOOGLE_API_KEY,
             temperature: 0,
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });
           break;
-        case 'gemini15flash_2':
+        case 'gemini3propreview':
           model = new ChatGoogleGenerativeAI({
-            model: "gemini-1.5-flash-002",
-            project: "nav29-21389",
-            location: "europe-southwest1",
+            model: "gemini-3-pro-preview",
             apiKey: config.GOOGLE_API_KEY,
             temperature: 0,
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });
           break;
-        case 'gemini2flash_thinking_exp':
+        case 'gemini25flash':
           model = new ChatGoogleGenerativeAI({
-            model: "gemini-2.0-flash-thinking-exp-1219",//gemini-2.0-flash-thinking-exp-01-21
-            project: "nav29-21389",
-            location: "europe-southwest1",
+            model: "gemini-flash-latest",
             apiKey: config.GOOGLE_API_KEY,
             temperature: 0,
             timeout: 140000,
@@ -948,11 +942,10 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { gemini15pro_2} = createModels(projectName, 'gemini15pro_2');
+      let { gemini3propreview } = createModels(projectName, 'gemini3propreview');
 
-      // Decrypt the patientId
-      const patientIdEncrypted = crypt.encrypt(patientId);
-      const containerName = patientIdEncrypted.substr(1)
+      // Obtener nombre del contenedor Azure para este paciente
+      const containerName = crypt.getContainerName(patientId);
 
       // Get all the verified events for this patient
       const events = await getAllEvents(patientId);
@@ -1005,7 +998,7 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
       if (tokens > 2000000) {
         throw new Error("Input exceeds maximum token limit for available models.");
       } else{
-        selectedModel = gemini15pro_2; // Gemini 2.0 Flash, hasta 1M tokens
+        selectedModel = gemini3propreview; // Gemini 2.5 Pro
       } 
 
     let medical_level_text = "";
@@ -1306,9 +1299,8 @@ async function extractInitialEvents(patientId, ogLang) {
     let { azuregpt4o} = createModels(projectName, 'azuregpt4o');
     try {
       // Get all the documents for this patient
-      // Decrypt the patientId
-      const patientIdEncrypted = crypt.encrypt(patientId);
-      const containerName = patientIdEncrypted.substr(1)
+      // Obtener nombre del contenedor Azure para este paciente
+      const containerName = crypt.getContainerName(patientId);
       // Get all the summaries for this patient
       // Initialize summaries array
       let summaries = [];
@@ -1352,10 +1344,15 @@ async function extractInitialEvents(patientId, ogLang) {
           eventJson = JSON.parse(extractedEvents.content);
         } catch (error) {
           console.log(error)
-          // Sometimes the .text begins with '''json and ends with ''', so we need to remove these before parsing
-          if (extractedEvents.startsWith("```json") && extractedEvents.endsWith("```")) {
-            extractedEvents = extractedEvents.slice(7, -3);
-            eventJson = JSON.parse(extractedEvents);
+          // Sometimes the .content begins with ```json and ends with ```, so we need to remove these before parsing
+          let content = extractedEvents.content || '';
+          if (content.startsWith("```json") && content.endsWith("```")) {
+            content = content.slice(7, -3).trim();
+            eventJson = JSON.parse(content);
+          } else if (content.startsWith("```") && content.endsWith("```")) {
+            // Handle case where it's just ``` without json tag
+            content = content.slice(3, -3).trim();
+            eventJson = JSON.parse(content);
           } else {
             eventJson = [
               {

@@ -202,9 +202,9 @@ async function processDocs(docs, containerName) {
 }
 
 async function curateContext(context, memories, containerName, docs, question) {
-  const { gemini2flash_thinking_exp } = createModels('default', 'gemini2flash_thinking_exp');//gemini15flash_2
+  const { gemini25pro } = createModels('default', 'gemini25pro');
   const contextTemplate = await pull('foundation29/context_curation_base_v1');
-  const runnable = contextTemplate.pipe(gemini2flash_thinking_exp);
+  const runnable = contextTemplate.pipe(gemini25pro);
   // Let's process the data first
   let docsSummaries = await processDocs(docs, containerName);
   let contextContent = context.map(c => `${c.role}: ${JSON.stringify(c.content)}`).join('\n\n'); // fix

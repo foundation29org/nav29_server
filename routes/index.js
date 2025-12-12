@@ -212,6 +212,7 @@ api.get('/gettoken/:userId', auth.isAuth(roles.All), checkApiKey, pubsubCtrl.get
 
 //azureservices
 api.get('/getAzureBlobSasTokenWithContainer/:containerName', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenWithContainer)
+api.get('/getAzureBlobSasTokenForPatient/:patientId', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenForPatient)
 
 // share
 api.get('/share/patient/generalshare/:patientId', auth.isAuthPatient(roles.All), checkApiKey, openShareCtrl.getGeneralShare)

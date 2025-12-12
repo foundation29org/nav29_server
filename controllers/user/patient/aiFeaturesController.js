@@ -258,6 +258,8 @@ async function handleDxGptRequest(req, res) {
       description = await buildContextString(raw, patientId);
     }
 
+    console.log('description', description);
+
     const body = {
       description,
       myuuid   : generatePatientUUID(patientId),

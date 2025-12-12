@@ -16,69 +16,67 @@ const jwt = require('jwt-simple')
 
 function login(req, res) {
 	// attempt to authenticate user
-	req.body.email = (req.body.email).toLowerCase();
-	User.getAuthenticated(req.body.email, req.body.uid, function (err, user, reason) {
-		if (err) return res.status(500).send({ message: err })
+	const email = (req.body.email).toLowerCase();
+	const firebaseUid = req.body.uid;
+	const mode = req.body.mode;
+	
+	User.getAuthenticatedByFirebase(email, firebaseUid, function (err, user, reason) {
+		if (err) {
+			insights.error(err);
+			return res.status(500).send({ message: err })
+		}
+		
 		// login was successful if we have a user
 		if (user) {
-			// handle login success
 			return res.status(200).send({
 				message: 'You have successfully logged in',
 				token: serviceAuth.createToken(user),
 				lang: user.lang
 			})
-		} else {
-			if(req.body.mode=='register'){
-				req.body.email = (req.body.email).toLowerCase();
-				const user = new User({
-					email: req.body.email,
-					role: req.body.role,
-					userName: req.body.name,
-					lastName: req.body.lastName,
-					password: req.body.uid,
-					firebaseUid: req.body.uid,
-					provider: req.body.firebase.sign_in_provider,
-					emailVerified: req.body.email_verified,
-					lang: req.body.lang,
-					picture: req.body.picture
+		}
+		
+		// Usuario no encontrado
+		if (reason === User.failedLogin.NOT_FOUND) {
+			// Solo crear cuenta si está en modo registro
+			if (mode === 'register') {
+				const newUser = new User({
+					email: email,
+					firebaseUid: firebaseUid,
+					role: req.body.role || 'Unknown',
+					userName: req.body.name || '',
+					lastName: req.body.lastName || '',
+					provider: req.body.firebase?.sign_in_provider || '',
+					emailVerified: req.body.email_verified || false,
+					lang: req.body.lang || 'en',
+					picture: req.body.picture || ''
 				})
 				
-				User.findOne({ 'email': req.body.email }, function (err, user2) {
-					if (err){
+				newUser.save((err, userSaved) => {
+					if (err) {
 						insights.error(err);
 						return res.status(500).send({ message: `Error creating the user: ${err}` })
 					}
-					if (!user2) {
-						user.save(async (err, userSaved) => {
-							if (err){
-								insights.error(err);
-								return res.status(500).send({ message: `Error creating the user: ${err}` })
-							}
-							if(userSaved){
-								return res.status(200).send({
-									message: 'You have successfully logged in',
-									token: serviceAuth.createToken(userSaved),
-									lang: userSaved.lang
-								})
-							}else{
-								return res.status(500).send({ message: `Error creating the user: ${err}` })
-							}
-							
-						})
-					} else {
+					if (userSaved) {
 						return res.status(200).send({
 							message: 'You have successfully logged in',
-							token: serviceAuth.createToken(user2),
-							lang: user2.lang
+							token: serviceAuth.createToken(userSaved),
+							lang: userSaved.lang
 						})
+					} else {
+						return res.status(500).send({ message: 'Error creating the user' })
 					}
 				})
-			}else{
-				return res.status(500).send({ message: `Login failed` })
+			} else {
+				// Usuario no existe y no está en modo registro
+				return res.status(401).send({ message: 'Not found' })
 			}
-			
+		} else if (reason === User.failedLogin.BLOCKED) {
+			return res.status(403).send({ message: 'Account blocked' })
+		} else if (reason === User.failedLogin.MAX_ATTEMPTS) {
+			return res.status(429).send({ message: 'Too many login attempts. Account temporarily locked.' })
+		} else {
+			return res.status(401).send({ message: 'Login failed' })
 		}
-
 	})
 }
 
