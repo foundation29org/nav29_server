@@ -52,6 +52,11 @@ const Lang = require('../../models/lang')
  */
 function getLangs (req, res){
 	Lang.find({}, function(err, langs) {
+    if (err) {
+      console.error('Error al obtener lenguajes:', err);
+      return res.status(500).json({ error: 'Error al obtener lenguajes', message: err.message });
+    }
+    
     var listLangs = [];
 
 		if(langs!=undefined){

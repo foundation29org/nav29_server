@@ -14,6 +14,46 @@ const bcrypt = require('bcrypt-nodejs')
 const insights = require('../../services/insights')
 const jwt = require('jwt-simple')
 
+// Helper function para obtener opciones de cookie según el entorno
+function getCookieOptions() {
+	const isProduction = process.env.NODE_ENV === 'production' || process.env.NODE_ENV !== 'development';
+	return {
+		httpOnly: true,
+		secure: isProduction, // Solo HTTPS en producción
+		sameSite: isProduction ? 'strict' : 'lax', // Strict en producción, Lax en desarrollo
+		maxAge: 30 * 24 * 60 * 60 * 1000 // 30 días para refresh token
+	};
+}
+
+// Helper function para establecer cookies de autenticación
+function setAuthCookies(res, accessToken, refreshToken) {
+	const cookieOptions = getCookieOptions();
+	
+	// Establecer access token (30 minutos)
+	res.cookie('access_token', accessToken, {
+		...cookieOptions,
+		maxAge: 30 * 60 * 1000 // 30 minutos para access token
+	});
+	
+	// Establecer refresh token (30 días)
+	res.cookie('refresh_token', refreshToken, cookieOptions);
+}
+
+// Helper function para limpiar cookies de autenticación (logout)
+function clearAuthCookies(res) {
+	const cookieOptions = getCookieOptions();
+	
+	// Limpiar cookies estableciendo valores vacíos y expiración en el pasado
+	res.cookie('access_token', '', {
+		...cookieOptions,
+		maxAge: 0
+	});
+	res.cookie('refresh_token', '', {
+		...cookieOptions,
+		maxAge: 0
+	});
+}
+
 function login(req, res) {
 	// attempt to authenticate user
 	const email = (req.body.email).toLowerCase();
@@ -28,9 +68,16 @@ function login(req, res) {
 		
 		// login was successful if we have a user
 		if (user) {
+			const accessToken = serviceAuth.createToken(user);
+			const refreshToken = serviceAuth.createRefreshToken(user);
+			
+			// Establecer cookies de autenticación
+			setAuthCookies(res, accessToken, refreshToken);
+			
+			// También devolver en body para compatibilidad durante migración
 			return res.status(200).send({
 				message: 'You have successfully logged in',
-				token: serviceAuth.createToken(user),
+				token: accessToken, // Mantener por compatibilidad temporal
 				lang: user.lang
 			})
 		}
@@ -57,9 +104,15 @@ function login(req, res) {
 						return res.status(500).send({ message: `Error creating the user: ${err}` })
 					}
 					if (userSaved) {
+						const accessToken = serviceAuth.createToken(userSaved);
+						const refreshToken = serviceAuth.createRefreshToken(userSaved);
+						
+						// Establecer cookies de autenticación
+						setAuthCookies(res, accessToken, refreshToken);
+						
 						return res.status(200).send({
 							message: 'You have successfully logged in',
-							token: serviceAuth.createToken(userSaved),
+							token: accessToken, // Mantener por compatibilidad temporal
 							lang: userSaved.lang
 						})
 					} else {
@@ -459,12 +512,17 @@ function areLocationsEqual(loc1, locationsArray) {
 		}
 		User.findByIdAndUpdate(userId, { role: role, medicalLevel: medicalLevel }, { new: true }, (err, userUpdated) => {
 			if (userUpdated) {
+				const accessToken = serviceAuth.createToken(userUpdated);
+				const refreshToken = serviceAuth.createRefreshToken(userUpdated);
+				
+				// Establecer cookies de autenticación
+				setAuthCookies(res, accessToken, refreshToken);
+				
 				res.status(200).send({
 					message: 'You have successfully logged in',
-					token: serviceAuth.createToken(userUpdated),
+					token: accessToken,
 					lang: userUpdated.lang
 				})
-				//res.status(200).send({ message: 'Updated' })
 			} else {
 				console.log(err);
 				res.status(200).send({ message: 'error' })
@@ -477,12 +535,17 @@ function areLocationsEqual(loc1, locationsArray) {
 		var role = req.body.role;
 		User.findByIdAndUpdate(userId, { role: role }, { new: true }, (err, userUpdated) => {
 			if (userUpdated) {
+				const accessToken = serviceAuth.createToken(userUpdated);
+				const refreshToken = serviceAuth.createRefreshToken(userUpdated);
+				
+				// Establecer cookies de autenticación
+				setAuthCookies(res, accessToken, refreshToken);
+				
 				res.status(200).send({
 					message: 'You have successfully logged in',
-					token: serviceAuth.createToken(userUpdated),
+					token: accessToken,
 					lang: userUpdated.lang
 				})
-				//res.status(200).send({ message: 'Updated' })
 			} else {
 				console.log(err);
 				res.status(200).send({ message: 'error' })
@@ -533,17 +596,102 @@ function areLocationsEqual(loc1, locationsArray) {
 		var medicalLevel = req.body.medicalLevel;
 		User.findByIdAndUpdate(userId, { lang: lang, preferredResponseLanguage: preferredResponseLanguage, role: role, medicalLevel: medicalLevel }, { new: true }, (err, userUpdated) => {
 			if (userUpdated) {
+				const accessToken = serviceAuth.createToken(userUpdated);
+				const refreshToken = serviceAuth.createRefreshToken(userUpdated);
+				
+				// Establecer cookies de autenticación
+				setAuthCookies(res, accessToken, refreshToken);
+				
 				res.status(200).send({
 					message: 'You have successfully logged in',
-					token: serviceAuth.createToken(userUpdated),
+					token: accessToken,
 					lang: userUpdated.lang
 				})
-				//res.status(200).send({ message: 'Updated' })
 			} else {
 				console.log(err);
 				res.status(200).send({ message: 'error' })
 			}
 		})
+	}
+
+	// Endpoint para refrescar tokens usando refresh token
+	function refreshToken(req, res) {
+		const refreshTokenValue = req.cookies?.refresh_token;
+		
+		if (!refreshTokenValue) {
+			return res.status(401).send({ message: 'No refresh token provided' });
+		}
+		
+		serviceAuth.decodeRefreshToken(refreshTokenValue)
+			.then(({ userId, user }) => {
+				const accessToken = serviceAuth.createToken(user);
+				const newRefreshToken = serviceAuth.createRefreshToken(user);
+				
+				// Establecer cookies de autenticación
+				setAuthCookies(res, accessToken, newRefreshToken);
+				
+				res.status(200).send({
+					message: 'Token refreshed successfully',
+					token: accessToken // Mantener por compatibilidad
+				});
+			})
+			.catch((error) => {
+				insights.error(error);
+				return res.status(error.status || 401).send({ message: error.message || 'Invalid refresh token' });
+			});
+	}
+
+	// Endpoint para obtener información de la sesión actual
+	function getSession(req, res) {
+		// Solo leer de cookie - más seguro para datos médicos
+		const token = req.cookies?.access_token;
+		
+		if (!token) {
+			return res.status(401).send({ message: 'No token provided' });
+		}
+		
+		const jwt = require('jwt-simple');
+		const config = require('../../config');
+		
+		try {
+			const payload = jwt.decode(token, config.SECRET_TOKEN);
+			if (payload.type !== 'access') {
+				return res.status(401).send({ message: 'Invalid token type' });
+			}
+			
+			let userId = crypt.decrypt(payload.sub);
+			// Incluir _id porque lo necesitamos para encriptarlo y devolverlo como userId
+			User.findById(userId, { "password": false, "__v": false, "loginAttempts": false, "lastLogin": false }, (err, user) => {
+				if (err) {
+					insights.error(err);
+					return res.status(500).send({ message: `Error making the request: ${err}` });
+				}
+				if (!user) {
+					return res.status(404).send({ message: 'User not found' });
+				}
+				
+				res.status(200).send({
+					userId: crypt.encrypt(user._id.toString()),
+					role: user.role,
+					lang: user.lang,
+					preferredResponseLanguage: user.preferredResponseLanguage || user.lang,
+					medicalLevel: user.medicalLevel,
+					userName: user.userName,
+					lastName: user.lastName,
+					email: user.email
+				});
+			});
+		} catch (err) {
+			return res.status(401).send({ message: 'Invalid token' });
+		}
+	}
+
+	// Endpoint para logout
+	function logout(req, res) {
+		// Limpiar cookies de autenticación
+		clearAuthCookies(res);
+		
+		res.status(200).send({ message: 'Logged out successfully' });
 	}
 
 module.exports = {
@@ -563,5 +711,8 @@ module.exports = {
 	setRole,
 	getRoleMedicalLevel,
 	setMedicalLevel,
-	saveSettings
+	saveSettings,
+	refreshToken,
+	getSession,
+	logout
 }

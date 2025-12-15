@@ -485,6 +485,7 @@ async function callNavigator(req, res) {
 		var containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 		var content = req.body.context;
 		var docs = req.body.docs;
+		var originalQuestion = req.body.question;
 		
 		// Get user language - try from request body first, then from user model
 		let userLang = req.body.lang || req.body.userLang || 'en';
@@ -497,6 +498,46 @@ async function callNavigator(req, res) {
 				}
 			} catch (error) {
 				console.log('Error getting user language:', error);
+			}
+		}
+		
+		// Detectar idioma del mensaje y traducir si es necesario (usando las mismas funciones que el cliente)
+		let questionToProcess = originalQuestion;
+		if (originalQuestion && originalQuestion.length > 0) {
+			try {
+				// Detectar idioma usando Microsoft Translator API (igual que el cliente)
+				const detectedLangResult = await translate.getDetectLanguage2(originalQuestion);
+				
+				// Verificar que la respuesta sea válida y tenga el formato esperado
+				if (detectedLangResult && Array.isArray(detectedLangResult) && detectedLangResult[0] && detectedLangResult[0].language) {
+					const detectedLanguage = detectedLangResult[0].language;
+					const confidenceScore = detectedLangResult[0].score || 0;
+					const confidenceThreshold = 0.7;
+					
+					// Si el idioma detectado no es inglés y tiene confianza suficiente, traducir a inglés
+					if (detectedLanguage !== 'en' && confidenceScore >= confidenceThreshold) {
+						const info = [{ "Text": originalQuestion }];
+						const translatedResult = await translate.getTranslationDictionary2(info, detectedLanguage);
+						
+						if (translatedResult && !translatedResult.error && translatedResult[0] && translatedResult[0].translations && translatedResult[0].translations[0]) {
+							questionToProcess = translatedResult[0].translations[0].text;
+							console.log(`Translated question from ${detectedLanguage} to en: ${originalQuestion.substring(0, 50)}... -> ${questionToProcess.substring(0, 50)}...`);
+						} else {
+							console.log('Translation failed, using original question');
+						}
+					} else if (confidenceScore < confidenceThreshold) {
+						console.log(`Low confidence in language detection (${confidenceScore}), using original question`);
+					} else {
+						console.log(`Question is already in English, using original`);
+					}
+				} else {
+					console.log('Language detection failed or invalid response, using original question');
+				}
+			} catch (error) {
+				console.log('Error detecting/translating language:', error);
+				insights.error(error);
+				// En caso de error, usar el mensaje original
+				questionToProcess = originalQuestion;
 			}
 		}
 		
@@ -517,7 +558,7 @@ async function callNavigator(req, res) {
 			messages: [
 				{
 				role: "user",
-				content: req.body.question,
+				content: questionToProcess,
 				},
 			],
 			},

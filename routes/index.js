@@ -87,6 +87,9 @@ const checkApiKey = (req, res, next) => {
 // user routes, using the controller user, this controller has methods
 //routes for login-logout
 api.post('/login', deleteAccountCtrl.verifyToken, userCtrl.login)
+api.post('/refresh', userCtrl.refreshToken)
+api.get('/session', auth.isAuth(roles.All), checkApiKey, userCtrl.getSession)
+api.post('/logout', userCtrl.logout)
 
 api.get('/users/lang/:userId', auth.isAuth(roles.All), checkApiKey, userCtrl.getUserLang)
 api.put('/users/lang/:userId', auth.isAuth(roles.All), checkApiKey, userCtrl.changeLang)
