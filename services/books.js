@@ -545,17 +545,44 @@ async function callNavigator(req, res) {
 		const projectName = `AGENT - ${config.LANGSMITH_PROJECT} - ${patientId}`;
 		console.log("projectName: ", projectName);
 		console.log("config.LANGSMITH_API_KEY: ", config.LANGSMITH_API_KEY);
-		const client2 = new Client({
-			apiUrl: "https://api.smith.langchain.com",
-			apiKey: config.LANGSMITH_API_KEY,
-		});
+		
+		// Crear tracer solo si la API key es válida
+		let tracer = null;
+		if (config.LANGSMITH_API_KEY && config.LANGSMITH_API_KEY.trim() !== '') {
+			try {
+				const client2 = new Client({
+					apiUrl: "https://api.smith.langchain.com",
+					apiKey: config.LANGSMITH_API_KEY,
+				});
 
-		let tracer = new LangChainTracer({
-			projectName: projectName,
-			client2,
-		});
+				tracer = new LangChainTracer({
+					projectName: projectName,
+					client: client2,
+				});
+			} catch (error) {
+				console.warn('LangSmith tracer initialization failed, continuing without tracer:', error.message);
+				insights.error({ message: 'LangSmith tracer initialization failed', error: error });
+				tracer = null;
+			}
+		} else {
+			console.warn('LANGSMITH_API_KEY not configured, continuing without tracer');
+		}
 		//console.log('client2:', client2);
-		const resAgent = await graph.invoke({
+		
+		// Log para debugging: identificar llamadas duplicadas
+		const requestId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+		console.log(`[${requestId}] Invoking agent with questionToProcess:`, questionToProcess.substring(0, 100));
+		console.log(`[${requestId}] Request details:`, { 
+			userId: req.body.userId?.substring(0, 20), 
+			patientId: patientId?.substring(0, 20),
+			timestamp: new Date().toISOString()
+		});
+		
+		// Enviar respuesta "Processing" inmediatamente - la respuesta real viene por WebPubSub
+		res.status(200).send({ "action": "Processing", "message": "Response will be sent via WebPubSub" });
+		
+		// Invocar el agente de forma asíncrona - la respuesta se enviará por WebPubSub
+		graph.invoke({
 			messages: [
 				{
 				role: "user",
@@ -574,17 +601,11 @@ async function callNavigator(req, res) {
 				userLang: userLang,
 				pubsubClient: pubsub
 			},
-			callbacks: [tracer] 
+			callbacks: tracer ? [tracer] : [] 
+		}).catch(error => {
+			console.error('Error invoking agent:', error);
+			insights.error({ message: 'Error invoking agent', error: error });
 		});
-		
-		let lastMessage = resAgent.messages[resAgent.messages.length - 1].content;
-		// console.log(lastMessage);
-
-		let sampleResp = {
-			"action": "Question",
-			"data": lastMessage
-		}
-		res.status(200).send(sampleResp);
 	} catch (error) {
 		console.error(error);
 		insights.error(error);

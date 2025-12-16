@@ -151,7 +151,6 @@ async function prettify(state, config) {
   It removes the ```html ``` tags and the ``` ``` tags.
   */
   const { azuregpt4o } = createModels('default', 'azuregpt4o');
-  console.log('azuregpt4o:', azuregpt4o);
   output = state.messages[state.messages.length - 1];
   
   // Check if this is a TrialGPT response - if so, use it directly without reformatting
@@ -168,7 +167,6 @@ async function prettify(state, config) {
   // For other content, proceed with normal formatting
   const htmlFormatter = await pull("foundation29/html_formatter_v1");
   const runnable = htmlFormatter.pipe(azuregpt4o);
-  console.log('prettify:');
   const formattedOutput = await runnable.invoke({ content: output.content });
   // TODO: Also use the medicalLevel variable to improve the readability of the output
   // Clean the ```html ``` tags

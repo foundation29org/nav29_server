@@ -36,9 +36,7 @@ function sendToUser (userId, json_message){
     try {
       const groupClient = serviceClient.group(userId);    
       const message = JSON.stringify(json_message);
-      console.log(`Sending WebPubSub message to user ${userId}:`, json_message);
       await groupClient.sendToAll(message);
-      console.log(`WebPubSub message sent successfully to user ${userId}`);
     } catch (error) {
       console.error(`Error sending WebPubSub message to user ${userId}:`, error);
       insights.error({ message: `Error sending WebPubSub message to user ${userId}`, error: error });
