@@ -1,6 +1,7 @@
 'use strict'
 
 const serviceAuth = require('../services/auth')
+const insights = require('../services/insights')
 
 // Función helper para extraer token SOLO de cookie (más seguro)
 // Las cookies HttpOnly no son accesibles desde JavaScript, protegiendo contra XSS
@@ -27,6 +28,10 @@ function isAuth (roles){
 				next()
 			})
 			.catch(response => {
+				// Rastrear errores inesperados (no 401/403 que son esperados)
+				if (response.status !== 401 && response.status !== 403) {
+					insights.error({ message: 'Unexpected auth error in isAuth', error: response });
+				}
 				//res.status(response.status)
 				return res.status(response.status).send({message: response.message})
 			})
@@ -50,6 +55,10 @@ function isAuthOwnerPatient (roles){
 				next()
 			})
 			.catch(response => {
+				// Rastrear errores inesperados (no 401/403 que son esperados)
+				if (response.status !== 401 && response.status !== 403) {
+					insights.error({ message: 'Unexpected auth error in isAuth', error: response });
+				}
 				//res.status(response.status)
 				return res.status(response.status).send({message: response.message})
 			})
@@ -73,6 +82,10 @@ function isAuthPatient (roles){
 				next()
 			})
 			.catch(response => {
+				// Rastrear errores inesperados (no 401/403 que son esperados)
+				if (response.status !== 401 && response.status !== 403) {
+					insights.error({ message: 'Unexpected auth error in isAuth', error: response });
+				}
 				//res.status(response.status)
 				return res.status(response.status).send({message: response.message})
 			})

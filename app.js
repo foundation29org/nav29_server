@@ -12,6 +12,7 @@ const app = express()
 app.use(compression());
 app.use(cookieParser());
 const serviceEmail = require('./services/email')
+const insights = require('./services/insights')
 const api = require ('./routes')
 const path = require('path')
 const config= require('./config')
@@ -70,6 +71,7 @@ function setCrossDomain(req, res, next) {
       serviceEmail.sendMailControlCall(requestInfo)
     } catch (emailError) {
       console.log('Fail sending email');
+      insights.error({ message: 'Failed to send control email in CORS check', error: emailError });
     }
   }
   res.status(401).json({ error: 'Origin not allowed' });

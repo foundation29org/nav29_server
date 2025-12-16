@@ -59,7 +59,7 @@ async function translateText(text, deepl_code, doc_lang) {
 		if (deepl_code == null) {
 			// Do an Inverse Translation
 			const info = [{ "Text": text }];
-			const TranslatedText = await translate.getTranslationDictionary2(info, doc_lang);
+			const TranslatedText = await translate.getTranslationDictionary(info, doc_lang);
 			if (TranslatedText.error) {
 				return text;
 			} else {
@@ -71,6 +71,7 @@ async function translateText(text, deepl_code, doc_lang) {
 		}
 	} catch (error) {
 		console.log(error);
+		insights.error({ message: 'Error in translateToEnglish', error: error });
 		return text;
 	}
 
@@ -145,7 +146,7 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			  console.error('Error detecting language:', error);
 			  throw error; // Propaga el error para ser manejado por el catch principal
 			}
-			/*let lang_response = await translate.getDetectLanguage2(content)
+			/*let lang_response = await translate.getDetectLanguage(content)
 			  let doc_lang = lang_response[0].language;*/
 			let deepl_code = null;
 			let translatedContent = null;
@@ -265,7 +266,7 @@ async function form_recognizerwizard(patientId, documentId, containerName, url, 
 			  console.error('Error detecting language:', error);
 			  throw error; // Propaga el error para ser manejado por el catch principal
 			}
-			/*let lang_response = await translate.getDetectLanguage2(content)
+			/*let lang_response = await translate.getDetectLanguage(content)
 			  let doc_lang = lang_response[0].language;*/
 			let deepl_code = null;
 			let translatedContent = null;
@@ -506,7 +507,7 @@ async function callNavigator(req, res) {
 		if (originalQuestion && originalQuestion.length > 0) {
 			try {
 				// Detectar idioma usando Microsoft Translator API (igual que el cliente)
-				const detectedLangResult = await translate.getDetectLanguage2(originalQuestion);
+				const detectedLangResult = await translate.getDetectLanguage(originalQuestion);
 				
 				// Verificar que la respuesta sea válida y tenga el formato esperado
 				if (detectedLangResult && Array.isArray(detectedLangResult) && detectedLangResult[0] && detectedLangResult[0].language) {
@@ -517,7 +518,7 @@ async function callNavigator(req, res) {
 					// Si el idioma detectado no es inglés y tiene confianza suficiente, traducir a inglés
 					if (detectedLanguage !== 'en' && confidenceScore >= confidenceThreshold) {
 						const info = [{ "Text": originalQuestion }];
-						const translatedResult = await translate.getTranslationDictionary2(info, detectedLanguage);
+						const translatedResult = await translate.getTranslationDictionary(info, detectedLanguage);
 						
 						if (translatedResult && !translatedResult.error && translatedResult[0] && translatedResult[0].translations && translatedResult[0].translations[0]) {
 							questionToProcess = translatedResult[0].translations[0].text;
@@ -623,6 +624,7 @@ async function getInitialEvents(req, res) {
 
 	} catch (error) {
 		console.log(`Error:`, error);
+		insights.error({ message: 'Error in extractInitialEvents', error: error });
 		res.status(200).send(initialEvents);
 	}
 }

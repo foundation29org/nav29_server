@@ -316,6 +316,7 @@ function getUserEmail(user) {
 				}
 			})
 		} catch (error) {
+			insights.error({ message: 'Error in getUserEmail', error: error });
 			resolve(null);
 		}
 	
@@ -338,6 +339,7 @@ function getUserEmailAndLand(user) {
 				}
 			})
 		} catch (error) {
+			insights.error({ message: 'Error in getUserEmailAndLand', error: error });
 			resolve(null);
 		}
 	
@@ -682,6 +684,7 @@ function areLocationsEqual(loc1, locationsArray) {
 				});
 			});
 		} catch (err) {
+			insights.error({ message: 'Error verifying token', error: err });
 			return res.status(401).send({ message: 'Invalid token' });
 		}
 	}

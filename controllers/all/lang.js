@@ -51,24 +51,42 @@ const Lang = require('../../models/lang')
  * ]
  */
 function getLangs (req, res){
+	// Verificar que la conexión a MongoDB esté lista
+	const { conndbaccounts } = require('../../db_connect');
+	const dbState = conndbaccounts.readyState;
+	
+	// Estados: 0 = desconectado, 1 = conectado, 2 = conectando, 3 = desconectando
+	if (dbState !== 1) {
+		// Retornar lista por defecto si MongoDB no está listo
+		const defaultLangs = [
+			{name: 'English', code: 'en'},
+			{name: 'Español,Castellano', code: 'es'},
+			{name: 'Deutsch', code: 'de'},
+			{name: 'Português', code: 'pt'},
+			{name: 'Français', code: 'fr'},
+			{name: 'Italiano', code: 'it'}
+		];
+		return res.status(200).send(defaultLangs);
+	}
+	
 	Lang.find({}, function(err, langs) {
-    if (err) {
-      console.error('Error al obtener lenguajes:', err);
-      return res.status(500).json({ error: 'Error al obtener lenguajes', message: err.message });
-    }
-    
-    var listLangs = [];
+		if (err) {
+			console.error('Error al obtener lenguajes:', err);
+			return res.status(500).json({ error: 'Error al obtener lenguajes', message: err.message });
+		}
+		
+		var listLangs = [];
 
 		if(langs!=undefined){
 			langs.forEach(function(lang) {
 				if(lang.code!='nl'){
 					listLangs.push({name:lang.name, code: lang.code});
 				}
-
 	    });
 		}
-    res.status(200).send(listLangs)
-  });
+		
+		res.status(200).send(listLangs)
+	});
 }
 
 module.exports = {

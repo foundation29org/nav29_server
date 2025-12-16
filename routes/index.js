@@ -2,6 +2,7 @@
 'use strict'
 
 const express = require('express')
+const insights = require('../services/insights')
 
 const userCtrl = require('../controllers/all/user')
 const patientCtrl = require('../controllers/user/patient')
@@ -61,6 +62,7 @@ function corsWithOptions(req, res, next) {
             serviceEmail.sendMailControlCall(requestInfo)
           } catch (emailError) {
             console.log('Fail sending email');
+            insights.error({ message: 'Failed to send control email in CORS check', error: emailError });
           }
           callback(new Error('Not allowed by CORS'));
       }
@@ -171,12 +173,9 @@ api.delete('/rarescope/delete/:patientId', auth.isAuthPatient(roles.All), checkA
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)
 
 //translations
-api.post('/getDetectLanguage', auth.isAuth(roles.All), checkApiKey, translationCtrl.getDetectLanguage)
-api.post('/translation', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationDictionary)
 api.post('/translationinvert', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationDictionaryInvert)
 api.post('/translationtimeline', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationTimeline)
 api.post('/deepltranslationinvert', auth.isAuth(roles.All), checkApiKey, translationCtrl.getdeeplTranslationDictionaryInvert)
-api.post('/translation/segments', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationSegments)
 
 //events
 api.post('/events/dates/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.getEventsDate)

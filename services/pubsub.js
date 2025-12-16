@@ -2,6 +2,7 @@ const config = require('../config')
 const { WebPubSubServiceClient } = require('@azure/web-pubsub');
 const jwt = require('jwt-simple');
 const crypt = require('./crypt');
+const insights = require('./insights');
 const hubName = config.WEBPUBSUB.HUB;
 const Endpoint = 'Endpoint=https://'+config.WEBPUBSUB.NAME+'.webpubsub.azure.com;AccessKey='+config.WEBPUBSUB.KEY+';Version=1.0;';
 
@@ -24,6 +25,7 @@ function getToken (req, res){
       });
     } catch (error) {
       console.error('Error getting WebPubSub token:', error);
+      insights.error(error);
       res.status(500).json({ message: 'Error getting token' });
     }
 })();
@@ -39,6 +41,7 @@ function sendToUser (userId, json_message){
       console.log(`WebPubSub message sent successfully to user ${userId}`);
     } catch (error) {
       console.error(`Error sending WebPubSub message to user ${userId}:`, error);
+      insights.error({ message: `Error sending WebPubSub message to user ${userId}`, error: error });
     }
 })();
 }
