@@ -69,8 +69,7 @@ async function callModel(
   const curatedContext = await curateContext(config.configurable.context, memories, config.configurable.containerName, config.configurable.docs, question);
   const model = baseModel.bindTools(TOOLS);
   const prompt = await SYSTEM_PROMPT_TEMPLATE.format({ systemTime: config.configurable.systemTime, curatedContext: curatedContext.content });
-  
-  
+
   if (config.configurable.context.length > 1) {
     let context = config.configurable.context.slice(1);
     let inputMessages = [];
@@ -154,14 +153,14 @@ async function prettify(state, config) {
   output = state.messages[state.messages.length - 1];
   
   // Check if this is a TrialGPT response - if so, use it directly without reformatting
-  if (/https:\/\/trialgpt\.app/.test(output.content) && /<a\s+href=/.test(output.content)) {
+  /*if (/https:\/\/trialgpt\.app/.test(output.content) && /<a\s+href=/.test(output.content)) {
     const cleanOutput = output.content.replace(
       /<a\s+href=(["'])https:\/\/trialgpt\.app\1(?![^>]*target=)/gi,
       '<a href="https://trialgpt.app" target="_blank"'
     );
     state.messages[state.messages.length - 1].content = cleanOutput;
     return state;
-  }
+  }*/
   
   
   // For other content, proceed with normal formatting
