@@ -129,8 +129,21 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 				// console.log(result); 
 	
 				if (result.status === 'failed') {
-					console.error('Error in analyzing document:', result.error);
-					content = "Error processing the document after multiple attempts. Please try again with other document.";
+					const errorDetails = result.error || { code: 'Unknown', message: 'Document analysis failed' };
+					console.error('Error in analyzing document:', errorDetails);
+					
+					// Detectar si es DOCX basándose en el filename
+					const isDocxFile = filename && (filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc'));
+					const errorCode = errorDetails.code || 'InternalServerError';
+					
+					// Si es DOCX y falla, lanzar error con key corto
+					if (isDocxFile && errorCode === 'InternalServerError') {
+						console.error('DOCX file failed to process:', filename);
+						throw new Error('messages.error.docx.convertToPdf');
+					}
+					
+					// Para otros tipos de archivo o errores, usar mensaje genérico
+					throw new Error('messages.error.document.processingFailed');
 				} else {
 					content = result.analyzeResult.content;
 				}
@@ -203,8 +216,19 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			insights.error(error);
 			const patientIdCrypt = crypt.encrypt(patientId);
 			let docIdEnc = crypt.encrypt(documentId);
-			let message2 = { "time": new Date().toISOString(), "docId": docIdEnc, "status": "failed", "filename": filename, "patientId": patientIdCrypt };
-			message2["error"] = error.toString();
+			
+			// Usar el mensaje del error si está disponible (ya será amigable si viene de nuestro manejo)
+			let errorMessage = error.message || error.toString();
+			
+			let message2 = { 
+				"time": new Date().toISOString(), 
+				"docId": docIdEnc, 
+				"status": "failed", 
+				"filename": filename, 
+				"patientId": patientIdCrypt,
+				"error": errorMessage
+			};
+			
 			pubsub.sendToUser(userId, message2);
 			try {
 				await updateDocStatus(documentId, 'failed');
@@ -248,8 +272,21 @@ async function form_recognizerwizard(patientId, documentId, containerName, url, 
 				// console.log(result); 
 	
 				if (result.status === 'failed') {
-					console.error('Error in analyzing document:', result.error);
-					content = "Error processing the document after multiple attempts. Please try again with other document.";
+					const errorDetails = result.error || { code: 'Unknown', message: 'Document analysis failed' };
+					console.error('Error in analyzing document (wizard):', errorDetails);
+					
+					// Detectar si es DOCX basándose en el filename
+					const isDocxFile = filename && (filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc'));
+					const errorCode = errorDetails.code || 'InternalServerError';
+					
+					// Si es DOCX y falla, lanzar error con key corto
+					if (isDocxFile && errorCode === 'InternalServerError') {
+						console.error('DOCX file failed to process (wizard):', filename);
+						throw new Error('messages.error.docx.convertToPdf');
+					}
+					
+					// Para otros tipos de archivo o errores, usar mensaje genérico
+					throw new Error('messages.error.document.processingFailed');
 				} else {
 					content = result.analyzeResult.content;
 				}
@@ -302,8 +339,19 @@ async function form_recognizerwizard(patientId, documentId, containerName, url, 
 			insights.error(error);
 			const patientIdCrypt = crypt.encrypt(patientId);
 			let docIdEnc = crypt.encrypt(documentId);
-			let message2 = { "time": new Date().toISOString(), "docId": docIdEnc, "status": "failed", "filename": filename, "patientId": patientIdCrypt };
-			message2["error"] = error.toString();
+			
+			// Usar el mensaje del error si está disponible (ya será amigable si viene de nuestro manejo)
+			let errorMessage = error.message || error.toString();
+			
+			let message2 = { 
+				"time": new Date().toISOString(), 
+				"docId": docIdEnc, 
+				"status": "failed", 
+				"filename": filename, 
+				"patientId": patientIdCrypt,
+				"error": errorMessage
+			};
+			
 			pubsub.sendToUser(userId, message2);
 			try {
 				await updateDocStatus(documentId, 'failed');
