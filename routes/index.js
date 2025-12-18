@@ -216,6 +216,10 @@ api.get('/gettoken/:userId', auth.isAuth(roles.All), checkApiKey, pubsubCtrl.get
 api.get('/getAzureBlobSasTokenWithContainer/:containerName', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenWithContainer)
 api.get('/getAzureBlobSasTokenForPatient/:patientId', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenForPatient)
 
+// Speech recognition
+const speechCtrl = require('../controllers/user/patient/speech')
+api.get('/speech/token', auth.isAuth(roles.All), checkApiKey, speechCtrl.getSpeechToken)
+
 // share
 api.get('/share/patient/generalshare/:patientId', auth.isAuthPatient(roles.All), checkApiKey, openShareCtrl.getGeneralShare)
 api.get('/share/patient/customshare/:patientId', auth.isAuthPatient(roles.All), checkApiKey, openShareCtrl.getCustomShare)

@@ -22,5 +22,8 @@ module.exports = {
     NAMEBLOB: undefined,
     SAS: undefined,
   },
-  OPENAI_API_KEY: undefined
+  OPENAI_API_KEY: undefined,
+  // Azure Speech Services - Configurar en Azure App Service: Configuration/Application settings
+  AZURE_SPEECH_KEY: undefined, // Tu Azure Speech Service subscription key
+  AZURE_SPEECH_REGION: undefined // Tu Azure Speech Service region (ej: 'westeurope', 'eastus')
 }
