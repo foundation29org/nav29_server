@@ -19,66 +19,11 @@ const config                = require('../../../config');
 const pubsub                = require('../../../services/pubsub');
 const insights              = require('../../../services/insights');
 const axios                 = require('axios');
-const f29azure              = require('../../../services/f29azure');
 
 const { generatePatientUUID } = require('../../../services/uuid');
 
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
-
-/** (0) Obtiene el resumen del paciente si existe (final_card.txt) */
-async function getPatientSummaryIfExists(patientId) {
-  try {
-    const summaryPath = 'raitofile/summary/final_card.txt';
-    
-    // Intentar con el método nuevo (SHA256) primero
-    let containerName = crypt.getContainerName(patientId);
-    console.log('🔍 Intentando containerName (SHA256):', containerName);
-    let exists = await f29azure.checkBlobExists(containerName, summaryPath);
-    
-    // Si no existe, intentar con el método legacy
-    if (!exists) {
-      containerName = crypt.getContainerNameLegacy(patientId);
-      console.log('🔍 Intentando containerName (Legacy):', containerName);
-      exists = await f29azure.checkBlobExists(containerName, summaryPath);
-    }
-    
-    if (!exists) {
-      console.log('📋 No existe resumen del paciente, usando contexto construido');
-      return null;
-    }
-    
-    console.log('✅ Resumen encontrado en containerName:', containerName);
-    
-    // Descargar el resumen
-    const summaryContent = await f29azure.downloadBlob(containerName, summaryPath);
-    if (!summaryContent) {
-      console.log('📋 Resumen vacío, usando contexto construido');
-      return null;
-    }
-    
-    // El resumen viene como JSON string, parsearlo
-    let summary;
-    try {
-      summary = JSON.parse(summaryContent);
-      // El resumen puede tener estructura {data: "...", version: "..."}
-      // Si data contiene HTML, extraer solo el texto o usar el HTML directamente
-      const summaryData = summary.data || summaryContent;
-      
-      // Si summaryData contiene HTML, extraer el texto o usar directamente según necesidad
-      // Por ahora, devolver el contenido tal cual (puede contener HTML)
-      console.log('✅ Usando resumen del paciente existente');
-      return summaryData;
-    } catch (parseError) {
-      // Si no es JSON, usar el contenido directamente
-      console.log('✅ Usando resumen del paciente existente (texto plano)');
-      return summaryContent;
-    }
-  } catch (error) {
-    console.warn('⚠️ Error al obtener resumen del paciente, usando contexto construido:', error.message);
-    return null;
-  }
-}
 
 /** (a) Formatea edad (en años o meses) */
 const getAge = birthDate => {
@@ -423,31 +368,21 @@ async function handleDxGptRequest(req, res) {
     /* ▸ Context (solo si no lo trae el caller) ------------------------- */
     let description = custom;
     if (!description) {
-      // Primero intentar obtener el resumen del paciente si existe
-      const patientSummary = await getPatientSummaryIfExists(patientId);
-      console.log('📋 patientSummary', patientSummary);
-      if (patientSummary) {
-        // Usar el resumen existente directamente
-        description = patientSummary;
-        console.log('📋 Usando resumen del paciente (final_card.txt)');
-      } else {
-        // Si no hay resumen, construir el contexto desde cero
-        const raw  = await patientContextService.aggregateClinicalContext(patientId);
-        // console.log(`>> (from f:aggregateClinicalContext) raw data from patient ${patientId}:`);
-        // console.log(raw);
-        description = await buildContextString(raw, patientId);
-        const originalLength = description.length;
+      const raw  = await patientContextService.aggregateClinicalContext(patientId);
+      // console.log(`>> (from f:aggregateClinicalContext) raw data from patient ${patientId}:`);
+      // console.log(raw);
+      description = await buildContextString(raw, patientId);
+      const originalLength = description.length;
+      
+      // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+      // Solo si el contexto es suficientemente largo (>= 2000 chars)
+      if (description.length >= 2000) {
+        description = await prioritizeContextWithAI(description, patientId);
         
-        // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
-        // Solo si el contexto es suficientemente largo (>= 2000 chars)
-        if (description.length >= 2000) {
-          description = await prioritizeContextWithAI(description, patientId);
-          
-          // Validar que el contexto optimizado no sea demasiado corto
-          if (description.length < 300 && originalLength > 2000) {
-            console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
-            description = await buildContextString(raw, patientId);
-          }
+        // Validar que el contexto optimizado no sea demasiado corto
+        if (description.length < 300 && originalLength > 2000) {
+          console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
+          description = await buildContextString(raw, patientId);
         }
       }
     }
@@ -547,24 +482,13 @@ async function handleDiseaseInfoRequest(req, res) {
     /* ▸ Context para 3/4 ---------------------------------------------- */
     let description = medicalDescription;
     if ((questionType === 3 || questionType === 4) && !description) {
-      // Primero intentar obtener el resumen del paciente si existe
-      const patientSummary = await getPatientSummaryIfExists(patientId);
-      
-      if (patientSummary) {
-        // Usar el resumen existente directamente
-        description = patientSummary;
-        console.log('📋 Usando resumen del paciente (final_card.txt)');
-      } else {
-        // Si no hay resumen, construir el contexto desde cero
-        const raw       = await patientContextService.aggregateClinicalContext(patientId);
-        description = await buildContextString(raw, patientId);
-        // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
-        // Solo si el contexto es suficientemente largo (>= 2000 chars)
-        if (description.length >= 2000) {
-          description = await prioritizeContextWithAI(description, patientId);
-        }
+      const raw       = await patientContextService.aggregateClinicalContext(patientId);
+      description = await buildContextString(raw, patientId);
+      // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+      // Solo si el contexto es suficientemente largo (>= 2000 chars)
+      if (description.length >= 2000) {
+        description = await prioritizeContextWithAI(description, patientId);
       }
-      
       if (!description.trim())
         return res.status(400).json({ error: 'Medical description required' });
     }

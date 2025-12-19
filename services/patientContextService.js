@@ -64,7 +64,7 @@ async function fetchDocuments(id, limit = 10) {
 
   /* Descarga OCR en paralelo */
   const blobs = await Promise.allSettled(
-    docs.map(d => downloadDocumentText(d.containerName || crypt.encrypt(String(id)).slice(1), d.url))
+    docs.map(d => downloadDocumentText(d.containerName || crypt.getContainerName(String(id)), d.url))
   );
 
   return docs.map((d, i) => ({
