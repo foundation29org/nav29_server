@@ -134,23 +134,132 @@ async function buildContextString(raw, patientId) {
 
   /* ▸ Documentos -------------------------------------------------- */
   if (documents.length) {
-    out += 'MEDICAL DOCUMENTS INFORMATION:\n';
+    const documentsWithSummary = [];
     for (const doc of documents) {
+      // Resumir documentos individuales para limpiar ruido (direcciones, avisos legales, etc.)
       const summary = await summarizeWithDxgpt({ ...doc, patientId });
-      out += `
+      // Solo incluir documentos que tengan resumen útil
+      if (summary) {
+        documentsWithSummary.push({ ...doc, summary });
+      }
+    }
+    
+    // Solo añadir la sección si hay documentos con resumen
+    if (documentsWithSummary.length > 0) {
+      out += 'MEDICAL DOCUMENTS INFORMATION:\n';
+      for (const doc of documentsWithSummary) {
+        out += `
   Document: ${doc.name} (${doc.date || 'N/A'})
-  ${summary ? `Summary: ${summary}` : '⚠ No summary (short or missing OCR text)'}
+  Summary: ${doc.summary}
 `;
+      }
     }
   }
 
   /* ▸ Verificar longitud y resumir si es necesario ------------------ */
-  if (out.length > 3000) {
-    console.log(`📊 Contexto demasiado largo (${out.length} caracteres), aplicando resumen...`);
-    out = await summarizeContext(out, patientId);
-  }
+  // NOTA: summarizeContext está comentado porque prioritizeContextWithAI hace un trabajo más inteligente
+  // diferenciando permanente/crónico de puntual. Si necesitas volver a usarlo, descomenta las líneas siguientes:
+  // if (out.length > 3000) {
+  //   console.log(`📊 Contexto demasiado largo (${out.length} caracteres), aplicando resumen...`);
+  //   out = await summarizeContext(out, patientId);
+  // }
 
   return out;
+}
+
+/** (e) Usa IA para priorizar y filtrar contexto: diferencia permanente/crónico de puntual */
+async function prioritizeContextWithAI(contextText, patientId) {
+  try {
+    // Validar configuración
+    const azureInstance = config.OPENAI_API_BASE_GPT4O || config.OPENAI_API_BASE;
+    const azureKey = config.O_A_K_GPT4O || config.O_A_K;
+    if (!azureInstance || !azureKey) {
+      console.warn('⚠️ Azure OpenAI no configurado, devolviendo contexto original');
+      return contextText;
+    }
+
+    // Si el contexto es muy corto, no necesita filtrado
+    // Umbral mínimo: 2000 caracteres (evita gastar tokens en contextos pequeños)
+    if (!contextText || contextText.length < 2000) {
+      return contextText;
+    }
+
+    console.log(`🤖 Aplicando priorización inteligente (GPT-4o) a contexto de ${contextText.length} caracteres...`);
+
+    const deployment = 'gpt-4o';
+    const url = `https://${azureInstance}.openai.azure.com/openai/deployments/${deployment}/chat/completions?api-version=${config.OPENAI_API_VERSION}`;
+
+    const prompt = `You are a medical expert analyzing clinical records. Your task is to filter and prioritize patient information, differentiating between:
+
+1. **PERMANENT/CHRONIC INFORMATION** (always relevant):
+   - Active chronic conditions
+   - Permanent allergies
+   - Diagnoses that remain relevant
+   - Current or continuous-use medications
+   - Persistent or recurrent symptoms
+
+2. **RECENT/RELEVANT INFORMATION** (last 6-12 months):
+   - Recent medical events
+   - Current symptoms
+   - Recent medications
+   - Recent medical documents
+
+3. **HISTORICAL/PUNCTUAL INFORMATION** (can be omitted if not critical):
+   - Old resolved diseases
+   - Old medications not related to current conditions
+   - Past resolved punctual symptoms
+   - Very old documents without current relevance
+
+**CRITICAL INSTRUCTIONS:**
+- **MANDATORY**: Keep COMPLETE patient profile section (PATIENT DATA) with ALL fields: Name, Age, Birthdate, Gender, Chronic Conditions, Allergies. NEVER remove or omit any field, even if it shows "N/A" or is empty.
+- Prioritize information relevant for current diagnosis or treatment
+- Remove redundant, obsolete, or punctual information that does not affect current status
+- Maintain the original structure and section headers (PATIENT DATA, MEDICAL HISTORY, MEDICAL DOCUMENTS INFORMATION)
+- If in doubt about whether something is chronic or punctual, include it (better to include than exclude important information)
+- Preserve dates when relevant to understand chronology
+- Keep the exact format: "PATIENT DATA:", "MEDICAL HISTORY:", "MEDICAL DOCUMENTS INFORMATION:"
+- Note: Only documents with valid summaries are included in the context (documents without summaries are already filtered out)
+
+**OUTPUT FORMAT:**
+Return ONLY the filtered and optimized context, without additional explanations or headers like "## Contexto optimizado del paciente:". Start directly with "PATIENT DATA:".
+Maintain the same structured format as the input.
+IMPORTANT: Respond in the SAME LANGUAGE as the patient context provided below.
+
+## Original Patient Context:
+${contextText}`;
+
+    const { data } = await axios.post(
+      url,
+      {
+        messages: [
+          { role: 'system', content: 'You are a medical assistant expert in clinical record analysis. You MUST preserve ALL patient profile fields (Name, Age, Birthdate, Gender, Chronic Conditions, Allergies) even if they are empty or show "N/A". Always respond in the same language as the provided context and maintain the exact structure with section headers.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.3, // Baja temperatura para mayor precisión
+        max_tokens: 4000
+      },
+      {
+        headers: {
+          'api-key': azureKey,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const optimizedContext = data?.choices?.[0]?.message?.content?.trim() || '';
+    
+    if (optimizedContext && optimizedContext.length > 100) {
+      console.log(`✅ Contexto optimizado con IA (${optimizedContext.length} caracteres, reducción: ${((1 - optimizedContext.length / contextText.length) * 100).toFixed(1)}%)`);
+      return optimizedContext;
+    } else {
+      console.warn('⚠️ La IA no devolvió un contexto válido, usando contexto original');
+      return contextText;
+    }
+  } catch (error) {
+    console.error('❌ Error al priorizar contexto con IA:', error.message);
+    // En caso de error, devolver el contexto original
+    return contextText;
+  }
 }
 
 /*--------------------------------------------------------------------
@@ -178,15 +287,21 @@ async function handleRarescopeRequest(req, res) {
     if (!ctxStr) {
       const raw = await patientContextService.aggregateClinicalContext(patientId);
       ctxStr = await buildContextString(raw, patientId);
+      // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+      // Solo si el contexto es suficientemente largo (>= 2000 chars)
+      if (ctxStr.length >= 2000) {
+        ctxStr = await prioritizeContextWithAI(ctxStr, patientId);
+      }
     }
 
     /* 3 · Prompt -------------------------------------------------------*/
-    const prompt = `Actúa como un experto en enfermedades raras. Lee la información clínica y extrae exclusivamente un ARRAY JSON de cadenas, donde cada cadena represente una necesidad no cubierta real y concreta de las personas con enfermedades raras. No añadas explicaciones ni formato extra.
+    const prompt = `Act as an expert in rare diseases. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of people with rare diseases. Do not add explanations or extra formatting.
 
-Estas necesidades deben reflejar la falta de diagnóstico, tratamiento, conocimiento o apoyo real que enfrentan los pacientes, más allá de lo que suele declararse superficialmente. Ejemplo de salida válida: ["Necesidad 1","Necesidad 2"]
+These needs should reflect the lack of diagnosis, treatment, knowledge, or real support that patients face, beyond what is usually superficially declared. Valid output example: ["Need 1","Need 2"]
 
+IMPORTANT: Respond in the SAME LANGUAGE as the patient context provided below.
 
-## Contexto del Paciente
+## Patient Context
 ${ctxStr}`.trim();
 
     /* 4 · Llamada REST a Azure OpenAI ---------------------------------*/
@@ -197,6 +312,7 @@ ${ctxStr}`.trim();
       url,
       {
         messages: [
+          { role: 'system', content: 'You are an expert in rare diseases. Always respond in the same language as the provided patient context.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
@@ -256,9 +372,23 @@ async function handleDxGptRequest(req, res) {
       // console.log(`>> (from f:aggregateClinicalContext) raw data from patient ${patientId}:`);
       // console.log(raw);
       description = await buildContextString(raw, patientId);
+      const originalLength = description.length;
+      
+      // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+      // Solo si el contexto es suficientemente largo (>= 2000 chars)
+      if (description.length >= 2000) {
+        description = await prioritizeContextWithAI(description, patientId);
+        
+        // Validar que el contexto optimizado no sea demasiado corto
+        if (description.length < 300 && originalLength > 2000) {
+          console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
+          description = await buildContextString(raw, patientId);
+        }
+      }
     }
 
-    console.log('description', description);
+    console.log('📋 Description length:', description?.length || 0);
+    console.log('📋 Description preview:', description?.substring(0, 200) || 'N/A');
 
     const body = {
       description,
@@ -270,18 +400,44 @@ async function handleDxGptRequest(req, res) {
       response_mode: 'direct'
     };
 
-    const { data } = await axios.post(
-      'https://dxgpt-apim.azure-api.net/api/diagnose',
-      body,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
-          'X-Tenant-Id': 'Nav29 AI'
+    console.log('🚀 Calling DxGPT API...');
+    let data;
+    try {
+      const response = await axios.post(
+        'https://dxgpt-apim.azure-api.net/api/diagnose',
+        body,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+            'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
+            'X-Tenant-Id': 'Nav29 AI'
+          }
         }
+      );
+      data = response.data;
+      console.log('✅ DxGPT API response received');
+      console.log('data', data);
+    } catch (apiError) {
+      console.error('❌ DxGPT API error details:');
+      console.error('  - Status:', apiError.response?.status);
+      console.error('  - Status Text:', apiError.response?.statusText);
+      console.error('  - Response Data:', apiError.response?.data);
+      console.error('  - Error Message:', apiError.message);
+      
+      // Si hay una respuesta del servidor, intentar devolverla
+      if (apiError.response?.data) {
+        return res.status(apiError.response.status || 500).json({
+          error: 'DxGPT API error',
+          details: apiError.response.data,
+          message: apiError.message
+        });
       }
-    );
+      
+      // Si no hay respuesta, relanzar el error
+      throw apiError;
+    }
+
     // Si no hay datos personales detectados, devolver el texto original como anonymizedText
     try {
       if (data && data.anonymization && data.anonymization.hasPersonalInfo === false) {
@@ -290,7 +446,12 @@ async function handleDxGptRequest(req, res) {
     } catch (_) {
       // sin-op
     }
-    res.json({ success: true, analysis: data });
+    
+    console.log('📤 Enviando respuesta al cliente...');
+    const response = { success: true, analysis: data };
+    console.log('📤 Response payload size:', JSON.stringify(response).length, 'bytes');
+    res.json(response);
+    console.log('✅ Respuesta enviada al cliente');
   } catch (err) {
     console.error('❌ DxGPT error:', err);
     insights.error(err);
@@ -323,6 +484,11 @@ async function handleDiseaseInfoRequest(req, res) {
     if ((questionType === 3 || questionType === 4) && !description) {
       const raw       = await patientContextService.aggregateClinicalContext(patientId);
       description = await buildContextString(raw, patientId);
+      // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+      // Solo si el contexto es suficientemente largo (>= 2000 chars)
+      if (description.length >= 2000) {
+        description = await prioritizeContextWithAI(description, patientId);
+      }
       if (!description.trim())
         return res.status(400).json({ error: 'Medical description required' });
     }
