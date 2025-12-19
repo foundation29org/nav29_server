@@ -759,7 +759,7 @@ async function handleDxGptRequest(req, res) {
     const lang      = req.body?.lang || 'en';
     const custom    = req.body?.customMedicalDescription;
     const userId     = req.user; // userId del usuario autenticado
-    const useEventsAndDocuments = req.body?.useEventsAndDocuments === true;
+    let useEventsAndDocuments = req.body?.useEventsAndDocuments === true;
 
     /* ▸ Verificar si necesita procesamiento asíncrono ----------------- */
     // Si se usa "eventos y documentos" (no el resumen), SIEMPRE usar WebPubSub
