@@ -26,6 +26,45 @@ const { generatePatientUUID } = require('../../../services/uuid');
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
 
+/** (0.1) Limpia HTML del texto, convirtiéndolo a texto plano */
+function cleanHtmlFromText(htmlText) {
+  if (!htmlText || typeof htmlText !== 'string') return htmlText;
+  
+  let cleaned = htmlText;
+  
+  // Reemplazar etiquetas de bloque comunes por saltos de línea
+  cleaned = cleaned.replace(/<h[1-6][^>]*>/gi, '\n\n');
+  cleaned = cleaned.replace(/<\/h[1-6]>/gi, '\n');
+  cleaned = cleaned.replace(/<p[^>]*>/gi, '\n\n');
+  cleaned = cleaned.replace(/<\/p>/gi, '\n');
+  cleaned = cleaned.replace(/<br\s*\/?>/gi, '\n');
+  cleaned = cleaned.replace(/<div[^>]*>/gi, '\n');
+  cleaned = cleaned.replace(/<\/div>/gi, '\n');
+  cleaned = cleaned.replace(/<ul[^>]*>/gi, '\n');
+  cleaned = cleaned.replace(/<\/ul>/gi, '\n');
+  cleaned = cleaned.replace(/<li[^>]*>/gi, '\n- ');
+  cleaned = cleaned.replace(/<\/li>/gi, '');
+  
+  // Eliminar todas las demás etiquetas HTML
+  cleaned = cleaned.replace(/<[^>]+>/g, '');
+  
+  // Decodificar entidades HTML comunes
+  cleaned = cleaned.replace(/&nbsp;/g, ' ');
+  cleaned = cleaned.replace(/&amp;/g, '&');
+  cleaned = cleaned.replace(/&lt;/g, '<');
+  cleaned = cleaned.replace(/&gt;/g, '>');
+  cleaned = cleaned.replace(/&quot;/g, '"');
+  cleaned = cleaned.replace(/&#39;/g, "'");
+  cleaned = cleaned.replace(/&apos;/g, "'");
+  
+  // Limpiar espacios en blanco múltiples y saltos de línea
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n'); // Máximo 2 saltos de línea seguidos
+  cleaned = cleaned.replace(/[ \t]{2,}/g, ' '); // Múltiples espacios a uno solo
+  cleaned = cleaned.replace(/^\s+|\s+$/gm, ''); // Trim por línea
+  
+  return cleaned.trim();
+}
+
 /** (0) Obtiene el resumen del paciente si existe (final_card.txt) */
 async function getPatientSummaryIfExists(patientId) {
   try {
@@ -62,17 +101,17 @@ async function getPatientSummaryIfExists(patientId) {
     try {
       summary = JSON.parse(summaryContent);
       // El resumen puede tener estructura {data: "...", version: "..."}
-      // Si data contiene HTML, extraer solo el texto o usar el HTML directamente
       const summaryData = summary.data || summaryContent;
       
-      // Si summaryData contiene HTML, extraer el texto o usar directamente según necesidad
-      // Por ahora, devolver el contenido tal cual (puede contener HTML)
-      console.log('✅ Usando resumen del paciente existente');
-      return summaryData;
+      // Limpiar HTML del resumen antes de devolverlo
+      const cleanedSummary = cleanHtmlFromText(summaryData);
+      console.log('✅ Usando resumen del paciente existente (HTML limpiado)');
+      return cleanedSummary;
     } catch (parseError) {
-      // Si no es JSON, usar el contenido directamente
-      console.log('✅ Usando resumen del paciente existente (texto plano)');
-      return summaryContent;
+      // Si no es JSON, usar el contenido directamente pero limpiar HTML
+      const cleanedSummary = cleanHtmlFromText(summaryContent);
+      console.log('✅ Usando resumen del paciente existente (texto plano, HTML limpiado)');
+      return cleanedSummary;
     }
   } catch (error) {
     console.warn('⚠️ Error al obtener resumen del paciente, usando contexto construido:', error.message);
@@ -413,25 +452,351 @@ ${ctxStr}`.trim();
 /*--------------------------------------------*
  * 3.2  DXGPT – GLOBAL DIAGNÓSTICO            *
  *--------------------------------------------*/
+/** (3.1) Procesa DxGPT de forma asíncrona cuando hay muchos documentos */
+async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, useEventsAndDocuments) {
+  const taskId = `dxgpt-${patientId}-${Date.now()}`;
+  // Encriptar patientId para que el cliente pueda validarlo
+  const encryptedPatientId = crypt.encrypt(patientId);
+  // Encriptar userId para WebPubSub (el cliente se suscribe con userId encriptado)
+  const encryptedUserId = crypt.encrypt(userId);
+  
+  try {
+    // Enviar notificación de inicio
+    pubsub.sendToUser(encryptedUserId, {
+      type: 'dxgpt-processing',
+      taskId,
+      patientId: encryptedPatientId, // Añadir patientId encriptado para validación
+      status: 'started',
+      message: 'Iniciando análisis de diagnóstico diferencial...'
+    });
+    
+    let description = custom;
+    if (!description) {
+      if (!useEventsAndDocuments) {
+        // Usar resumen del paciente
+        pubsub.sendToUser(encryptedUserId, {
+          type: 'dxgpt-processing',
+          taskId,
+          patientId: encryptedPatientId,
+          status: 'loading-summary',
+          message: 'Cargando resumen del paciente...',
+          progress: 5
+        });
+        
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        if (patientSummary) {
+          description = patientSummary;
+          console.log('📋 Usando resumen del paciente (final_card.txt)');
+          
+          pubsub.sendToUser(encryptedUserId, {
+            type: 'dxgpt-processing',
+            taskId,
+            patientId: encryptedPatientId,
+            status: 'summary-loaded',
+            message: 'Resumen cargado, preparando análisis...',
+            progress: 15
+          });
+        } else {
+          useEventsAndDocuments = true;
+        }
+      }
+      
+      if (useEventsAndDocuments) {
+        // Obtener datos raw para contar documentos
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const documentCount = raw.documents?.length || 0;
+        
+        // Enviar actualización de progreso
+        pubsub.sendToUser(encryptedUserId, {
+          type: 'dxgpt-processing',
+          taskId,
+          patientId: encryptedPatientId,
+          status: 'building-context',
+          message: `Construyendo contexto desde ${documentCount} documentos...`,
+          progress: 10
+        });
+        
+        // Construir contexto con actualizaciones de progreso
+        description = await buildContextStringWithProgress(raw, patientId, userId, taskId, documentCount);
+        const originalLength = description.length;
+        
+        // Optimizar contexto con IA
+        if (description.length >= 2000) {
+          pubsub.sendToUser(encryptedUserId, {
+            type: 'dxgpt-processing',
+            taskId,
+            patientId: encryptedPatientId,
+            status: 'optimizing',
+            message: 'Optimizando contexto con IA...',
+            progress: 70
+          });
+          
+          description = await prioritizeContextWithAI(description, patientId);
+          
+          if (description.length < 300 && originalLength > 2000) {
+            console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
+            description = await buildContextString(raw, patientId);
+          }
+        }
+      }
+    }
+    
+    // Validar que tenemos descripción
+    if (!description || !description.trim()) {
+      throw new Error('No se pudo obtener la descripción del paciente');
+    }
+    
+    // Llamar a DxGPT API
+    pubsub.sendToUser(encryptedUserId, {
+      type: 'dxgpt-processing',
+      taskId,
+      patientId: encryptedPatientId,
+      status: 'calling-api',
+      message: 'Consultando DxGPT API...',
+      progress: useEventsAndDocuments ? 85 : 80
+    });
+    
+    console.log(`🚀 [Async] Llamando a DxGPT API para paciente ${patientId}...`);
+    const body = {
+      description,
+      myuuid: generatePatientUUID(patientId),
+      lang,
+      timezone: 'Europe/Madrid',
+      diseases_list: diseasesList || '',
+      model: 'gpt5mini',
+      response_mode: 'direct'
+    };
+    
+    const response = await axios.post(
+      'https://dxgpt-apim.azure-api.net/api/diagnose',
+      body,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+          'Ocp-Apim-Subscription-Key': config.DXGPT_SUBSCRIPTION_KEY,
+          'X-Tenant-Id': 'Nav29 AI'
+        }
+      }
+    );
+    
+    console.log(`✅ [Async] DxGPT API respondió para paciente ${patientId}`);
+    console.log(`📤 [Async] Enviando resultado por WebPubSub:`);
+    console.log(`  - userId (sin encriptar): ${userId}`);
+    console.log(`  - userId (encriptado): ${encryptedUserId}`);
+    console.log(`  - patientId (sin encriptar): ${patientId}`);
+    console.log(`  - patientId (encriptado): ${encryptedPatientId}`);
+    console.log(`  - taskId: ${taskId}`);
+    
+    // Enviar resultado final
+    pubsub.sendToUser(encryptedUserId, {
+      type: 'dxgpt-result',
+      taskId,
+      patientId: encryptedPatientId,
+      status: 'completed',
+      success: true,
+      analysis: response.data
+    });
+    
+    console.log(`✅ [Async] Resultado enviado por WebPubSub para paciente ${patientId}`);
+    
+  } catch (error) {
+    console.error(`❌ Error en procesamiento asíncrono de DxGPT para paciente ${patientId}:`, error);
+    console.error('Stack:', error.stack);
+    
+    // Encriptar userId para WebPubSub (el cliente se suscribe con userId encriptado)
+    const encryptedUserId = crypt.encrypt(userId);
+    
+    pubsub.sendToUser(encryptedUserId, {
+      type: 'dxgpt-result',
+      taskId,
+      patientId: encryptedPatientId,
+      status: 'error',
+      success: false,
+      error: error.message || 'Error al procesar el análisis'
+    });
+  }
+}
+
+/** (3.2) Construye contexto con actualizaciones de progreso */
+async function buildContextStringWithProgress(raw, patientId, userId, taskId, documentCount) {
+  // Encriptar patientId para que el cliente pueda validarlo
+  const encryptedPatientId = crypt.encrypt(patientId);
+  // Encriptar userId para WebPubSub (el cliente se suscribe con userId encriptado)
+  const encryptedUserId = crypt.encrypt(userId);
+  const { profile, events, documents } = raw;
+  
+  // Construir perfil y eventos (rápido)
+  let out = `PATIENT DATA:
+- Name: ${profile.name}
+- Age: ${getAge(profile.birthDate)}
+- Birthdate: ${profile.birthDate ? new Date(profile.birthDate).toLocaleDateString('en-GB') : 'N/A'}
+- Gender: ${profile.gender}
+- Chronic Conditions: ${profile.chronicConditions || 'N/A'}
+- Allergies: ${profile.allergies || 'N/A'}
+
+`;
+  
+  if (events.length) {
+    const section = { diagnosis: 'Diagnoses', symptom: 'Symptoms', medication: 'Medications' };
+    out += 'MEDICAL HISTORY:\n';
+    for (const type of ['diagnosis', 'symptom', 'medication']) {
+      const rows = events.filter(e => e.type === type);
+      if (!rows.length) continue;
+      out += `  ${section[type]}:\n`;
+      rows.forEach(e =>
+        out += `  - ${e.name} (${e.date || 'N/A'})${e.notes ? `. ${e.notes}` : ''}\n`
+      );
+    }
+    out += '\n';
+  }
+  
+  // Procesar documentos con actualizaciones de progreso
+  if (documents.length) {
+    const documentsWithSummary = [];
+    const totalDocs = documents.length;
+    
+    for (let i = 0; i < documents.length; i++) {
+      const doc = documents[i];
+      
+      // Enviar actualización de progreso cada documento
+      const progress = 10 + Math.floor((i / totalDocs) * 50); // 10-60%
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dxgpt-processing',
+        taskId,
+        patientId: encryptedPatientId,
+        status: 'summarizing-documents',
+        message: `Resumiendo documento ${i + 1} de ${totalDocs}: ${doc.name}...`,
+        progress
+      });
+      
+      try {
+        const summary = await summarizeWithDxgpt({ ...doc, patientId });
+        if (summary) {
+          documentsWithSummary.push({ ...doc, summary });
+        }
+      } catch (summaryError) {
+        console.error(`⚠️ Error al resumir documento "${doc.name}":`, summaryError.message);
+        // Continuar con el siguiente documento aunque este falle
+      }
+    }
+    
+    if (documentsWithSummary.length > 0) {
+      out += 'MEDICAL DOCUMENTS INFORMATION:\n';
+      for (const doc of documentsWithSummary) {
+        out += `
+  Document: ${doc.name} (${doc.date || 'N/A'})
+  Summary: ${doc.summary}
+`;
+      }
+    }
+  }
+  
+  return out;
+}
+
 async function handleDxGptRequest(req, res) {
   try {
     // console.log('req.body', req.body);
     const patientId = crypt.decrypt(req.params.patientId);
     const lang      = req.body?.lang || 'en';
     const custom    = req.body?.customMedicalDescription;
+    const userId     = req.user; // userId del usuario autenticado
+    const useEventsAndDocuments = req.body?.useEventsAndDocuments === true;
+
+    /* ▸ Verificar si necesita procesamiento asíncrono ----------------- */
+    // Si se usa "eventos y documentos" (no el resumen), SIEMPRE usar WebPubSub
+    if (useEventsAndDocuments && !custom) {
+      console.log('📊 Usando procesamiento asíncrono con WebPubSub para eventos y documentos');
+      
+      try {
+        // Obtener datos raw para contar documentos (solo para el mensaje)
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const documentCount = raw.documents?.length || 0;
+        const eventCount = raw.events?.length || 0;
+        
+        // Responder INMEDIATAMENTE antes de iniciar el procesamiento
+        console.log('📤 Enviando respuesta asíncrona al cliente...');
+        res.json({
+          success: true,
+          async: true,
+          message: `Procesando ${documentCount} documentos y ${eventCount} eventos. Recibirás una notificación cuando el análisis esté listo.`,
+          taskId: `dxgpt-${patientId}-${Date.now()}`
+        });
+        console.log('✅ Respuesta asíncrona enviada al cliente');
+        
+        // Iniciar procesamiento asíncrono (no esperar, después de responder)
+        processDxGptAsync(patientId, lang, custom, req.body?.diseases_list, userId, useEventsAndDocuments)
+          .catch(err => {
+            console.error('❌ Error en procesamiento asíncrono:', err);
+          });
+        
+        return; // Importante: salir aquí para no continuar con el procesamiento síncrono
+      } catch (contextError) {
+        console.error('❌ Error al obtener contexto para respuesta asíncrona:', contextError);
+        // Si hay error al obtener el contexto, responder con error pero no asíncrono
+        return res.status(500).json({
+          success: false,
+          error: 'Error al obtener el contexto del paciente',
+          message: contextError.message
+        });
+      }
+    }
+
+    /* ▸ Verificar si necesita procesamiento asíncrono para resumen ----------------- */
+    // Si se usa el resumen (no eventos/documentos), también usar WebPubSub
+    if (!useEventsAndDocuments && !custom) {
+      const patientSummary = await getPatientSummaryIfExists(patientId);
+      if (patientSummary) {
+        console.log('📊 Usando procesamiento asíncrono con WebPubSub para resumen del paciente');
+        console.log('📊 userId:', userId);
+        console.log('📊 patientId (sin encriptar):', patientId);
+        console.log('📊 patientId (encriptado):', crypt.encrypt(patientId));
+        
+        try {
+          // Responder INMEDIATAMENTE antes de iniciar el procesamiento
+          console.log('📤 Enviando respuesta asíncrona al cliente (resumen)...');
+          res.json({
+            success: true,
+            async: true,
+            message: 'Procesando análisis con resumen del paciente. Recibirás una notificación cuando el análisis esté listo.',
+            taskId: `dxgpt-${patientId}-${Date.now()}`
+          });
+          console.log('✅ Respuesta asíncrona enviada al cliente (resumen)');
+          
+          // Iniciar procesamiento asíncrono (no esperar, después de responder)
+          processDxGptAsync(patientId, lang, custom, req.body?.diseases_list, userId, false)
+            .catch(err => {
+              console.error('❌ Error en procesamiento asíncrono (resumen):', err);
+            });
+          
+          return; // Importante: salir aquí para no continuar con el procesamiento síncrono
+        } catch (error) {
+          console.error('❌ Error al iniciar procesamiento asíncrono (resumen):', error);
+          // Si hay error, continuar con procesamiento síncrono
+        }
+      }
+    }
 
     /* ▸ Context (solo si no lo trae el caller) ------------------------- */
     let description = custom;
     if (!description) {
-      // Primero intentar obtener el resumen del paciente si existe
-      const patientSummary = await getPatientSummaryIfExists(patientId);
-      console.log('📋 patientSummary', patientSummary);
-      if (patientSummary) {
-        // Usar el resumen existente directamente
-        description = patientSummary;
-        console.log('📋 Usando resumen del paciente (final_card.txt)');
-      } else {
-        // Si no hay resumen, construir el contexto desde cero
+      if (!useEventsAndDocuments) {
+        // Primero intentar obtener el resumen del paciente si existe
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        if (patientSummary) {
+          // Usar el resumen existente directamente
+          description = patientSummary;
+          console.log('📋 Usando resumen del paciente (final_card.txt)');
+        } else {
+          // Si no hay resumen, construir el contexto desde cero
+          useEventsAndDocuments = true;
+        }
+      }
+      
+      if (useEventsAndDocuments) {
+        // Construir el contexto desde eventos y documentos
+        console.log('📋 Construyendo contexto desde eventos y documentos');
         const raw  = await patientContextService.aggregateClinicalContext(patientId);
         // console.log(`>> (from f:aggregateClinicalContext) raw data from patient ${patientId}:`);
         // console.log(raw);
