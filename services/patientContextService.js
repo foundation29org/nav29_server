@@ -20,9 +20,22 @@ const toDateStr = d =>
   d ? new Date(d).toLocaleDateString('es-ES') : null;
 
 async function downloadDocumentText(containerName, url) {
+  // Primero intentar obtener el resumen si existe
+  const summaryPath = url.replace(/\/[^/]*$/, '/summary_translated.txt');
+  try {
+    const summary = await f29azure.downloadBlob(containerName, summaryPath);
+    if (summary && summary.trim()) {
+      return { text: summary, hasSummary: true }; // Usar el resumen si existe
+    }
+  } catch {
+    // Si no hay resumen, continuar con extracted_translated
+  }
+  
+  // Si no hay resumen, usar el texto extraído
   const txtPath = url.replace(/\/[^/]*$/, '/extracted_translated.txt');
   try {
-    return await f29azure.downloadBlob(containerName, txtPath);
+    const text = await f29azure.downloadBlob(containerName, txtPath);
+    return { text: text, hasSummary: false };
   } catch {
     console.warn(`↳ OCR no disponible: ${path.basename(url)}`); // sin PHI
     return null;
@@ -62,17 +75,26 @@ async function fetchEvents(id, limit = 50) {
 async function fetchDocuments(id, limit = 10) {
   const docs = await Document.find({ createdBy: id }).limit(limit).lean();
 
-  /* Descarga OCR en paralelo */
+  /* Descarga texto/resumen en paralelo */
   const blobs = await Promise.allSettled(
     docs.map(d => downloadDocumentText(d.containerName || crypt.getContainerName(String(id)), d.url))
   );
 
-  return docs.map((d, i) => ({
-    name    : path.basename(d.url),
-    date    : toDateStr(d.date ?? d.originaldate),
-    category: d.categoryTag || 'General',
-    text    : blobs[i].status === 'fulfilled' ? blobs[i].value : null
-  }))
+  return docs.map((d, i) => {
+    const blobResult = blobs[i].status === 'fulfilled' ? blobs[i].value : null;
+    // Si blobResult es un objeto con text y hasSummary, usarlo
+    // Si es un string (versión antigua), convertirlo
+    const text = typeof blobResult === 'object' && blobResult !== null ? blobResult.text : blobResult;
+    const hasSummary = typeof blobResult === 'object' && blobResult !== null ? blobResult.hasSummary : false;
+    
+    return {
+      name    : path.basename(d.url),
+      date    : toDateStr(d.date ?? d.originaldate),
+      category: d.categoryTag || 'General',
+      text    : text || null,
+      hasSummary: hasSummary // Indicar si tiene resumen pre-generado
+    };
+  })
   .sort((a, b) => new Date(b.date ?? 0) - new Date(a.date ?? 0));
 }
 

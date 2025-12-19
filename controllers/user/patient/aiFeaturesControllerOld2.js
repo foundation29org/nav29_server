@@ -135,17 +135,9 @@ const getAge = birthDate => {
 };
 
 /** (b) Resumen IA de un documento largo (>100 chars) */
-async function summarizeWithDxgpt({ text, name, patientId, hasSummary = false }) {
-  // Si el texto ya es un resumen (viene de summary_translated.txt), usarlo directamente
-  if (hasSummary && text && text.trim()) {
-    console.debug(`    ↳ Usando resumen existente para "${name}" (${text.length} chars)`);
-    return text.trim();
-  }
-  
-  // Si no hay texto o es muy corto, no resumir
+async function summarizeWithDxgpt({ text, name, patientId }) {
   if (!config.DXGPT_SUBSCRIPTION_KEY || !text || text.length < 100) return null;
 
-  // Si el texto es muy largo, resumirlo con DxGPT
   console.debug(`    ↳ Summarising "${name}" (${text.length} chars)…`);
   const { data } = await axios.post(
     'https://dxgpt-apim.azure-api.net/api/medical/summarize',
@@ -238,14 +230,8 @@ async function buildContextString(raw, patientId) {
   if (documents.length) {
     const documentsWithSummary = [];
     for (const doc of documents) {
-      // Si el documento ya tiene un resumen pre-generado, usarlo directamente
-      // Si no, resumir el texto extraído con DxGPT
-      const summary = await summarizeWithDxgpt({ 
-        text: doc.text, 
-        name: doc.name, 
-        patientId,
-        hasSummary: doc.hasSummary || false
-      });
+      // Resumir documentos individuales para limpiar ruido (direcciones, avisos legales, etc.)
+      const summary = await summarizeWithDxgpt({ ...doc, patientId });
       // Solo incluir documentos que tengan resumen útil
       if (summary) {
         documentsWithSummary.push({ ...doc, summary });
@@ -685,14 +671,7 @@ async function buildContextStringWithProgress(raw, patientId, userId, taskId, do
       });
       
       try {
-        // Si el documento ya tiene un resumen pre-generado, usarlo directamente
-        // Si no, resumir el texto extraído con DxGPT
-        const summary = await summarizeWithDxgpt({ 
-          text: doc.text, 
-          name: doc.name, 
-          patientId,
-          hasSummary: doc.hasSummary || false
-        });
+        const summary = await summarizeWithDxgpt({ ...doc, patientId });
         if (summary) {
           documentsWithSummary.push({ ...doc, summary });
         }
