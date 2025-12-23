@@ -21,6 +21,8 @@ function getCookieOptions() {
 		httpOnly: true,
 		secure: isProduction, // Solo HTTPS en producción
 		sameSite: isProduction ? 'strict' : 'lax', // Strict en producción, Lax en desarrollo
+		// En producción, comparte cookies entre apex y www
+		...(isProduction ? { domain: '.nav29.org' } : {}),
 		maxAge: 30 * 24 * 60 * 60 * 1000 // 30 días para refresh token
 	};
 }
