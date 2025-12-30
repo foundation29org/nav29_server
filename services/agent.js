@@ -43,8 +43,6 @@ async function callModel(
   /** Call the LLM powering our agent. **/
   const SYSTEM_PROMPT_TEMPLATE = await pull("foundation29/agent_system_prompt_v1");
 
-  // Intentar usar gpt5mini; si no está disponible, caer a gpt-4o
-  //let { azuregpt4o } = createModels('default', 'azuregpt4o');
   let { gpt5mini } = createModels('default', 'gpt5mini');
   let baseModel = gpt5mini;
 
