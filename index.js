@@ -28,4 +28,6 @@ const server = app.listen(config.port, () => {
 	console.log(`API REST corriendo en http://localhost:${config.port}`)
 })
 
-server.timeout = 1000000;
+server.timeout = 30000; // 30 segundos para evitar que peticiones se queden colgadas
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;

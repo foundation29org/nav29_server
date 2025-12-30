@@ -10,6 +10,7 @@ const { v4: uuidv4 } = require('uuid');
 const { MediSearchClient } = require('./medisearch');
 const pubsubClient = require('../services/pubsub');
 const { LangGraphRunnableConfig } = require("@langchain/langgraph");
+const insights = require('./insights');
 
 const PERPLEXITY_API_KEY = config.PERPLEXITY_API_KEY;
 
@@ -116,6 +117,7 @@ const perplexityTool = new DynamicStructuredTool({
       return response.choices[0].message.content || "No response from Perplexity";
     } catch (error) {
       console.error('Error calling Perplexity API:', error);
+      insights.error({ message: 'Error calling Perplexity API', error: error });
       throw error;
     }
   },
@@ -147,6 +149,7 @@ const mediSearchTool = new DynamicStructuredTool({
       return response.text;
     } catch (error) {
       console.error('Error calling MediSearch:', error);
+      insights.error({ message: 'Error calling MediSearch', error: error });
       throw error;
     }
   },

@@ -7,6 +7,7 @@ const crypt = require('./crypt')
 const User = require('../models/user')
 const Patient = require('../models/patient')
 
+// Access token: corto (30 minutos) para seguridad
 function createToken (user){
 	var id = user._id.toString();
 	var idencrypt= crypt.encrypt(id);
@@ -14,8 +15,23 @@ function createToken (user){
 		//el id siguiente no debería de ser el id privado, así que habrá que cambiarlo
 		sub: idencrypt,
 		iat: moment().unix(),
-		exp: moment().add(1, 'years').unix(),//years //minutes
-		role: user.role
+		exp: moment().add(30, 'minutes').unix(), // 30 minutos para seguridad
+		role: user.role,
+		type: 'access'
+	}
+	return jwt.encode(payload, config.SECRET_TOKEN)
+}
+
+// Refresh token: largo (30 días) para renovar access tokens
+function createRefreshToken (user){
+	var id = user._id.toString();
+	var idencrypt= crypt.encrypt(id);
+	const payload = {
+		sub: idencrypt,
+		iat: moment().unix(),
+		exp: moment().add(30, 'days').unix(), // 30 días
+		role: user.role,
+		type: 'refresh'
 	}
 	return jwt.encode(payload, config.SECRET_TOKEN)
 }
@@ -24,6 +40,15 @@ function createToken (user){
 	const decoded = new Promise(async (resolve, reject) => {
 		try{
 			const payload = jwt.decode(token, config.SECRET_TOKEN)
+			
+			// Validar que sea un access token (no refresh token)
+			if(payload.type && payload.type !== 'access'){
+				return reject({
+					status: 401,
+					message: 'Invalid token type'
+				})
+			}
+			
 			if(roles.includes(payload.role)){
 				let userId= crypt.decrypt(payload.sub);
 				await User.findById(userId, {"password" : false, "__v" : false, "loginAttempts" : false, "lastLogin" : false}, (err, user) => {
@@ -234,9 +259,60 @@ function decodeTokenPatient(token, roles, reqPatientId) {
 	return decoded;
   }
 
+// Función para decodificar refresh token
+function decodeRefreshToken(token) {
+	const decoded = new Promise(async (resolve, reject) => {
+		try{
+			const payload = jwt.decode(token, config.SECRET_TOKEN)
+			if(payload.type !== 'refresh'){
+				return reject({
+					status: 401,
+					message: 'Invalid token type'
+				})
+			}
+			// Verificar expiración
+			if (payload.exp <= moment().unix()){
+				return reject({
+					status: 401,
+					message: 'Token expired'
+				})
+			}
+			let userId= crypt.decrypt(payload.sub);
+			await User.findById(userId, {"password" : false, "__v" : false, "loginAttempts" : false, "lastLogin" : false}, (err, user) => {
+				if(err){
+					reject({
+						status: 403,
+						message: 'Invalid token'
+					})
+				}else{
+					if(user && user.role == payload.role){
+						resolve({
+							userId: userId,
+							user: user
+						})
+					}else{
+						reject({
+							status: 403,
+							message: 'Invalid token'
+						})
+					}
+				}
+			})
+		}catch (err){
+			reject({
+				status: 401,
+				message: 'Invalid Token'
+			})
+		}
+	})
+	return decoded
+}
+
 module.exports = {
 	createToken,
+	createRefreshToken,
 	decodeToken,
+	decodeRefreshToken,
 	decodeTokenPatient,
 	decodeTokenOwnerPatient
 }

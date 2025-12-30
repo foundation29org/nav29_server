@@ -2,6 +2,7 @@
 'use strict'
 
 const express = require('express')
+const insights = require('../services/insights')
 
 const userCtrl = require('../controllers/all/user')
 const patientCtrl = require('../controllers/user/patient')
@@ -61,6 +62,7 @@ function corsWithOptions(req, res, next) {
             serviceEmail.sendMailControlCall(requestInfo)
           } catch (emailError) {
             console.log('Fail sending email');
+            insights.error({ message: 'Failed to send control email in CORS check', error: emailError });
           }
           callback(new Error('Not allowed by CORS'));
       }
@@ -87,6 +89,9 @@ const checkApiKey = (req, res, next) => {
 // user routes, using the controller user, this controller has methods
 //routes for login-logout
 api.post('/login', deleteAccountCtrl.verifyToken, userCtrl.login)
+api.post('/refresh', userCtrl.refreshToken)
+api.get('/session', auth.isAuth(roles.All), checkApiKey, userCtrl.getSession)
+api.post('/logout', userCtrl.logout)
 
 api.get('/users/lang/:userId', auth.isAuth(roles.All), checkApiKey, userCtrl.getUserLang)
 api.put('/users/lang/:userId', auth.isAuth(roles.All), checkApiKey, userCtrl.changeLang)
@@ -168,12 +173,9 @@ api.delete('/rarescope/delete/:patientId', auth.isAuthPatient(roles.All), checkA
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)
 
 //translations
-api.post('/getDetectLanguage', auth.isAuth(roles.All), checkApiKey, translationCtrl.getDetectLanguage)
-api.post('/translation', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationDictionary)
 api.post('/translationinvert', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationDictionaryInvert)
 api.post('/translationtimeline', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationTimeline)
 api.post('/deepltranslationinvert', auth.isAuth(roles.All), checkApiKey, translationCtrl.getdeeplTranslationDictionaryInvert)
-api.post('/translation/segments', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationSegments)
 
 //events
 api.post('/events/dates/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.getEventsDate)
@@ -213,6 +215,10 @@ api.get('/gettoken/:userId', auth.isAuth(roles.All), checkApiKey, pubsubCtrl.get
 //azureservices
 api.get('/getAzureBlobSasTokenWithContainer/:containerName', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenWithContainer)
 api.get('/getAzureBlobSasTokenForPatient/:patientId', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenForPatient)
+
+// Speech recognition
+const speechCtrl = require('../controllers/user/patient/speech')
+api.get('/speech/token', auth.isAuth(roles.All), checkApiKey, speechCtrl.getSpeechToken)
 
 // share
 api.get('/share/patient/generalshare/:patientId', auth.isAuthPatient(roles.All), checkApiKey, openShareCtrl.getGeneralShare)

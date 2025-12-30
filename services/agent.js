@@ -43,8 +43,6 @@ async function callModel(
   /** Call the LLM powering our agent. **/
   const SYSTEM_PROMPT_TEMPLATE = await pull("foundation29/agent_system_prompt_v1");
 
-  // Intentar usar gpt5mini; si no está disponible, caer a gpt-4o
-  //let { azuregpt4o } = createModels('default', 'azuregpt4o');
   let { gpt5mini } = createModels('default', 'gpt5mini');
   let baseModel = gpt5mini;
 
@@ -69,8 +67,7 @@ async function callModel(
   const curatedContext = await curateContext(config.configurable.context, memories, config.configurable.containerName, config.configurable.docs, question);
   const model = baseModel.bindTools(TOOLS);
   const prompt = await SYSTEM_PROMPT_TEMPLATE.format({ systemTime: config.configurable.systemTime, curatedContext: curatedContext.content });
-  
-  
+
   if (config.configurable.context.length > 1) {
     let context = config.configurable.context.slice(1);
     let inputMessages = [];
@@ -151,24 +148,22 @@ async function prettify(state, config) {
   It removes the ```html ``` tags and the ``` ``` tags.
   */
   const { azuregpt4o } = createModels('default', 'azuregpt4o');
-  console.log('azuregpt4o:', azuregpt4o);
   output = state.messages[state.messages.length - 1];
   
   // Check if this is a TrialGPT response - if so, use it directly without reformatting
-  if (/https:\/\/trialgpt\.app/.test(output.content) && /<a\s+href=/.test(output.content)) {
+  /*if (/https:\/\/trialgpt\.app/.test(output.content) && /<a\s+href=/.test(output.content)) {
     const cleanOutput = output.content.replace(
       /<a\s+href=(["'])https:\/\/trialgpt\.app\1(?![^>]*target=)/gi,
       '<a href="https://trialgpt.app" target="_blank"'
     );
     state.messages[state.messages.length - 1].content = cleanOutput;
     return state;
-  }
+  }*/
   
   
   // For other content, proceed with normal formatting
   const htmlFormatter = await pull("foundation29/html_formatter_v1");
   const runnable = htmlFormatter.pipe(azuregpt4o);
-  console.log('prettify:');
   const formattedOutput = await runnable.invoke({ content: output.content });
   // TODO: Also use the medicalLevel variable to improve the readability of the output
   // Clean the ```html ``` tags

@@ -135,17 +135,9 @@ const getAge = birthDate => {
 };
 
 /** (b) Resumen IA de un documento largo (>100 chars) */
-async function summarizeWithDxgpt({ text, name, patientId, hasSummary = false }) {
-  // Si el texto ya es un resumen (viene de summary_translated.txt), usarlo directamente
-  if (hasSummary && text && text.trim()) {
-    console.debug(`    ↳ Usando resumen existente para "${name}" (${text.length} chars)`);
-    return text.trim();
-  }
-  
-  // Si no hay texto o es muy corto, no resumir
+async function summarizeWithDxgpt({ text, name, patientId }) {
   if (!config.DXGPT_SUBSCRIPTION_KEY || !text || text.length < 100) return null;
 
-  // Si el texto es muy largo, resumirlo con DxGPT
   console.debug(`    ↳ Summarising "${name}" (${text.length} chars)…`);
   const { data } = await axios.post(
     'https://dxgpt-apim.azure-api.net/api/medical/summarize',
@@ -194,13 +186,13 @@ async function summarizeContext(contextText, patientId) {
       return summary;
     } else {
       console.warn('⚠️ No se pudo resumir el contexto, usando contexto original truncado');
-      // Si falla el resumen, devolver los primeros 2000 caracteres
-      return contextText.substring(0, 2000);
+      // Si falla el resumen, devolver los primeros 8000 caracteres
+      return contextText.substring(0, 8000);
     }
   } catch (error) {
     console.error('❌ Error al resumir contexto:', error.message);
-    // En caso de error, devolver los primeros 2000 caracteres
-    return contextText.substring(0, 2000);
+    // En caso de error, devolver los primeros 8000 caracteres
+    return contextText.substring(0, 8000);
   }
 }
 
@@ -238,14 +230,8 @@ async function buildContextString(raw, patientId) {
   if (documents.length) {
     const documentsWithSummary = [];
     for (const doc of documents) {
-      // Si el documento ya tiene un resumen pre-generado, usarlo directamente
-      // Si no, resumir el texto extraído con DxGPT
-      const summary = await summarizeWithDxgpt({ 
-        text: doc.text, 
-        name: doc.name, 
-        patientId,
-        hasSummary: doc.hasSummary || false
-      });
+      // Resumir documentos individuales para limpiar ruido (direcciones, avisos legales, etc.)
+      const summary = await summarizeWithDxgpt({ ...doc, patientId });
       // Solo incluir documentos que tengan resumen útil
       if (summary) {
         documentsWithSummary.push({ ...doc, summary });
@@ -552,47 +538,12 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
             description = await buildContextString(raw, patientId);
           }
         }
-        
-        // Validación final: Si el contexto excede 2000 caracteres, resumirlo
-        const MAX_DXGPT_CHARS = 2000;
-        if (description && description.length > MAX_DXGPT_CHARS) {
-          console.warn(`⚠️ [Async] Contexto demasiado largo (${description.length} chars), aplicando resumen final...`);
-          pubsub.sendToUser(encryptedUserId, {
-            type: 'dxgpt-processing',
-            taskId,
-            patientId: encryptedPatientId,
-            status: 'summarizing-final',
-            message: 'Resumiendo contexto final para cumplir límite de caracteres...',
-            progress: 75
-          });
-          
-          description = await summarizeContext(description, patientId);
-          console.log(`✅ [Async] Contexto resumido a ${description.length} caracteres`);
-        }
       }
     }
     
     // Validar que tenemos descripción
     if (!description || !description.trim()) {
       throw new Error('No se pudo obtener la descripción del paciente');
-    }
-    
-    // Validación final adicional (por si acaso): Si el contexto excede 2000 caracteres, resumirlo
-    // Esto es una capa de seguridad adicional después de la validación dentro del bloque useEventsAndDocuments
-    const MAX_DXGPT_CHARS_FINAL = 2000;
-    if (description.length > MAX_DXGPT_CHARS_FINAL) {
-      console.warn(`⚠️ [Async] Contexto aún demasiado largo después de optimización (${description.length} chars), aplicando resumen final...`);
-      pubsub.sendToUser(encryptedUserId, {
-        type: 'dxgpt-processing',
-        taskId,
-        patientId: encryptedPatientId,
-        status: 'summarizing-final',
-        message: 'Resumiendo contexto final para cumplir límite de caracteres...',
-        progress: useEventsAndDocuments ? 82 : 77
-      });
-      
-      description = await summarizeContext(description, patientId);
-      console.log(`✅ [Async] Contexto resumido a ${description.length} caracteres`);
     }
     
     // Llamar a DxGPT API
@@ -606,7 +557,6 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
     });
     
     console.log(`🚀 [Async] Llamando a DxGPT API para paciente ${patientId}...`);
-    console.log(`📋 Tamaño final del contexto: ${description.length} caracteres`);
     const body = {
       description,
       myuuid: generatePatientUUID(patientId),
@@ -721,14 +671,7 @@ async function buildContextStringWithProgress(raw, patientId, userId, taskId, do
       });
       
       try {
-        // Si el documento ya tiene un resumen pre-generado, usarlo directamente
-        // Si no, resumir el texto extraído con DxGPT
-        const summary = await summarizeWithDxgpt({ 
-          text: doc.text, 
-          name: doc.name, 
-          patientId,
-          hasSummary: doc.hasSummary || false
-        });
+        const summary = await summarizeWithDxgpt({ ...doc, patientId });
         if (summary) {
           documentsWithSummary.push({ ...doc, summary });
         }
@@ -759,7 +702,7 @@ async function handleDxGptRequest(req, res) {
     const lang      = req.body?.lang || 'en';
     const custom    = req.body?.customMedicalDescription;
     const userId     = req.user; // userId del usuario autenticado
-    let useEventsAndDocuments = req.body?.useEventsAndDocuments === true;
+    const useEventsAndDocuments = req.body?.useEventsAndDocuments === true;
 
     /* ▸ Verificar si necesita procesamiento asíncrono ----------------- */
     // Si se usa "eventos y documentos" (no el resumen), SIEMPRE usar WebPubSub
@@ -872,14 +815,6 @@ async function handleDxGptRequest(req, res) {
           }
         }
       }
-    }
-
-    // Validación final: Si el contexto excede 2000 caracteres, resumirlo
-    const MAX_DXGPT_CHARS = 2000;
-    if (description && description.length > MAX_DXGPT_CHARS) {
-      console.warn(`⚠️ Contexto demasiado largo (${description.length} chars), aplicando resumen final antes de enviar a DxGPT...`);
-      description = await summarizeContext(description, patientId);
-      console.log(`✅ Contexto resumido a ${description.length} caracteres`);
     }
 
     console.log('📋 Description length:', description?.length || 0);

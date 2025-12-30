@@ -41,7 +41,7 @@ function createModels(projectName, modelType = null) {
 
     // Si se especifica un tipo de modelo, solo crear ese
     if (modelType) {
-      if (projectName !== 'default') {
+      if (projectName !== 'default' && config.LANGSMITH_API_KEY && config.LANGSMITH_API_KEY.trim() !== '') {
         try {
           const client = new Client({
             apiUrl: "https://api.smith.langchain.com",
@@ -52,9 +52,13 @@ function createModels(projectName, modelType = null) {
             client,
           });
         } catch (error) {
-          console.warn('LangSmith tracer initialization failed:', error);
-          // Continuar sin tracer
+          console.warn('LangSmith tracer initialization failed, continuing without tracer:', error.message);
+          // Continuar sin tracer - no loguear el error completo para evitar spam
+          tracer = null;
         }
+      } else if (projectName !== 'default') {
+        // Silenciosamente continuar sin tracer si no hay API key
+        tracer = null;
       }
       switch(modelType) {
         case 'azuregpt4o':
@@ -185,6 +189,7 @@ function createModels(projectName, modelType = null) {
     // ... resto del código actual ...
   } catch (error) {
     console.error('Error in createModels:', error);
+    insights.error({ message: 'Error in createModels', error: error });
     throw error;
   }
 }
@@ -366,6 +371,7 @@ async function timelineServer(patientId, docs) {
     return extractAndParse(timeline.content);
   } catch (error) {
     console.error('Error in timelineServer:', error);
+    insights.error({ message: 'Error in timelineServer', error: error });
     throw error;
   }
 }
@@ -387,6 +393,7 @@ async function anomaliesServer(patientId, docs) {
     return extractAndParse(anomalies.content);
   } catch (error) {
     console.error('Error in anomaliesServer:', error);
+    insights.error({ message: 'Error in anomaliesServer', error: error });
     throw error;
   }
 }

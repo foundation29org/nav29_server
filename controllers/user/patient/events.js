@@ -121,6 +121,7 @@ function saveEvent(req, res) {
 	let userId = crypt.decrypt(req.params.userId);
 	let eventdb = new Events()
 	eventdb.date = req.body.date
+	eventdb.dateEnd = req.body.dateEnd || null
 	eventdb.name = req.body.name
 	eventdb.notes = req.body.notes
 	eventdb.key = req.body.key
@@ -147,6 +148,7 @@ function saveEventDoc(req, res) {
 	let userId = crypt.decrypt(req.params.userId);
 	let eventdb = new Events()
 	eventdb.date = req.body.date
+	eventdb.dateEnd = req.body.dateEnd || null
 	eventdb.name = req.body.name
 	eventdb.key = req.body.key
 	eventdb.createdBy = patientId
@@ -178,6 +180,7 @@ async function saveEventForm(req, res) {
     let promises = events.map(async (event) => {
         let eventdb = new Events();
         eventdb.date = event.date || new Date(); // Asignar fecha actual si no se proporciona
+        eventdb.dateEnd = event.dateEnd || null;
         eventdb.name = event.name;
         eventdb.notes = event.notes || '';
         eventdb.key = event.key;
@@ -190,6 +193,7 @@ async function saveEventForm(req, res) {
             let itemPromises = list.map((item) => {
                 let eventdb2 = new Events();
                 eventdb2.date = eventdb.date;
+                eventdb2.dateEnd = eventdb.dateEnd;
                 eventdb2.name = item;
                 eventdb2.notes = eventdb.notes;
                 eventdb2.key = eventdb.key;

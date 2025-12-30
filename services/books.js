@@ -59,7 +59,7 @@ async function translateText(text, deepl_code, doc_lang) {
 		if (deepl_code == null) {
 			// Do an Inverse Translation
 			const info = [{ "Text": text }];
-			const TranslatedText = await translate.getTranslationDictionary2(info, doc_lang);
+			const TranslatedText = await translate.getTranslationDictionary(info, doc_lang);
 			if (TranslatedText.error) {
 				return text;
 			} else {
@@ -71,6 +71,7 @@ async function translateText(text, deepl_code, doc_lang) {
 		}
 	} catch (error) {
 		console.log(error);
+		insights.error({ message: 'Error in translateToEnglish', error: error });
 		return text;
 	}
 
@@ -128,8 +129,21 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 				// console.log(result); 
 	
 				if (result.status === 'failed') {
-					console.error('Error in analyzing document:', result.error);
-					content = "Error processing the document after multiple attempts. Please try again with other document.";
+					const errorDetails = result.error || { code: 'Unknown', message: 'Document analysis failed' };
+					console.error('Error in analyzing document:', errorDetails);
+					
+					// Detectar si es DOCX basándose en el filename
+					const isDocxFile = filename && (filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc'));
+					const errorCode = errorDetails.code || 'InternalServerError';
+					
+					// Si es DOCX y falla, lanzar error con key corto
+					if (isDocxFile && errorCode === 'InternalServerError') {
+						console.error('DOCX file failed to process:', filename);
+						throw new Error('messages.error.docx.convertToPdf');
+					}
+					
+					// Para otros tipos de archivo o errores, usar mensaje genérico
+					throw new Error('messages.error.document.processingFailed');
 				} else {
 					content = result.analyzeResult.content;
 				}
@@ -145,7 +159,7 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			  console.error('Error detecting language:', error);
 			  throw error; // Propaga el error para ser manejado por el catch principal
 			}
-			/*let lang_response = await translate.getDetectLanguage2(content)
+			/*let lang_response = await translate.getDetectLanguage(content)
 			  let doc_lang = lang_response[0].language;*/
 			let deepl_code = null;
 			let translatedContent = null;
@@ -202,8 +216,19 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			insights.error(error);
 			const patientIdCrypt = crypt.encrypt(patientId);
 			let docIdEnc = crypt.encrypt(documentId);
-			let message2 = { "time": new Date().toISOString(), "docId": docIdEnc, "status": "failed", "filename": filename, "patientId": patientIdCrypt };
-			message2["error"] = error.toString();
+			
+			// Usar el mensaje del error si está disponible (ya será amigable si viene de nuestro manejo)
+			let errorMessage = error.message || error.toString();
+			
+			let message2 = { 
+				"time": new Date().toISOString(), 
+				"docId": docIdEnc, 
+				"status": "failed", 
+				"filename": filename, 
+				"patientId": patientIdCrypt,
+				"error": errorMessage
+			};
+			
 			pubsub.sendToUser(userId, message2);
 			try {
 				await updateDocStatus(documentId, 'failed');
@@ -247,8 +272,21 @@ async function form_recognizerwizard(patientId, documentId, containerName, url, 
 				// console.log(result); 
 	
 				if (result.status === 'failed') {
-					console.error('Error in analyzing document:', result.error);
-					content = "Error processing the document after multiple attempts. Please try again with other document.";
+					const errorDetails = result.error || { code: 'Unknown', message: 'Document analysis failed' };
+					console.error('Error in analyzing document (wizard):', errorDetails);
+					
+					// Detectar si es DOCX basándose en el filename
+					const isDocxFile = filename && (filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc'));
+					const errorCode = errorDetails.code || 'InternalServerError';
+					
+					// Si es DOCX y falla, lanzar error con key corto
+					if (isDocxFile && errorCode === 'InternalServerError') {
+						console.error('DOCX file failed to process (wizard):', filename);
+						throw new Error('messages.error.docx.convertToPdf');
+					}
+					
+					// Para otros tipos de archivo o errores, usar mensaje genérico
+					throw new Error('messages.error.document.processingFailed');
 				} else {
 					content = result.analyzeResult.content;
 				}
@@ -265,7 +303,7 @@ async function form_recognizerwizard(patientId, documentId, containerName, url, 
 			  console.error('Error detecting language:', error);
 			  throw error; // Propaga el error para ser manejado por el catch principal
 			}
-			/*let lang_response = await translate.getDetectLanguage2(content)
+			/*let lang_response = await translate.getDetectLanguage(content)
 			  let doc_lang = lang_response[0].language;*/
 			let deepl_code = null;
 			let translatedContent = null;
@@ -301,8 +339,19 @@ async function form_recognizerwizard(patientId, documentId, containerName, url, 
 			insights.error(error);
 			const patientIdCrypt = crypt.encrypt(patientId);
 			let docIdEnc = crypt.encrypt(documentId);
-			let message2 = { "time": new Date().toISOString(), "docId": docIdEnc, "status": "failed", "filename": filename, "patientId": patientIdCrypt };
-			message2["error"] = error.toString();
+			
+			// Usar el mensaje del error si está disponible (ya será amigable si viene de nuestro manejo)
+			let errorMessage = error.message || error.toString();
+			
+			let message2 = { 
+				"time": new Date().toISOString(), 
+				"docId": docIdEnc, 
+				"status": "failed", 
+				"filename": filename, 
+				"patientId": patientIdCrypt,
+				"error": errorMessage
+			};
+			
 			pubsub.sendToUser(userId, message2);
 			try {
 				await updateDocStatus(documentId, 'failed');
@@ -485,6 +534,7 @@ async function callNavigator(req, res) {
 		var containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 		var content = req.body.context;
 		var docs = req.body.docs;
+		var originalQuestion = req.body.question;
 		
 		// Get user language - try from request body first, then from user model
 		let userLang = req.body.lang || req.body.userLang || 'en';
@@ -500,24 +550,91 @@ async function callNavigator(req, res) {
 			}
 		}
 		
+		// Detectar idioma del mensaje y traducir si es necesario (usando las mismas funciones que el cliente)
+		let questionToProcess = originalQuestion;
+		if (originalQuestion && originalQuestion.length > 0) {
+			try {
+				// Detectar idioma usando Microsoft Translator API (igual que el cliente)
+				const detectedLangResult = await translate.getDetectLanguage(originalQuestion);
+				
+				// Verificar que la respuesta sea válida y tenga el formato esperado
+				if (detectedLangResult && Array.isArray(detectedLangResult) && detectedLangResult[0] && detectedLangResult[0].language) {
+					const detectedLanguage = detectedLangResult[0].language;
+					const confidenceScore = detectedLangResult[0].score || 0;
+					const confidenceThreshold = 0.7;
+					
+					// Si el idioma detectado no es inglés y tiene confianza suficiente, traducir a inglés
+					if (detectedLanguage !== 'en' && confidenceScore >= confidenceThreshold) {
+						const info = [{ "Text": originalQuestion }];
+						const translatedResult = await translate.getTranslationDictionary(info, detectedLanguage);
+						
+						if (translatedResult && !translatedResult.error && translatedResult[0] && translatedResult[0].translations && translatedResult[0].translations[0]) {
+							questionToProcess = translatedResult[0].translations[0].text;
+							console.log(`Translated question from ${detectedLanguage} to en: ${originalQuestion.substring(0, 50)}... -> ${questionToProcess.substring(0, 50)}...`);
+						} else {
+							console.log('Translation failed, using original question');
+						}
+					} else if (confidenceScore < confidenceThreshold) {
+						console.log(`Low confidence in language detection (${confidenceScore}), using original question`);
+					} else {
+						console.log(`Question is already in English, using original`);
+					}
+				} else {
+					console.log('Language detection failed or invalid response, using original question');
+				}
+			} catch (error) {
+				console.log('Error detecting/translating language:', error);
+				insights.error(error);
+				// En caso de error, usar el mensaje original
+				questionToProcess = originalQuestion;
+			}
+		}
+		
 		const projectName = `AGENT - ${config.LANGSMITH_PROJECT} - ${patientId}`;
 		console.log("projectName: ", projectName);
 		console.log("config.LANGSMITH_API_KEY: ", config.LANGSMITH_API_KEY);
-		const client2 = new Client({
-			apiUrl: "https://api.smith.langchain.com",
-			apiKey: config.LANGSMITH_API_KEY,
-		});
+		
+		// Crear tracer solo si la API key es válida
+		let tracer = null;
+		if (config.LANGSMITH_API_KEY && config.LANGSMITH_API_KEY.trim() !== '') {
+			try {
+				const client2 = new Client({
+					apiUrl: "https://api.smith.langchain.com",
+					apiKey: config.LANGSMITH_API_KEY,
+				});
 
-		let tracer = new LangChainTracer({
-			projectName: projectName,
-			client2,
-		});
+				tracer = new LangChainTracer({
+					projectName: projectName,
+					client: client2,
+				});
+			} catch (error) {
+				console.warn('LangSmith tracer initialization failed, continuing without tracer:', error.message);
+				insights.error({ message: 'LangSmith tracer initialization failed', error: error });
+				tracer = null;
+			}
+		} else {
+			console.warn('LANGSMITH_API_KEY not configured, continuing without tracer');
+		}
 		//console.log('client2:', client2);
-		const resAgent = await graph.invoke({
+		
+		// Log para debugging: identificar llamadas duplicadas
+		const requestId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+		console.log(`[${requestId}] Invoking agent with questionToProcess:`, questionToProcess.substring(0, 100));
+		console.log(`[${requestId}] Request details:`, { 
+			userId: req.body.userId?.substring(0, 20), 
+			patientId: patientId?.substring(0, 20),
+			timestamp: new Date().toISOString()
+		});
+		
+		// Enviar respuesta "Processing" inmediatamente - la respuesta real viene por WebPubSub
+		res.status(200).send({ "action": "Processing", "message": "Response will be sent via WebPubSub" });
+		
+		// Invocar el agente de forma asíncrona - la respuesta se enviará por WebPubSub
+		graph.invoke({
 			messages: [
 				{
 				role: "user",
-				content: req.body.question,
+				content: questionToProcess,
 				},
 			],
 			},
@@ -532,17 +649,11 @@ async function callNavigator(req, res) {
 				userLang: userLang,
 				pubsubClient: pubsub
 			},
-			callbacks: [tracer] 
+			callbacks: tracer ? [tracer] : [] 
+		}).catch(error => {
+			console.error('Error invoking agent:', error);
+			insights.error({ message: 'Error invoking agent', error: error });
 		});
-		
-		let lastMessage = resAgent.messages[resAgent.messages.length - 1].content;
-		// console.log(lastMessage);
-
-		let sampleResp = {
-			"action": "Question",
-			"data": lastMessage
-		}
-		res.status(200).send(sampleResp);
 	} catch (error) {
 		console.error(error);
 		insights.error(error);
@@ -582,6 +693,7 @@ async function getInitialEvents(req, res) {
 
 	} catch (error) {
 		console.log(`Error:`, error);
+		insights.error({ message: 'Error in extractInitialEvents', error: error });
 		res.status(200).send(initialEvents);
 	}
 }
