@@ -1,5 +1,6 @@
-const { ChatOpenAI } = require("@langchain/openai");
+const { ChatOpenAI, OpenAIEmbeddings } = require("@langchain/openai");
 const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
+const { ChatPromptTemplate } = require("@langchain/core/prompts");
 const Events = require('../models/events')
 const Patient = require('../models/patient')
 const Document = require('../models/document')
@@ -18,6 +19,9 @@ const { BedrockChat } = require("@langchain/community/chat_models/bedrock");
 const { ChatBedrockConverse } = require("@langchain/aws");
 const { ChatGoogleGenerativeAI } = require("@langchain/google-genai");
 const axios = require('axios');
+const { SearchIndexClient, SearchClient } = require("@azure/search-documents");
+const { AzureKeyCredential } = require("@azure/core-auth");
+const { createChunksIndex } = require('./vectorStoreService');
 
 const O_A_K = config.O_A_K;
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
@@ -25,6 +29,15 @@ const OPENAI_API_BASE = config.OPENAI_API_BASE;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
 const OPENAI_API_BASE_GPT4O = config.OPENAI_API_BASE_GPT4O;
 const O_A_K_GPT5MINI = config.O_A_K_GPT5MINI;
+
+const embeddings = new OpenAIEmbeddings({
+  azureOpenAIApiKey: config.O_A_K,
+  azureOpenAIApiVersion: config.OPENAI_API_VERSION,
+  azureOpenAIApiInstanceName: config.OPENAI_API_BASE,
+  azureOpenAIApiDeploymentName: "nav29embeddings-large",
+  model: "text-embedding-3-large",
+  modelName: "text-embedding-3-large",
+});
 
 const BEDROCK_API_KEY = config.BEDROCK_USER_KEY;
 const BEDROCK_API_SECRET = config.BEDROCK_USER_SECRET;
@@ -321,11 +334,11 @@ async function summarizeServer(patientId, medicalLevel, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
 
   const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-  let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+  let { gpt5mini } = createModels(projectName, 'gpt5mini');
 
   const summarize_prompt = await pull("foundation29/summarize-single_prompt_v1");
 
-  const chatPrompt = summarize_prompt.pipe(azuregpt4o);
+  const chatPrompt = summarize_prompt.pipe(gpt5mini);
   
   const summary = await chatPrompt.invoke({
     referenceDocs: docs,
@@ -354,19 +367,56 @@ async function extractAndParse(summaryText) {
   }
 }
 
-async function timelineServer(patientId, docs) {
-  // Refactor of the summarize function to be used completely and independently in the server
+async function timelineServer(patientId, docs, reportDate) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
     let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+    
+    const reportDateStr = reportDate instanceof Date ? reportDate.toISOString().split('T')[0] : reportDate;
 
-  const timeline_prompt = await pull("foundation29/timeline-single_prompt_v1");
+    let timeline_prompt;
+    try {
+      // Intentamos bajar el prompt del Hub
+      timeline_prompt = await pull("foundation29/timeline-single_prompt_v2");
+    } catch (e) {
+      console.warn("Prompt foundation29/timeline-single_prompt_v2 not found or error pulling, using local fallback");
+      timeline_prompt = ChatPromptTemplate.fromMessages([
+        ["system", `You are a high-precision medical data extractor. Your goal is to create an EXHAUSTIVE timeline.
+        
+### MANDATORY RULES:
+1. Scan from the very first line (Background/History).
+2. ANCHORING FOR CHRONIC CONDITIONS: For items in "BACKGROUND" or "HISTORY" sections with NO year mentioned (e.g., Hiatal hernia, Chondromalacia):
+   - Set "date": null
+   - Set "present": true
+3. REPORT DATE: Use {reportDate} for all findings, tests, and plans described as current or part of today's report.
+4. ISO FORMAT: Always convert to YYYY-MM-DD. 
+   - If only a year is available, use YYYY-01-01. 
+   - If only month and year are available, use YYYY-MM-01.
+   - NEVER output just "YYYY" or "YYYY-MM".
+   - Always return the date as a STRING enclosed in quotes, never as a number.
+5. Extract every surgery, diagnosis, medication, and abnormal test.
+6. If unsure of the year for a past event, "null" is mandatory.
+7. Write in English. Output MUST be a JSON array inside <output> tags.`],
+        ["human", `REFERENCE DATE (Today): {reportDate}
+DOCUMENT: {referenceDocs}
+TASK: Extract all events into a JSON array inside <output> tags.`]
+      ]);
+    }
 
-  const chatPrompt = timeline_prompt.pipe(azuregpt4o);
-  
-  const timeline = await chatPrompt.invoke({
-    referenceDocs: docs
-  });
+    const chatPrompt = timeline_prompt.pipe(azuregpt4o);
+    
+    // Unimos el contenido de los documentos en un solo string para que el LLM lo vea todo claro
+    const fullText = docs.map(d => d.pageContent).join("\n\n");
+
+    const timeline = await chatPrompt.invoke({
+      referenceDocs: fullText,
+      reportDate: reportDateStr
+    });
+
+    // Log para ver qué está respondiendo exactamente el modelo de timeline
+    console.log('--- TIMELINE LLM RAW OUTPUT ---');
+    console.log(timeline.content);
+    console.log('-------------------------------');
 
     return extractAndParse(timeline.content);
   } catch (error) {
@@ -475,13 +525,86 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
     const clean_text = text.replace(/{/g, '{{').replace(/}/g, '}}');
     const clean_raw_text = raw_text.replace(/{/g, '{{').replace(/}/g, '}}');
 
-    const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 500000 });
+    const document = await Document.findById(doc_id);
+    const reportDate = document.originaldate || document.date || new Date();
+    const dateStatus = document.originaldate ? 'confirmed' : 'missing';
+
+    // Vectorización de chunks para la nueva arquitectura
+    try {
+      const chunkSplitter = new RecursiveCharacterTextSplitter({ 
+        chunkSize: 3000, 
+        chunkOverlap: 200,
+        separators: ["\n\n", "\n", ". ", " ", ""]
+      });
+      
+      const chunkDocs = await chunkSplitter.createDocuments([clean_raw_text]);
+      
+      // Obtener embeddings para todos los chunks
+      const texts = chunkDocs.map(d => d.pageContent);
+      const embeddingsArrays = await embeddings.embedDocuments(texts);
+
+      const searchClient = new SearchClient(
+        config.SEARCH_API_ENDPOINT, 
+        config.cogsearchIndexChunks, 
+        new AzureKeyCredential(config.SEARCH_API_KEY)
+      );
+
+      const chunksToUpload = chunkDocs.map((chunk, index) => {
+        const metadata = {
+          id: `${doc_id}_${index}`,
+          patientId: patientId,
+          documentId: doc_id,
+          reportDate: reportDate.toISOString(),
+          dateStatus: dateStatus,
+          filename: filename,
+          documentType: 'document_chunk'
+        };
+        return {
+          id: metadata.id,
+          patientId: metadata.patientId,
+          documentId: metadata.documentId,
+          reportDate: metadata.reportDate,
+          dateStatus: metadata.dateStatus,
+          filename: metadata.filename,
+          documentType: metadata.documentType,
+          content: chunk.pageContent,
+          content_vector: embeddingsArrays[index], // Usamos nombre estándar
+          metadata: JSON.stringify(metadata) // Para compatibilidad con LangChain
+        };
+      });
+
+      // Asegurar que el índice existe primero
+      await createChunksIndex(embeddings, config.SEARCH_API_ENDPOINT, config.SEARCH_API_KEY);
+      
+      // Subir documentos directamente con el cliente de Azure
+      await searchClient.uploadDocuments(chunksToUpload);
+      
+      // Guardar chunks en Blob Storage para futura reindexación sin re-parsear
+      try {
+        const chunksUrl = url.replace(/\/[^\/]*$/, '/chunks.json');
+        await azure_blobs.createBlob(containerName, chunksUrl, JSON.stringify(chunksToUpload));
+      } catch (bError) {
+        console.warn('No se pudo guardar backup de chunks en blob:', bError.message);
+      }
+
+      console.log(`Documento ${doc_id} vectorizado en chunks (${chunksToUpload.length} fragmentos)`);
+    } catch (vError) {
+      console.error('Error vectorizando chunks:', vError);
+      insights.error({ message: 'Error vectorizando chunks', error: vError, docId: doc_id });
+      // No bloqueamos el proceso principal si falla la vectorización por ahora
+    }
+
+    const textSplitter = new RecursiveCharacterTextSplitter({ 
+      chunkSize: 3000, 
+      chunkOverlap: 200,
+      separators: ["\n\n", "\n", ". ", " ", ""]
+    });
     const docs = await textSplitter.createDocuments([clean_text]);
     const raw_docs = await textSplitter.createDocuments([clean_raw_text]);
 
     const [result, result2, result3] = await Promise.all([
       summarizeServer(patientId, medicalLevel, docs),
-      timelineServer(patientId, docs),
+      timelineServer(patientId, raw_docs, reportDate),
       anomaliesServer(patientId, raw_docs)
     ]);
 
@@ -514,7 +637,8 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
         for (let event of events) {
           event.keyMedicalEvent = await translateText(event.keyMedicalEvent, deepl_code, doc_lang);
         }
-        saveEventTimeline(events, patientId, doc_id, userId);
+        
+        saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus);
         sendMessage("timeline ready", {}, patientId);
       }
     } catch (error) {
@@ -579,24 +703,52 @@ function updateDocumentStatus(documentId, status) {
   });
 }
 
-function saveEventTimeline(events, patientId, doc_id, userId) {
+function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus) {
   for (let event of events) {
     let eventdb = new Events();
 
-    // Validar y convertir la fecha usando la función mejorada
-    const validDate = validateDate(event.date);
-    if (validDate) {
-      eventdb.date = validDate;
+    // 1. DETERMINAR LA FECHA DEL EVENTO
+    let finalDate = null;
+    let finalDateConfidence = 'missing';
+
+    if (event.date) {
+      const dateStr = String(event.date);
+      // 1. Intentamos validar si es YYYY-MM-DD
+      const validDate = validateDate(dateStr);
+      if (validDate) {
+        finalDate = validDate;
+        finalDateConfidence = 'confirmed';
+      } else {
+        // 2. SOPORTE PARA YYYY-MM (ej: 2021-06)
+        const monthMatch = dateStr.match(/^(\d{4})-(\d{2})$/);
+        if (monthMatch) {
+          finalDate = new Date(`${monthMatch[1]}-${monthMatch[2]}-01`);
+          finalDateConfidence = 'confirmed';
+        } else {
+          // 3. Intentamos validar si es solo un año (YYYY)
+          const yearMatch = dateStr.match(/^(\d{4})$/);
+          if (yearMatch) {
+            finalDate = new Date(`${yearMatch[1]}-01-01`);
+            finalDateConfidence = 'confirmed';
+          } else {
+            // Fallback: usar la del informe pero marcamos la duda
+            finalDate = reportDate;
+            finalDateConfidence = dateStatus || 'estimated';
+          }
+        }
+      }
+    } else if (event.date === null) {
+      // Caso explícito de condición crónica sin fecha (del Background)
+      finalDate = null;
+      finalDateConfidence = 'missing';
     } else {
-      //send patientId, doc_id, event.date to insights.error
-      let params = 'PatientId: ' + patientId + ' DocId: ' + doc_id + ' EventDate: ' + event.date;
-      insights.error(`Invalid date format for event: ${params}`);
-      insights.error(event);
-      console.log(event)
-      //set the actual date in YYYY-MM-DD format
-      eventdb.date = new Date().toISOString().split('T')[0];
-      //continue; // Saltar este evento si la fecha no es válida
+      // Fallback total: heredamos la del documento
+      finalDate = reportDate;
+      finalDateConfidence = dateStatus || 'missing';
     }
+
+    eventdb.date = finalDate;
+    eventdb.dateConfidence = finalDateConfidence;
     eventdb.status = event.present;
 
     eventdb.name = event.keyMedicalEvent;
@@ -606,7 +758,22 @@ function saveEventTimeline(events, patientId, doc_id, userId) {
     eventdb.createdBy = patientId;
     eventdb.addedBy = crypt.decrypt(userId);
 
-    Events.findOne({ "createdBy": patientId, "name": event.keyMedicalEvent, "key": event.eventType }, { "createdBy": false }, (err, eventdb2) => {
+    // Nuevos campos de fuente para arquitectura de tres capas
+    eventdb.source = {
+      kind: 'document',
+      documentId: doc_id,
+      filename: filename,
+      reportDate: reportDate
+    };
+    
+    eventdb.confidence = 0.8; // Valor base para extracciones automáticas
+
+    Events.findOne({ 
+      "createdBy": patientId, 
+      "name": event.keyMedicalEvent, 
+      "key": event.eventType,
+      "date": eventdb.date 
+    }, { "createdBy": false }, (err, eventdb2) => {
       if (err) {
         insights.error(err);
       }
@@ -617,7 +784,7 @@ function saveEventTimeline(events, patientId, doc_id, userId) {
           }
         });
       } else {
-        console.log('Event already exists');
+        console.log('Event already exists for this date');
       }
     });
   }
@@ -1565,5 +1732,6 @@ module.exports = {
   divideElements,
   explainMedicalEvent,
   getPatientData,
-  createModels
+  createModels,
+  embeddings
 };

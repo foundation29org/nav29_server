@@ -4,6 +4,10 @@
 */
 
 'use strict'
+// Polyfill for crypto in Node.js 18 (required by Azure AI Search libraries)
+if (!globalThis.crypto) {
+  globalThis.crypto = require('node:crypto').webcrypto;
+}
 let appInsights = require('applicationinsights');
 const config = require('./config')
 if(config.client_server!='http://localhost:4200'){

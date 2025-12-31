@@ -5,12 +5,14 @@ const azure_blobs = require('../services/f29azure');
 const pubsub = require('../services/pubsub');
 const { pull } = require('langchain/hub');
 const { z } = require("zod");
+const { ChatPromptTemplate } = require("@langchain/core/prompts");
 const config = require('../config');
 const { v4: uuidv4 } = require('uuid');
 const { MediSearchClient } = require('./medisearch');
 const pubsubClient = require('../services/pubsub');
 const { LangGraphRunnableConfig } = require("@langchain/langgraph");
 const insights = require('./insights');
+const { createIndexIfNone, createChunksIndex } = require('./vectorStoreService');
 
 const PERPLEXITY_API_KEY = config.PERPLEXITY_API_KEY;
 
@@ -22,78 +24,9 @@ const {
 const { SearchIndexClient } = require("@azure/search-documents");
 const { AzureKeyCredential } = require("@azure/core-auth");
 
-async function createIndexIfNone(indexName, embeddings, vectorStoreAddress, vectorStorePassword) {
-  const sampleEmbedding = await embeddings.embedQuery("Text");
-
-  const fields = [
-    {
-      name: "id",
-      type: "Edm.String", 
-      key: true,
-      filterable: true
-    },
-    {
-      name: "content",
-      type: "Edm.String",
-      searchable: true
-    },
-    {
-      name: "content_vector",
-      type: "Collection(Edm.Single)",
-      searchable: true,
-      dimensions: sampleEmbedding.length,
-      vectorSearchProfile: "myHnswProfile"
-    },
-    {
-      name: "metadata",
-      type: "Edm.String",
-      searchable: true,
-      filterable: true
-    }
-  ];
-
-  const indexClient = new SearchIndexClient(vectorStoreAddress, new AzureKeyCredential(vectorStorePassword));
-  
-  try {
-    const index = await indexClient.getIndex(indexName);
-    const indexExists = index !== undefined;
-
-    let vectorStore;
-    if (!indexExists) {
-      vectorStore = new AzureAISearchVectorStore(embeddings, {
-        indexName: indexName,
-        endpoint: vectorStoreAddress,
-        key: vectorStorePassword,
-        fields: fields
-      });
-      // console.log("Index created", vectorStore);
-    } else {
-      // console.log("Index already exists");
-      vectorStore = new AzureAISearchVectorStore(embeddings, {
-        indexName: indexName,
-        endpoint: vectorStoreAddress,
-        key: vectorStorePassword,
-        search: {
-          type: AzureAISearchQueryType.Similarity
-        }
-      });
-    }
-    return vectorStore;
-  } catch (error) {
-    if (error.message.includes("No index with the name")) {
-      console.log("Index not found, creating new index");
-      vectorStore = new AzureAISearchVectorStore(embeddings, {
-        indexName: indexName,
-        endpoint: vectorStoreAddress,
-        key: vectorStorePassword,
-        fields: fields
-      });
-      return vectorStore;
-    } else {
-      console.error("Error creating/accessing index:", error);
-      throw error;
-    }
-  }
+// Polyfill for crypto in Node.js 18 (required by Azure AI Search libraries)
+if (!globalThis.crypto) {
+  globalThis.crypto = require('node:crypto').webcrypto;
 }
 
 const perplexity = new OpenAI({
@@ -134,8 +67,6 @@ const mediSearchTool = new DynamicStructuredTool({
       const conversationId = uuidv4();
       const client = new MediSearchClient(config.MEDISEARCH_API_KEY);
       
-      // console.log("Sending question to MediSearch:", question);
-
       const response = await client.sendUserMessage(
         [question], // conversation array with just the current question
         conversationId,
@@ -159,13 +90,10 @@ const clinicalTrialsTool = new DynamicStructuredTool({
   name: "clinical_trials_search",
   description: "Use this tool to search for clinical trials, medical studies, research protocols or clinical trials for patients",
   schema: z.object({
-    // No input parameters required - condition is now optional and will be handled internally
   }),
   func: async (_, config) => {
-    // Get user language from configuration
     const userLang = config?.configurable?.userLang || 'en';
     
-    // Define translations for different languages
     const translations = {
       'en': `To find relevant clinical trials, you can use our specialized platform <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, which allows you to search for active studies, filter by location, and verify eligibility criteria in a personalized way.`,
       'es': `Para encontrar ensayos clínicos relevantes, puedes usar nuestra plataforma especializada <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, que te permite buscar estudios activos, filtrar por ubicación y verificar criterios de elegibilidad de forma personalizada.`,
@@ -175,7 +103,6 @@ const clinicalTrialsTool = new DynamicStructuredTool({
       'pt': `Para encontrar ensaios clínicos relevantes, você pode usar nossa plataforma especializada <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>, que permite pesquisar estudos ativos, filtrar por localização e verificar critérios de elegibilidade de forma personalizada.`
     };
     
-    // Return message in user's language, default to English if language not supported
     return translations[userLang] || translations['en'];
   },
 });
@@ -187,13 +114,11 @@ async function suggestionsFromConversation(messages) {
   const suggestions = await runnable.invoke({
     chat_history: messages
   });
-  // console.log(suggestions);
   let suggestionsArray = JSON.parse(suggestions.suggestions);
   return suggestionsArray.suggestions;
 }
 
 async function processDocs(docs, containerName) {
-  // Let's process the data first
   let docsSummaries = [];
   for (let doc of docs) {
     let url = doc.replace(/\/[^\/]*$/, '/summary_translated.txt');
@@ -204,20 +129,85 @@ async function processDocs(docs, containerName) {
   return docsSummariesString;
 }
 
-async function curateContext(context, memories, containerName, docs, question) {
+async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = []) {
   const { gemini25pro } = createModels('default', 'gemini25pro');
-  const contextTemplate = await pull('foundation29/context_curation_base_v1');
-  const runnable = contextTemplate.pipe(gemini25pro);
-  // Let's process the data first
-  let docsSummaries = await processDocs(docs, containerName);
-  let contextContent = context.map(c => `${c.role}: ${JSON.stringify(c.content)}`).join('\n\n'); // fix
-  let memoriesString = memories.map((m, i) => `<Relevant Memory ${i+1}>\n${m.pageContent}\n</Relevant Memory ${i+1}>`).join('\n\n');
   
+  let contextTemplate;
+  try {
+    // New version name to avoid affecting production
+    contextTemplate = await pull('foundation29/context_curation_v2');
+  } catch (e) {
+    console.warn("Prompt foundation29/context_curation_v2 not found, using local fallback");
+    contextTemplate = ChatPromptTemplate.fromMessages([
+      ["system", `You are a high-precision medical context curator. Your goal is to synthesize multiple sources of patient information into a single, coherent "Source of Truth" for a specific medical question.
+
+      ### HIERARCHY OF TRUTH (Follow strictly):
+      1. CONVERSATION CONTEXT: Contains demographic data (age, gender, weight, height), lifestyle, and recent user-provided updates. USE THIS FIRST for patient demographics.
+      2. EVIDENCE CHUNKS & STRUCTURED FACTS: Primary sources for clinical values. Use literal text and exact numbers from here.
+      3. DOCUMENT SUMMARIES: Use these for general clinical background and context.
+      4. LONG-TERM MEMORIES: Use this to understand previous conversations.
+
+      ### YOUR TASKS:
+      - Extract and ALWAYS include demographic data from CONVERSATION CONTEXT (age, gender, weight, height, lifestyle) if present.
+      - Summarize only the information relevant to the user's specific question.
+      - When citing a clinical value from EVIDENCE CHUNKS, ALWAYS format as: [filename, reportDate]
+      - If there are multiple values for the same test (e.g., cholesterol), highlight the most recent one but also mention the historical trend if found.
+      - If a date is marked as "missing" or "estimated", communicate that uncertainty clearly in the format: [filename, fecha no confirmada]
+      - If there is a contradiction between a summary and a literal chunk, prioritize the chunk.
+
+      ### CITATION FORMAT (CRITICAL):
+      When mentioning a clinical value from chunks, use this EXACT format:
+      "cholesterol is 260 mg/dL [Analítica 14-04-25.pdf, 2025-04-14]"
+      
+      NOT: "cholesterol is 260 mg/dL [indefinido]"
+
+      ### CONSTRAINTS:
+      - Do NOT hallucinate values or dates.
+      - Keep the tone professional and clinical.
+      - Output ONLY the curated context. No preamble or explanations about your process.`],
+      ["human", `Question: {question}
+
+      <conversation_context_with_demographics>
+      {context}
+      </conversation_context_with_demographics>
+
+      <clinical_evidence_chunks>
+      {chunks}
+      </clinical_evidence_chunks>
+
+      <extracted_structured_facts>
+      {facts}
+      </extracted_structured_facts>
+
+      <document_summaries>
+      {docs}
+      </document_summaries>
+
+      <long_term_memories>
+      {memories}
+      </long_term_memories>
+
+      MOST RELEVANT CONTEXT:`]
+    ]);
+  }
+
+  const runnable = contextTemplate.pipe(gemini25pro);
+  
+  let docsSummaries = await processDocs(docs, containerName);
+  let contextContent = context.map(c => `${c.role}: ${JSON.stringify(c.content)}`).join('\n\n');
+  let memoriesString = memories.map((m, i) => `<Recent Conversation Memory ${i+1}>\n${m.pageContent}\n</Recent Conversation Memory ${i+1}>`).join('\n\n');
+  
+  let chunksString = selectedChunks.map((c, i) => `<Evidence Chunk ${i+1} (Doc: ${c.metadata.filename}, Fecha: ${c.metadata.reportDate})>\n${c.pageContent}\n</Evidence Chunk ${i+1}>`).join('\n\n');
+  
+  let factsString = JSON.stringify(structuredFacts, null, 2);
+
   let curatedContext = await runnable.invoke({
     context: contextContent,
     memories: memoriesString,
     docs: docsSummaries,
-    question: question
+    question: question,
+    chunks: chunksString,
+    facts: factsString
   });
 
   return curatedContext;
@@ -228,6 +218,7 @@ module.exports = {
     mediSearchTool,
     clinicalTrialsTool,
     createIndexIfNone,
+    createChunksIndex,
     suggestionsFromConversation,
     curateContext
 };

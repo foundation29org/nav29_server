@@ -13,6 +13,7 @@ const langchain = require('../../../services/langchain')
 const insights = require('../../../services/insights')
 const path = require('path');
 const azure_blobs = require('../../../services/f29azure')
+const { reindexDocumentMetadata } = require('../../../services/vectorStoreService');
 
 async function getDocuments(req, res) {
 	//get docs and events of each doc of the patient
@@ -72,10 +73,24 @@ function findDocuments(patientId, userId) {
 
 async function updateDate(req, res) {
 	let documentId = crypt.decrypt(req.params.documentId);
-	Document.findByIdAndUpdate(documentId, { originaldate: req.body.originaldate }, { new: true }, (err, documentUpdated) => {
+	let patientId = crypt.decrypt(req.params.patientId); // Necesitamos el patientId real
+	
+	Document.findByIdAndUpdate(documentId, { originaldate: req.body.originaldate }, { new: true }, async (err, documentUpdated) => {
 		if (err) {
 			return res.status(500).send({ message: `Error updating the document: ${err}` })
 		}
+
+		// Reindexar chunks en Azure AI Search con la nueva fecha
+		try {
+			await reindexDocumentMetadata(documentId, patientId, {
+				reportDate: new Date(req.body.originaldate).toISOString(),
+				dateStatus: 'confirmed'
+			});
+		} catch (reindexError) {
+			console.error('Error en post-update reindex:', reindexError);
+			// No devolvemos error al cliente porque la DB ya se actualizó
+		}
+
 		res.status(200).send(documentUpdated)
 	})
 }

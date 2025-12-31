@@ -482,21 +482,21 @@ async function deleteIndexAzure(indexName) {
 			let cogsearchIndex = config.cogsearchIndex;
 			const indexClient = new SearchClient(endpoint, cogsearchIndex, new AzureKeyCredential(apiKey));
 			
-			try {
+		try {
 
-				// Intentamos primero con la estructura nueva (metadata.source)
-				let documents = await indexClient.search("*", { 
+			// Intentamos primero con la estructura nueva (source como campo de primer nivel)
+			let documents = await indexClient.search("*", { 
+				select: ["id"], 
+				filter: `source eq '${indexName}'`
+			});
+
+			// Si no hay resultados, intentamos con la estructura antigua (index_name)
+			if (documents.results.length === 0) {
+				documents = await indexClient.search("*", { 
 					select: ["id"], 
-					filter: `metadata/source eq '${indexName}'`
+					filter: `index_name eq '${indexName}'`
 				});
-
-				// Si no hay resultados, intentamos con la estructura antigua (index_name)
-				if (documents.results.length === 0) {
-					documents = await indexClient.search("*", { 
-						select: ["id"], 
-						filter: `index_name eq '${indexName}'`
-					});
-				}
+			}
 				
 				// Si llegamos aquí, el índice existe, procedemos con la eliminación
 				let docsToDelete = [];
@@ -528,8 +528,8 @@ async function deleteIndexAzure(indexName) {
 
 async function callNavigator(req, res) {
 	try{
-		var index = crypt.decrypt(req.body.index);
-		var patientId = req.body.index;
+	var index = crypt.decrypt(req.body.index);
+	var patientId = index; // Usar el ID desencriptado (ObjectId de MongoDB)
 		// Calcular containerName desde patientId encriptado (usar req.params.patientId)
 		var containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 		var content = req.body.context;
@@ -647,12 +647,21 @@ async function callNavigator(req, res) {
 				containerName: containerName,
 				userId: req.body.userId,
 				userLang: userLang,
+				originalQuestion: originalQuestion,
 				pubsubClient: pubsub
 			},
 			callbacks: tracer ? [tracer] : [] 
 		}).catch(error => {
 			console.error('Error invoking agent:', error);
 			insights.error({ message: 'Error invoking agent', error: error });
+			// Notificar al usuario que algo ha ido mal para que no se quede colgado
+			pubsub.sendToUser(req.body.userId, { 
+				"time": new Date().toISOString(), 
+				"status": "error", 
+				"message": "ERROR_PROCESSING_REQUEST",
+				"step": "navigator", 
+				"patientId": patientId 
+			});
 		});
 	} catch (error) {
 		console.error(error);

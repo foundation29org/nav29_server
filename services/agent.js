@@ -1,13 +1,17 @@
-const {createModels} = require('../services/langchain');
+const {createModels, embeddings} = require('../services/langchain');
+const { SearchIndexClient, SearchClient } = require("@azure/search-documents");
+const { AzureKeyCredential } = require("@azure/core-auth");
 const { suggestionsFromConversation } = require('../services/tools');
 const { pull } = require('langchain/hub');
 const config = require('../config');
-const { OpenAIEmbeddings } = require("@langchain/openai");
 const { HumanMessage, AIMessage, SystemMessage } = require("@langchain/core/messages");
 const { MessagesAnnotation, StateGraph, Annotation } = require("@langchain/langgraph");
 const { ToolNode } = require("@langchain/langgraph/prebuilt");
-const { perplexityTool, mediSearchTool, clinicalTrialsTool, createIndexIfNone, curateContext } = require('../services/tools');
+const { perplexityTool, mediSearchTool, clinicalTrialsTool, curateContext } = require('../services/tools');
+const { createIndexIfNone } = require('./vectorStoreService');
+const { detectIntent, retrieveChunks, deterministicRerank, extractStructuredFacts } = require('./retrievalService');
 const { Document } = require("@langchain/core/documents");
+const { ChatPromptTemplate } = require("@langchain/core/prompts");
 const { setContextVariable } = require("@langchain/core/context");
 
 const AttributesState = Annotation.Root({
@@ -25,14 +29,6 @@ const TOOLS = [perplexityTool, clinicalTrialsTool];
 const vectorStoreAddress = config.SEARCH_API_ENDPOINT;
 const vectorStorePassword = config.SEARCH_API_KEY;
 
-const embeddings = new OpenAIEmbeddings({
-    azureOpenAIApiKey: config.O_A_K,
-    azureOpenAIApiVersion: config.OPENAI_API_VERSION,
-    azureOpenAIApiInstanceName: config.OPENAI_API_BASE,
-    azureOpenAIApiDeploymentName: "nav29embeddings-large",
-    model: "text-embedding-3-large",
-    modelName: "text-embedding-3-large",
-});
 const cogsearchIndex = config.cogsearchIndex;
 
 // Define the function that calls the model
@@ -41,32 +37,92 @@ async function callModel(
   config,
 ) {
   /** Call the LLM powering our agent. **/
-  const SYSTEM_PROMPT_TEMPLATE = await pull("foundation29/agent_system_prompt_v1");
+  let systemPromptTemplate;
+  try {
+    // New version name to avoid affecting production
+    systemPromptTemplate = await pull("foundation29/agent_system_prompt_v2");
+  } catch (e) {
+    console.warn("Prompt foundation29/agent_system_prompt_v2 not found, using local fallback");
+    systemPromptTemplate = ChatPromptTemplate.fromMessages([
+      ["system", `Nav29 is an advanced medical assistant designed to help patients understand their health data with high precision and empathy. You are powered by Foundation29.org.
+
+      ### MISSION:
+      Your primary mission is to answer patient questions using the provided "Curated Patient Context". This context is a synthesis of literal document evidence, structured facts, and conversation history.
+
+      ### GROUNDING & CITATIONS (NotebookLM Style):
+      - ALWAYS prioritize data from the "Curated Patient Context".
+      - When mentioning a specific value (e.g., lab result, dose, date), cite the source in brackets, for example: [Report 2024-05-02] or [analitica.pdf].
+      - If the curated context mentions that a date is "missing" or "estimated", communicate this uncertainty to the patient (e.g., "According to an undated report...").
+      - Do NOT invent data points or dates not present in the curated context.
+
+      ### GUIDELINES:
+      - Be empathetic but maintain clinical accuracy.
+      - If you cannot find the answer in the provided context, state it clearly.
+      - If the user's question is about clinical trials, research studies, or experimental treatments, you MUST add at the end of the response: "To find relevant clinical trials, you can use our specialized platform <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>".
+
+      ### CONTEXT:
+      TODAY'S DATE: {systemTime}
+
+      <curated_patient_context>
+      {curatedContext}
+      </curated_patient_context>`]
+    ]);
+  }
 
   let { gpt5mini } = createModels('default', 'gpt5mini');
   let baseModel = gpt5mini;
 
+  const question = state.messages[state.messages.length - 1].content;
+  const originalQuestion = config.configurable.originalQuestion || question;
+  const patientId = config.configurable.patientId;
 
-  console.log('cogsearchIndex:', cogsearchIndex);
-  let vectorStore = await createIndexIfNone(cogsearchIndex, embeddings, vectorStoreAddress, vectorStorePassword);
-  config.configurable.vectorStore = vectorStore;
-  // For Azure AI Search, we need to use OData filter syntax
-  const filter = {
-    filterExpression: `metadata/source eq '${config.configurable.indexName}'`,
-    vectorFilterMode: "preFilter"  // Apply filter before vector search for better performance
+  // 1. Detección de intención (usamos la original para mejor detección de erratas médicas)
+  const plan = await detectIntent(originalQuestion, patientId);
+  console.log(`Intento detectado: ${plan.id} para la pregunta: "${originalQuestion}"`);
+
+  // 2. Recuperación de memorias de conversación (k=3, filtro por source)
+  let conversationVectorStore = await createIndexIfNone(cogsearchIndex, embeddings, vectorStoreAddress, vectorStorePassword);
+  
+  const conversationFilter = {
+    filterExpression: `source eq '${config.configurable.indexName}'`,
+    vectorFilterMode: "preFilter"
   };
-
-  const retriever = vectorStore.asRetriever({
+  const conversationRetriever = conversationVectorStore.asRetriever({
     k: 3,
-    filter: filter,
+    filter: conversationFilter,
     searchType: "similarity"
   });
+  const memories = await conversationRetriever.invoke(question);
 
-  const question = state.messages[state.messages.length - 1].content;
-  const memories = await retriever.invoke(question);
-  const curatedContext = await curateContext(config.configurable.context, memories, config.configurable.containerName, config.configurable.docs, question);
+  // 3. Recuperación de Document Chunks (Candidatos)
+  // Si la pregunta traducida es muy diferente, pasamos ambas al retriever para búsqueda híbrida
+  const searchQuery = question !== originalQuestion ? `${question} ${originalQuestion}` : question;
+  const candidateChunks = await retrieveChunks(searchQuery, patientId, plan);
+  console.log(`Recuperados ${candidateChunks.length} candidatos para chunks usando: "${searchQuery}"`);
+
+  // 4. Re-ranking determinista y Selección de evidencia
+  const selectedChunks = deterministicRerank(candidateChunks, plan);
+  console.log(`Seleccionados ${selectedChunks.length} chunks de evidencia final`);
+
+  // 5. Extracción estructurada (Fase 7)
+  const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+
+  // 6. Curación de contexto (Pasamos memorias, chunks seleccionados y hechos estructurados)
+  const curatedContext = await curateContext(
+    config.configurable.context, 
+    memories, 
+    config.configurable.containerName, 
+    config.configurable.docs, 
+    question,
+    selectedChunks,
+    structuredFacts
+  );
+
   const model = baseModel.bindTools(TOOLS);
-  const prompt = await SYSTEM_PROMPT_TEMPLATE.format({ systemTime: config.configurable.systemTime, curatedContext: curatedContext.content });
+  const prompt = await systemPromptTemplate.format({ 
+    systemTime: config.configurable.systemTime, 
+    curatedContext: curatedContext.content 
+  });
 
   if (config.configurable.context.length > 1) {
     let context = config.configurable.context.slice(1);
@@ -86,7 +142,7 @@ async function callModel(
       ...inputMessages,
       ...state.messages,
     ]);
-    return {messages: [response], vectorStore: vectorStore};
+    return {messages: [response], vectorStore: conversationVectorStore};
   } else {
     const response = await model.invoke([
     {
@@ -97,42 +153,55 @@ async function callModel(
   ]);
 
   // We return a list, because this will get added to the existing list
-  return { messages: [response], vectorStore: vectorStore };
+  return { messages: [response], vectorStore: conversationVectorStore };
   }
 }
 
-async function saveContext(state, config) {
+async function saveContext(state, langGraphConfig) {
   input = state.messages[state.messages.length - 2];
   output = state.messages[state.messages.length - 1];
 
-  let message = { "time": new Date().toISOString(), "answer": output.content, "status": "respuesta generada", "step": "navigator", "patientId": config.configurable.patientId }
-  config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
+  let message = { "time": new Date().toISOString(), "answer": output.content, "status": "respuesta generada", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+  langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
 
   try {
-    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": config.configurable.patientId }
-    config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
+    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+    langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
     // Convert inputs to only include 'input' but maintain the key
-    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + config.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
+    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + langGraphConfig.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
 
-    // Create a new Document with the formatted memory
-    const documents = [
-      new Document({
-        pageContent: formattedSavedMemory,
-      })
-    ];
-    // console.log(documents);
-    for (const doc of documents) {  
-      doc.metadata = {source: config.configurable.indexName};
-    }
-    // Add documents to retriever
-    await state.vectorStore.addDocuments(documents);
+    // Generar embedding para la memoria
+    const memoryEmbedding = await embeddings.embedQuery(formattedSavedMemory);
+
+    const searchClient = new SearchClient(
+      config.SEARCH_API_ENDPOINT, 
+      config.cogsearchIndex, 
+      new AzureKeyCredential(config.SEARCH_API_KEY)
+    );
+
+    const memoryId = `mem_${Date.now()}`;
+    const metadata = {
+      source: langGraphConfig.configurable.indexName,
+      timestamp: langGraphConfig.configurable.systemTime
+    };
+
+    const documentToUpload = {
+      id: memoryId,
+      content: formattedSavedMemory,
+      source: metadata.source,
+      content_vector: memoryEmbedding, // Usamos nombre estándar
+      metadata: JSON.stringify(metadata)
+    };
+
+    // Subir directamente con cliente de Azure para asegurar campos de primer nivel
+    await searchClient.uploadDocuments([documentToUpload]);
 
     // Generate suggestionsFromConversation
     const suggestions = await suggestionsFromConversation(state.messages);
 
     // Send webpubsub message to client (in config)
-    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": config.configurable.patientId }
-    config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
+    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+    langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
 
     // console.log("Successfully saved context");
     return {vectorStore: state.vectorStore};

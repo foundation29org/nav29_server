@@ -18,7 +18,20 @@ const EventsSchema = Schema({
 	status: {type: String, default: 'false'},
 	docId: {type: Schema.Types.ObjectId, ref: 'Document'},
 	createdBy: { type: Schema.Types.ObjectId, ref: "Patient"},
-	addedBy: { type: Schema.Types.ObjectId, ref: "User"}
+	addedBy: { type: Schema.Types.ObjectId, ref: "User"},
+	// Nuevos campos para la arquitectura de tres capas
+	source: {
+		kind: {type: String, enum: ['document', 'conversation', 'manual'], default: 'manual'},
+		documentId: {type: Schema.Types.ObjectId, ref: 'Document'},
+		filename: String,
+		reportDate: Date,
+		chunkId: String,
+		page: Number
+	},
+	dateConfidence: {type: String, enum: ['confirmed', 'user_provided', 'estimated', 'missing'], default: 'missing'},
+	confidence: {type: Number, default: 1},
+	tags: [String],
+	payload: {type: Schema.Types.Mixed}
 })
 
 module.exports = conndbdata.model('Events',EventsSchema)
