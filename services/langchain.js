@@ -162,6 +162,15 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           break;
+        case 'gemini3flashpreview':
+          model = new ChatGoogleGenerativeAI({
+            model: "gemini-3-flash-preview",
+            apiKey: config.GOOGLE_API_KEY,
+            temperature: 0,
+            timeout: 140000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          break;
         case 'gemini25flash':
           model = new ChatGoogleGenerativeAI({
             model: "gemini-flash-latest",
@@ -370,7 +379,7 @@ async function extractAndParse(summaryText) {
 async function timelineServer(patientId, docs, reportDate) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+    let { gpt5mini } = createModels(projectName, 'gpt5mini');
     
     const reportDateStr = reportDate instanceof Date ? reportDate.toISOString().split('T')[0] : reportDate;
 
@@ -403,7 +412,7 @@ TASK: Extract all events into a JSON array inside <output> tags.`]
       ]);
     }
 
-    const chatPrompt = timeline_prompt.pipe(azuregpt4o);
+    const chatPrompt = timeline_prompt.pipe(gpt5mini);
     
     // Unimos el contenido de los documentos en un solo string para que el LLM lo vea todo claro
     const fullText = docs.map(d => d.pageContent).join("\n\n");
@@ -430,11 +439,11 @@ async function anomaliesServer(patientId, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+    let { gpt5mini } = createModels(projectName, 'gpt5mini');
 
   const anomalies_prompt = await pull("foundation29/anomalies-single_prompt_v1");
 
-  const chatPrompt = anomalies_prompt.pipe(azuregpt4o);
+  const chatPrompt = anomalies_prompt.pipe(gpt5mini);
   
   const anomalies = await chatPrompt.invoke({
     referenceDocs: docs
@@ -601,9 +610,9 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
     });
     const docs = await textSplitter.createDocuments([clean_text]);
     const raw_docs = await textSplitter.createDocuments([clean_raw_text]);
-
+    // summarizeServer(patientId, medicalLevel, docs),
     const [result, result2, result3] = await Promise.all([
-      summarizeServer(patientId, medicalLevel, docs),
+      summarizeServer(patientId, medicalLevel, raw_docs),
       timelineServer(patientId, raw_docs, reportDate),
       anomaliesServer(patientId, raw_docs)
     ]);
