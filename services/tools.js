@@ -150,21 +150,34 @@ async function curateContext(context, memories, containerName, docs, question, s
       ### YOUR TASKS:
       - Extract and ALWAYS include demographic data from CONVERSATION CONTEXT (age, gender, weight, height, lifestyle) if present.
       - Summarize only the information relevant to the user's specific question.
-      - When citing a clinical value from EVIDENCE CHUNKS, ALWAYS format as: [filename, reportDate]
+      - When citing a clinical value from EVIDENCE CHUNKS, ALWAYS format as: [filename, YYYY-MM-DD]
+      - If the reportDate is missing or null, use: [filename, undated]
       - If there are multiple values for the same test (e.g., cholesterol), highlight the most recent one but also mention the historical trend if found.
-      - If a date is marked as "missing" or "estimated", communicate that uncertainty clearly in the format: [filename, fecha no confirmada]
       - If there is a contradiction between a summary and a literal chunk, prioritize the chunk.
 
-      ### CITATION FORMAT (CRITICAL):
-      When mentioning a clinical value from chunks, use this EXACT format:
-      "cholesterol is 260 mg/dL [Analítica 14-04-25.pdf, 2025-04-14]"
+      ### CITATION FORMAT (CRITICAL - EXAMPLES):
+      CORRECT: "cholesterol is 260 mg/dL [Analítica 14-04-25.pdf, 2025-04-14]"
+      CORRECT: "hernia diagnosed [Report March 2020.pdf, undated]"
+      WRONG: "cholesterol is 260 mg/dL [indefinido]"
+      WRONG: "cholesterol is 260 mg/dL" (missing citation)
+
+      ### OUTPUT FORMAT:
+      Your output will be directly injected into the agent's context. Structure it as:
       
-      NOT: "cholesterol is 260 mg/dL [indefinido]"
+      PATIENT PROFILE:
+      [Include age, gender, height, weight, lifestyle if available from conversation context]
+      
+      RELEVANT CLINICAL DATA:
+      [Cite each value with [filename, date] format]
+      
+      HISTORICAL CONTEXT:
+      [Include trends or past values if relevant to the question]
 
       ### CONSTRAINTS:
       - Do NOT hallucinate values or dates.
       - Keep the tone professional and clinical.
-      - Output ONLY the curated context. No preamble or explanations about your process.`],
+      - Output ONLY the curated context. No preamble or explanations about your process.
+      - ALWAYS cite sources for clinical data using the [filename, date] format.`],
       ["human", `Question: {question}
 
       <conversation_context_with_demographics>
@@ -187,7 +200,7 @@ async function curateContext(context, memories, containerName, docs, question, s
       {memories}
       </long_term_memories>
 
-      MOST RELEVANT CONTEXT:`]
+      CURATED CONTEXT:`]
     ]);
   }
 
