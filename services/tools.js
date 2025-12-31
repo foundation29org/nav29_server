@@ -210,7 +210,23 @@ async function curateContext(context, memories, containerName, docs, question, s
   let contextContent = context.map(c => `${c.role}: ${JSON.stringify(c.content)}`).join('\n\n');
   let memoriesString = memories.map((m, i) => `<Recent Conversation Memory ${i+1}>\n${m.pageContent}\n</Recent Conversation Memory ${i+1}>`).join('\n\n');
   
-  let chunksString = selectedChunks.map((c, i) => `<Evidence Chunk ${i+1} (Doc: ${c.metadata.filename}, Fecha: ${c.metadata.reportDate})>\n${c.pageContent}\n</Evidence Chunk ${i+1}>`).join('\n\n');
+  let chunksString = selectedChunks.map((c, i) => {
+    // Formatear reportDate a ISO simple (YYYY-MM-DD) si existe
+    let formattedDate = 'undated';
+    if (c.metadata?.reportDate) {
+      try {
+        const date = new Date(c.metadata.reportDate);
+        formattedDate = date.toISOString().split('T')[0];
+      } catch (e) {
+        formattedDate = 'undated';
+      }
+    }
+    return `<Evidence Chunk ${i+1} (Doc: ${c.metadata?.filename || 'unknown'}, Fecha: ${formattedDate})>\n${c.pageContent}\n</Evidence Chunk ${i+1}>`;
+  }).join('\n\n');
+  
+  // DEBUG: Verificar formato de chunks antes de pasar al prompt
+  console.log('\n🔍 CHUNKS FORMATEADOS PARA CURACIÓN:');
+  console.log(chunksString.substring(0, 500) + '...\n');
   
   let factsString = JSON.stringify(structuredFacts, null, 2);
 

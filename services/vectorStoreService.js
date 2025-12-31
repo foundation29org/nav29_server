@@ -118,7 +118,12 @@ async function createChunksIndex(embeddings, vectorStoreAddress, vectorStorePass
     indexName: indexName,
     endpoint: vectorStoreAddress,
     key: vectorStorePassword,
-    search: { type: AzureAISearchQueryType.Similarity }
+    search: { type: AzureAISearchQueryType.Similarity },
+    // Configuración de campos para que LangChain mapee correctamente
+    textFieldName: "content",
+    vectorFieldName: "content_vector",
+    // Indicamos que queremos recuperar estos campos de primer nivel como metadata
+    additionalSearchResultFields: ["filename", "reportDate", "dateStatus", "documentId", "documentType", "patientId"]
   });
 }
 

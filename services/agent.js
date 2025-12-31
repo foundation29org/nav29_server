@@ -114,6 +114,18 @@ async function callModel(
   // 4. Re-ranking determinista y Selección de evidencia
   const selectedChunks = deterministicRerank(candidateChunks, plan);
   console.log(`Seleccionados ${selectedChunks.length} chunks de evidencia final`);
+  
+  // DEBUG: Verificar metadata de chunks seleccionados
+  if (selectedChunks.length > 0) {
+    console.log('\n📋 METADATA DE CHUNKS SELECCIONADOS:');
+    selectedChunks.slice(0, 3).forEach((chunk, i) => {
+      console.log(`Chunk ${i + 1}:`);
+      console.log(`  - filename: ${chunk.metadata?.filename || 'MISSING'}`);
+      console.log(`  - reportDate: ${chunk.metadata?.reportDate || 'MISSING'}`);
+      console.log(`  - documentId: ${chunk.metadata?.documentId || 'MISSING'}`);
+    });
+    console.log('');
+  }
 
   // 5. Extracción estructurada (Fase 7)
   const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);

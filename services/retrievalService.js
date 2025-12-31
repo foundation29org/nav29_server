@@ -101,26 +101,61 @@ async function detectIntent(question, patientId) {
 }
 
 /**
- * Performs a hybrid search on the chunks index
+ * Performs a hybrid search on the chunks index using native Azure Search Client
  */
 async function retrieveChunks(question, patientId, plan) {
+  const { SearchClient, AzureKeyCredential } = require("@azure/search-documents");
+  const { Document } = require("@langchain/core/documents");
+  
   const vectorStoreAddress = config.SEARCH_API_ENDPOINT;
   const vectorStorePassword = config.SEARCH_API_KEY;
+  const indexName = config.cogsearchIndexChunks;
   
-  const vectorStore = await createChunksIndex(embeddings, vectorStoreAddress, vectorStorePassword);
+  // Crear SearchClient nativo para control total
+  const searchClient = new SearchClient(
+    vectorStoreAddress,
+    indexName,
+    new AzureKeyCredential(vectorStorePassword)
+  );
   
-  // Usamos el cliente nativo para búsqueda híbrida si es necesario o para mayor control
-  // Pero para mantener compatibilidad con LangChain, aseguramos que el filtro use campos de primer nivel
-  const filter = {
-    filterExpression: `patientId eq '${patientId}'`,
-    vectorFilterMode: "preFilter"
-  };
-
-  // LangChain AzureAISearchVectorStore por defecto hace similitud vectorial.
-  // Podríamos implementar búsqueda híbrida manual aquí si fuera necesario.
-  const results = await vectorStore.similaritySearch(question, plan.k_candidates, filter);
+  // Generar embedding de la pregunta
+  const queryEmbedding = await embeddings.embedQuery(question);
   
-  return results;
+  // Búsqueda híbrida (vectorial + filtro por patientId)
+  const searchResults = await searchClient.search(question, {
+    filter: `patientId eq '${patientId}'`,
+    vectorSearchOptions: {
+      queries: [{
+        kind: 'vector',
+        vector: queryEmbedding,
+        kNearestNeighborsCount: plan.k_candidates,
+        fields: ['content_vector']
+      }]
+    },
+    select: ['id', 'content', 'filename', 'reportDate', 'dateStatus', 'documentId', 'documentType', 'patientId'],
+    top: plan.k_candidates
+  });
+  
+  // Convertir resultados a formato Document de LangChain
+  const documents = [];
+  for await (const result of searchResults.results) {
+    const doc = new Document({
+      pageContent: result.document.content || '',
+      metadata: {
+        id: result.document.id,
+        filename: result.document.filename,
+        reportDate: result.document.reportDate,
+        dateStatus: result.document.dateStatus,
+        documentId: result.document.documentId,
+        documentType: result.document.documentType,
+        patientId: result.document.patientId,
+        score: result.score
+      }
+    });
+    documents.push(doc);
+  }
+  
+  return documents;
 }
 
 /**
