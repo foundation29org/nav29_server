@@ -20,8 +20,6 @@ const pubsub                = require('../../../services/pubsub');
 const insights              = require('../../../services/insights');
 const axios                 = require('axios');
 const f29azure              = require('../../../services/f29azure');
-const { retrieveChunks, extractStructuredFacts } = require('../../../services/retrievalService');
-const { curateContext } = require('../../../services/tools');
 
 const { generatePatientUUID } = require('../../../services/uuid');
 
@@ -395,57 +393,21 @@ async function handleRarescopeRequest(req, res) {
     const customDescription = req.body?.customPatientDescription || req.body?.customMedicalDescription;
     let ctxStr = customDescription;
     if (!ctxStr) {
-      console.log('📋 Usando nueva arquitectura RAG para Rarescope');
-      
-      try {
-        const searchQuery = "Complete clinical history, symptoms, medical needs and quality of life indicators for a patient with a rare disease";
-        const retrievalResult = await retrieveChunks(patientId, searchQuery, "AMBIGUOUS");
-        const selectedChunks = retrievalResult.selectedChunks || [];
-        
-        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
-        
-        const curatedResult = await curateContext(
-          [], 
-          [], 
-          crypt.getContainerName(patientId), 
-          [], 
-          searchQuery,
-          selectedChunks,
-          structuredFacts
-        );
-        
-        ctxStr = curatedResult.content;
-
-        // 🚨 FALLBACK DE SEGURIDAD PARA RARESCOPE: Si el RAG es pobre, reforzar con hechos de la timeline
-        if (ctxStr.length < 800) {
-          console.warn('⚠️ Contexto RAG corto para Rarescope, reforzando con timeline...');
-          const raw = await patientContextService.aggregateClinicalContext(patientId);
-          const legacyCtx = await buildDxGptContextString(raw, patientId);
-          ctxStr = `[CLINICAL SUMMARY]\n${ctxStr}\n\n[DETAILED CLINICAL HISTORY]\n${legacyCtx}`;
-        }
-
-        console.log(`✅ Contexto RAG generado para Rarescope (${ctxStr.length} caracteres)`);
-      } catch (ragError) {
-        console.error('❌ Error en arquitectura RAG para Rarescope, usando fallback legacy:', ragError);
-        // Fallback legacy
-        const raw = await patientContextService.aggregateClinicalContext(patientId);
-        ctxStr = await buildContextString(raw, patientId);
-        if (ctxStr.length >= 2000) {
-          ctxStr = await prioritizeContextWithAI(ctxStr, patientId);
-        }
+      const raw = await patientContextService.aggregateClinicalContext(patientId);
+      ctxStr = await buildContextString(raw, patientId);
+      // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+      // Solo si el contexto es suficientemente largo (>= 2000 chars)
+      if (ctxStr.length >= 2000) {
+        ctxStr = await prioritizeContextWithAI(ctxStr, patientId);
       }
     }
 
     /* 3 · Prompt -------------------------------------------------------*/
-    const prompt = `Act as a medical expert specializing in patient advocacy and clinical needs assessment. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of THIS SPECIFIC PATIENT based on their medical history. Do not add explanations or extra formatting.
+    const prompt = `Act as an expert in rare diseases. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of people with rare diseases. Do not add explanations or extra formatting.
 
-These needs should reflect challenges such as lack of specific treatment options for their condition, need for specialized follow-up, management of chronic symptoms, psychological support, or information gaps that the patient faces. Valid output example: ["Need 1","Need 2"]
+These needs should reflect the lack of diagnosis, treatment, knowledge, or real support that patients face, beyond what is usually superficially declared. Valid output example: ["Need 1","Need 2"]
 
-IMPORTANT: 
-- Tailor the needs to the actual diagnoses, treatments, and symptoms mentioned in the patient context.
-- You may use your medical knowledge to identify if the condition requires specialized care typical of rare or complex diseases, but focus on the patient's specific evidence.
-- Base your analysis on what is explicitly stated in the clinical history, not on assumptions.
-- Respond in the SAME LANGUAGE as the patient context provided below.
+IMPORTANT: Respond in the SAME LANGUAGE as the patient context provided below.
 
 ## Patient Context
 ${ctxStr}`.trim();
@@ -458,7 +420,7 @@ ${ctxStr}`.trim();
       url,
       {
         messages: [
-          { role: 'system', content: 'You are a medical expert assistant. Always respond in the same language as the provided patient context.' },
+          { role: 'system', content: 'You are an expert in rare diseases. Always respond in the same language as the provided patient context.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
@@ -524,87 +486,88 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
     
     let description = custom;
     if (!description) {
-      pubsub.sendToUser(encryptedUserId, {
-        type: 'dxgpt-processing',
-        taskId,
-        patientId: encryptedPatientId,
-        status: 'retrieving-chunks',
-        message: 'Buscando información relevante en tus documentos...',
-        progress: 10
-      });
-
-      try {
-        // 1. Recuperar chunks relevantes (usamos TREND para traer más evidencia)
-        const searchQuery = "Complete clinical history, medical conditions, symptoms, laboratory results, imaging findings and current treatments";
-        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND");
-        const selectedChunks = retrievalResult.selectedChunks || [];
-
+      if (!useEventsAndDocuments) {
+        // Usar resumen del paciente
         pubsub.sendToUser(encryptedUserId, {
           type: 'dxgpt-processing',
           taskId,
           patientId: encryptedPatientId,
-          status: 'extracting-facts',
-          message: `Analizando ${selectedChunks.length} fragmentos de evidencia médica...`,
-          progress: 40
+          status: 'loading-summary',
+          message: 'Cargando resumen del paciente...',
+          progress: 5
         });
-
-        // 2. Extraer hechos estructurados
-        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
-
-        pubsub.sendToUser(encryptedUserId, {
-          type: 'dxgpt-processing',
-          taskId,
-          patientId: encryptedPatientId,
-          status: 'curating-context',
-          message: 'Sintetizando historial médico optimizado...',
-          progress: 70
-        });
-
-        // 3. Curar contexto
-        const curatedResult = await curateContext(
-          [], // context
-          [], // memories
-          crypt.getContainerName(patientId),
-          [], // docs
-          searchQuery,
-          selectedChunks,
-          structuredFacts
-        );
-
-        description = curatedResult.content;
-
-        // 4. 🚨 FALLBACK DE SEGURIDAD ASYNC
-        if (description.length < 600) {
-          console.warn('⚠️ [Async] Contexto RAG corto, reforzando con timeline...');
-          const raw = await patientContextService.aggregateClinicalContext(patientId);
-          const legacyCtx = await buildDxGptContextString(raw, patientId);
-          description = `[PATIENT PROFILE & CLINICAL HISTORY]\n${legacyCtx}\n\n[ADDITIONAL FINDINGS FROM DOCUMENTS]\n${description}`;
+        
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        if (patientSummary) {
+          description = patientSummary;
+          console.log('📋 Usando resumen del paciente (final_card.txt)');
+          
+          pubsub.sendToUser(encryptedUserId, {
+            type: 'dxgpt-processing',
+            taskId,
+            patientId: encryptedPatientId,
+            status: 'summary-loaded',
+            message: 'Resumen cargado, preparando análisis...',
+            progress: 15
+          });
+        } else {
+          useEventsAndDocuments = true;
         }
-
-        // 🚨 LIMITE ESTRICTO DXGPT (2000 caracteres)
-        if (description.length > 2000) {
-          console.log('✂️ Acortando descripción a 2000 caracteres para DxGPT');
-          description = description.substring(0, 2000);
+      }
+      
+      if (useEventsAndDocuments) {
+        // Obtener datos raw para contar documentos
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const documentCount = raw.documents?.length || 0;
+        
+        // Enviar actualización de progreso
+        pubsub.sendToUser(encryptedUserId, {
+          type: 'dxgpt-processing',
+          taskId,
+          patientId: encryptedPatientId,
+          status: 'building-context',
+          message: `Construyendo contexto desde ${documentCount} documentos...`,
+          progress: 10
+        });
+        
+        // Construir contexto con actualizaciones de progreso
+        description = await buildContextStringWithProgress(raw, patientId, userId, taskId, documentCount);
+        const originalLength = description.length;
+        
+        // Optimizar contexto con IA
+        if (description.length >= 2000) {
+          pubsub.sendToUser(encryptedUserId, {
+            type: 'dxgpt-processing',
+            taskId,
+            patientId: encryptedPatientId,
+            status: 'optimizing',
+            message: 'Optimizando contexto con IA...',
+            progress: 70
+          });
+          
+          description = await prioritizeContextWithAI(description, patientId);
+          
+          if (description.length < 300 && originalLength > 2000) {
+            console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
+            description = await buildContextString(raw, patientId);
+          }
         }
         
-        pubsub.sendToUser(encryptedUserId, {
-          type: 'dxgpt-processing',
-          taskId,
-          patientId: encryptedPatientId,
-          status: 'context-ready',
-          message: 'Contexto médico preparado para diagnóstico.',
-          progress: 85
-        });
-      } catch (ragError) {
-        console.error('❌ Error en arquitectura RAG (Async), usando fallback legacy:', ragError);
-        // Fallback legacy
-        const raw = await patientContextService.aggregateClinicalContext(patientId);
-        description = await buildContextString(raw, patientId);
-        if (description.length >= 2000) {
-          description = await prioritizeContextWithAI(description, patientId);
-        }
-        if (description.length > 2000) {
+        // Validación final: Si el contexto excede 2000 caracteres, resumirlo
+        const MAX_DXGPT_CHARS = 2000;
+        if (description && description.length > MAX_DXGPT_CHARS) {
+          console.warn(`⚠️ [Async] Contexto demasiado largo (${description.length} chars), aplicando resumen final...`);
+          pubsub.sendToUser(encryptedUserId, {
+            type: 'dxgpt-processing',
+            taskId,
+            patientId: encryptedPatientId,
+            status: 'summarizing-final',
+            message: 'Resumiendo contexto final para cumplir límite de caracteres...',
+            progress: 75
+          });
+          
           description = await summarizeContext(description, patientId);
+          console.log(`✅ [Async] Contexto resumido a ${description.length} caracteres`);
         }
       }
     }
@@ -614,6 +577,24 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
       throw new Error('No se pudo obtener la descripción del paciente');
     }
     
+    // Validación final adicional (por si acaso): Si el contexto excede 2000 caracteres, resumirlo
+    // Esto es una capa de seguridad adicional después de la validación dentro del bloque useEventsAndDocuments
+    const MAX_DXGPT_CHARS_FINAL = 2000;
+    if (description.length > MAX_DXGPT_CHARS_FINAL) {
+      console.warn(`⚠️ [Async] Contexto aún demasiado largo después de optimización (${description.length} chars), aplicando resumen final...`);
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dxgpt-processing',
+        taskId,
+        patientId: encryptedPatientId,
+        status: 'summarizing-final',
+        message: 'Resumiendo contexto final para cumplir límite de caracteres...',
+        progress: useEventsAndDocuments ? 82 : 77
+      });
+      
+      description = await summarizeContext(description, patientId);
+      console.log(`✅ [Async] Contexto resumido a ${description.length} caracteres`);
+    }
+    
     // Llamar a DxGPT API
     pubsub.sendToUser(encryptedUserId, {
       type: 'dxgpt-processing',
@@ -621,7 +602,7 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
       patientId: encryptedPatientId,
       status: 'calling-api',
       message: 'Consultando DxGPT API...',
-      progress: 90
+      progress: useEventsAndDocuments ? 85 : 80
     });
     
     console.log(`🚀 [Async] Llamando a DxGPT API para paciente ${patientId}...`);
@@ -771,32 +752,6 @@ async function buildContextStringWithProgress(raw, patientId, userId, taskId, do
   return out;
 }
 
-/** (3.3) Versión optimizada de contexto para DxGPT (sin resúmenes de documentos) */
-async function buildDxGptContextString(raw, patientId) {
-  const { profile, events } = raw;
-  
-  let out = `PATIENT DETAILS:
-- Age: ${profile.age || 'N/A'}
-- Gender: ${profile.gender || 'N/A'}
-- Birthdate: ${profile.birthDate ? (typeof profile.birthDate === 'string' ? profile.birthDate.substring(0, 10) : new Date(profile.birthDate).toISOString().substring(0, 10)) : 'N/A'}
-
-CLINICAL HISTORY (SYMPTOMS & DIAGNOSES):\n`;
-
-  if (events && events.length > 0) {
-    // Filtrar por tipos relevantes para diagnóstico y ordenar por fecha (más reciente primero)
-    const sortedEvents = [...events].sort((a, b) => new Date(b.date) - new Date(a.date));
-    
-    for (const ev of sortedEvents) {
-      const dateStr = ev.date ? new Date(ev.date).toLocaleDateString() : 'N/A';
-      out += `- ${ev.name} (${dateStr})\n`;
-    }
-  } else {
-    out += '- No specific events recorded.\n';
-  }
-
-  return out;
-}
-
 async function handleDxGptRequest(req, res) {
   try {
     // console.log('req.body', req.body);
@@ -883,54 +838,48 @@ async function handleDxGptRequest(req, res) {
     /* ▸ Context (solo si no lo trae el caller) ------------------------- */
     let description = custom;
     if (!description) {
-      console.log('📋 Usando arquitectura RAG Híbrida para DxGPT');
-      
-      try {
-        // 1. Recuperar chunks relevantes con un presupuesto más alto para diagnóstico
-        const searchQuery = "Complete clinical history, medical conditions, symptoms, laboratory results, imaging findings and current treatments";
-        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND"); // Usamos TREND para traer más contexto histórico
-        const selectedChunks = retrievalResult.selectedChunks || [];
-        
-        // 2. Obtener también eventos de la timeline para reforzar el contexto
-        const raw = await patientContextService.aggregateClinicalContext(patientId);
-        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
-        
-        // 3. Curar contexto (pasamos también los eventos del 'raw')
-        const curatedResult = await curateContext(
-          [], // context
-          [], // memories
-          crypt.getContainerName(patientId), 
-          req.body?.docs || [], 
-          searchQuery,
-          selectedChunks,
-          structuredFacts
-        );
-        
-        description = curatedResult.content;
-
-        // 4. 🚨 FALLBACK DE SEGURIDAD: Si el RAG es demasiado pobre, añadir el contexto de la timeline (SIN resúmenes de documentos)
-        if (description.length < 600) {
-          console.warn('⚠️ Contexto RAG muy corto, reforzando con hechos de la timeline...');
-          // Usamos buildContextString pero SIN incluir los resúmenes de documentos para DxGPT
-          const legacyCtx = await buildDxGptContextString(raw, patientId);
-          description = `[PATIENT PROFILE & CLINICAL HISTORY]\n${legacyCtx}\n\n[ADDITIONAL FINDINGS FROM DOCUMENTS]\n${description}`;
-        }
-
-        // 🚨 LIMITE ESTRICTO DXGPT (2000 caracteres)
-        if (description.length > 2000) {
-          console.log('✂️ Acortando descripción a 2000 caracteres para DxGPT');
-          description = description.substring(0, 2000);
-        }
-
-        console.log(`✅ Contexto Híbrido generado (${description.length} caracteres)`);
-      } catch (ragError) {
-        console.error('❌ Error en arquitectura RAG, usando fallback legacy total:', ragError);
-        const raw = await patientContextService.aggregateClinicalContext(patientId);
-        description = await buildContextString(raw, patientId);
-        if (description.length >= 2000) {
-          description = await prioritizeContextWithAI(description, patientId);
+      if (!useEventsAndDocuments) {
+        // Primero intentar obtener el resumen del paciente si existe
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        if (patientSummary) {
+          // Usar el resumen existente directamente
+          description = patientSummary;
+          console.log('📋 Usando resumen del paciente (final_card.txt)');
+        } else {
+          // Si no hay resumen, construir el contexto desde cero
+          useEventsAndDocuments = true;
         }
       }
+      
+      if (useEventsAndDocuments) {
+        // Construir el contexto desde eventos y documentos
+        console.log('📋 Construyendo contexto desde eventos y documentos');
+        const raw  = await patientContextService.aggregateClinicalContext(patientId);
+        // console.log(`>> (from f:aggregateClinicalContext) raw data from patient ${patientId}:`);
+        // console.log(raw);
+        description = await buildContextString(raw, patientId);
+        const originalLength = description.length;
+        
+        // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+        // Solo si el contexto es suficientemente largo (>= 2000 chars)
+        if (description.length >= 2000) {
+          description = await prioritizeContextWithAI(description, patientId);
+          
+          // Validar que el contexto optimizado no sea demasiado corto
+          if (description.length < 300 && originalLength > 2000) {
+            console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
+            description = await buildContextString(raw, patientId);
+          }
+        }
+      }
+    }
+
+    // Validación final: Si el contexto excede 2000 caracteres, resumirlo
+    const MAX_DXGPT_CHARS = 2000;
+    if (description && description.length > MAX_DXGPT_CHARS) {
+      console.warn(`⚠️ Contexto demasiado largo (${description.length} chars), aplicando resumen final antes de enviar a DxGPT...`);
+      description = await summarizeContext(description, patientId);
+      console.log(`✅ Contexto resumido a ${description.length} caracteres`);
     }
 
     console.log('📋 Description length:', description?.length || 0);
@@ -1028,32 +977,19 @@ async function handleDiseaseInfoRequest(req, res) {
     /* ▸ Context para 3/4 ---------------------------------------------- */
     let description = medicalDescription;
     if ((questionType === 3 || questionType === 4) && !description) {
-      console.log(`📋 Usando nueva arquitectura RAG para Disease Info (Type ${questionType})`);
+      // Primero intentar obtener el resumen del paciente si existe
+      const patientSummary = await getPatientSummaryIfExists(patientId);
       
-      try {
-        const searchQuery = `Detailed clinical information for patient with ${disease} for diagnostic and treatment context`;
-        const retrievalResult = await retrieveChunks(patientId, searchQuery, "AMBIGUOUS");
-        const selectedChunks = retrievalResult.selectedChunks || [];
-        
-        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
-        
-        const curatedResult = await curateContext(
-          [], 
-          [], 
-          crypt.getContainerName(patientId), 
-          [], 
-          searchQuery,
-          selectedChunks,
-          structuredFacts
-        );
-        
-        description = curatedResult.content;
-        console.log(`✅ Contexto RAG generado (${description.length} caracteres)`);
-      } catch (ragError) {
-        console.error('❌ Error en arquitectura RAG para Disease Info, usando fallback legacy:', ragError);
-        // Fallback legacy
-        const raw = await patientContextService.aggregateClinicalContext(patientId);
+      if (patientSummary) {
+        // Usar el resumen existente directamente
+        description = patientSummary;
+        console.log('📋 Usando resumen del paciente (final_card.txt)');
+      } else {
+        // Si no hay resumen, construir el contexto desde cero
+        const raw       = await patientContextService.aggregateClinicalContext(patientId);
         description = await buildContextString(raw, patientId);
+        // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
+        // Solo si el contexto es suficientemente largo (>= 2000 chars)
         if (description.length >= 2000) {
           description = await prioritizeContextWithAI(description, patientId);
         }

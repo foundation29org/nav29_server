@@ -146,7 +146,7 @@ async function callModel(
     systemTime: config.configurable.systemTime, 
     curatedContext: curatedContext.content 
   });
-
+  
   if (config.configurable.context.length > 1) {
     let context = config.configurable.context.slice(1);
     let inputMessages = [];
