@@ -68,7 +68,8 @@ async function fetchEvents(id, limit = 50) {
       type : e.key,
       name : e.name,
       date : toDateStr(e.date),
-      notes: e.notes ?? ''
+      notes: e.notes ?? '',
+      dateConfidence: e.dateConfidence || 'missing' // Incluir confianza de fecha
     }));
 }
 

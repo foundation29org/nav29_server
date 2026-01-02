@@ -56,6 +56,11 @@ async function getEvents(req, res) {
 				if (eventObj.docId) {
 					eventObj.docId = crypt.encrypt(eventObj.docId.toString());
 				}
+				// Marcar eventos que necesitan revisión de fecha (sin fecha o con fecha estimada)
+				if ((eventObj.date === null && eventObj.dateConfidence === 'missing') || 
+				    eventObj.dateConfidence === 'estimated') {
+					eventObj.needsDateReview = true;
+				}
 				return eventObj;
 			}) : [];
 		res.status(200).send(listEventsdb)
@@ -75,6 +80,11 @@ async function getEventsDocument(req, res) {
 			eventObj._id = crypt.encrypt(eventObj._id.toString());
 			if (eventObj.docId) {
 				eventObj.docId = crypt.encrypt(eventObj.docId.toString());
+			}
+			// Marcar eventos que necesitan revisión de fecha (sin fecha o con fecha estimada)
+			if ((eventObj.date === null && eventObj.dateConfidence === 'missing') || 
+			    eventObj.dateConfidence === 'estimated') {
+				eventObj.needsDateReview = true;
 			}
 			return eventObj;
 		}) : [];
@@ -231,23 +241,34 @@ function saveOne(eventdb){
 	})});
 }
 
-function updateEvent(req, res) {
-	let eventId = crypt.decrypt(req.params.eventId);
-	let userId = crypt.decrypt(req.params.userId);
-	let update = { ...req.body };
-	update.addedBy = userId;
-	// Eliminar _id y __v del objeto de actualización
-	delete update._id;
-	delete update.__v;
-	// Desencriptar docId si existe
-	if (update.docId) {
-		update.docId = crypt.decrypt(update.docId);
-	}
+async function updateEvent(req, res) {
+	try {
+		let eventId = crypt.decrypt(req.params.eventId);
+		let userId = crypt.decrypt(req.params.userId);
+		let update = { ...req.body };
+		update.addedBy = userId;
+		// Eliminar _id y __v del objeto de actualización
+		delete update._id;
+		delete update.__v;
+		// Desencriptar docId si existe
+		if (update.docId) {
+			update.docId = crypt.decrypt(update.docId);
+		}
 
-	Events.findByIdAndUpdate(eventId, update, { new: true }, async (err, eventdbUpdated) => {
-		if (err){
-			insights.error(err);
-			return res.status(500).send({ message: `Error making the request: ${err}` })
+		// Si se está actualizando la fecha y antes era null/missing o estimated, marcar como user_provided
+		if (update.date !== undefined && update.date !== null) {
+			// Obtener el evento actual para verificar su estado anterior
+			const currentEvent = await Events.findById(eventId);
+			if (currentEvent && (currentEvent.date === null || 
+			    currentEvent.dateConfidence === 'missing' || 
+			    currentEvent.dateConfidence === 'estimated')) {
+				update.dateConfidence = 'user_provided';
+			}
+		}
+
+		const eventdbUpdated = await Events.findByIdAndUpdate(eventId, update, { new: true });
+		if (!eventdbUpdated) {
+			return res.status(404).send({ message: 'Event not found' });
 		}
 
 		const eventObj = eventdbUpdated.toObject();
@@ -255,14 +276,21 @@ function updateEvent(req, res) {
 		if (eventObj.docId) {
 			eventObj.docId = crypt.encrypt(eventObj.docId.toString());
 		}
+		// Marcar si aún necesita revisión (sin fecha o con fecha estimada)
+		if ((eventObj.date === null && eventObj.dateConfidence === 'missing') || 
+		    eventObj.dateConfidence === 'estimated') {
+			eventObj.needsDateReview = true;
+		}
 		let containerName = crypt.getContainerName(eventdbUpdated.createdBy.toString());
 		var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 		//dont return the createdBy field
 		delete eventObj.createdBy;
 		delete eventObj.addedBy;
 		res.status(200).send({ message: 'Eventdb updated', eventdb: eventObj })
-
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error making the request: ${err}` })
+	}
 }
 
 
