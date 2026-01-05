@@ -13,6 +13,8 @@ const { detectIntent, retrieveChunks, deterministicRerank, extractStructuredFact
 const { Document } = require("@langchain/core/documents");
 const { ChatPromptTemplate } = require("@langchain/core/prompts");
 const { setContextVariable } = require("@langchain/core/context");
+const Events = require('../models/events');
+const crypt = require('./crypt');
 
 const AttributesState = Annotation.Root({
   vectorStore: Annotation,
@@ -179,38 +181,54 @@ TODAY'S DATE: {systemTime}
   }
 }
 
-async function saveContext(state, config) {
+async function saveContext(state, langGraphConfig) {
   input = state.messages[state.messages.length - 2];
   output = state.messages[state.messages.length - 1];
 
-  let message = { "time": new Date().toISOString(), "answer": output.content, "status": "respuesta generada", "step": "navigator", "patientId": config.configurable.patientId }
-  config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
+  let message = { "time": new Date().toISOString(), "answer": output.content, "status": "respuesta generada", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+  langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
 
   try {
-    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": config.configurable.patientId }
-    config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
+    // Extraer eventos reportados por el usuario (si los hay)
+    await extractUserReportedEvents(input.content, langGraphConfig.configurable.patientId, langGraphConfig.configurable.userId, langGraphConfig.configurable.pubsubClient);
+    
+    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+    langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
     // Convert inputs to only include 'input' but maintain the key
-    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + config.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
+    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + langGraphConfig.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
 
-    // Create a new Document with the formatted memory
-    const documents = [
-      new Document({
-        pageContent: formattedSavedMemory,
-      })
-    ];
-    // console.log(documents);
-    for (const doc of documents) {  
-      doc.metadata = {source: config.configurable.indexName};
-    }
-    // Add documents to retriever
-    await state.vectorStore.addDocuments(documents);
+    // Generar embedding para la memoria
+    const memoryEmbedding = await embeddings.embedQuery(formattedSavedMemory);
+
+    const searchClient = new SearchClient(
+      config.SEARCH_API_ENDPOINT, 
+      config.cogsearchIndex, 
+      new AzureKeyCredential(config.SEARCH_API_KEY)
+    );
+
+    const memoryId = `mem_${Date.now()}`;
+    const metadata = {
+      source: langGraphConfig.configurable.indexName,
+      timestamp: langGraphConfig.configurable.systemTime
+    };
+
+    const documentToUpload = {
+      id: memoryId,
+      content: formattedSavedMemory,
+      source: metadata.source,
+      content_vector: memoryEmbedding, // Usamos nombre estándar
+      metadata: JSON.stringify(metadata)
+    };
+
+    // Subir directamente con cliente de Azure para asegurar campos de primer nivel
+    await searchClient.uploadDocuments([documentToUpload]);
 
     // Generate suggestionsFromConversation
     const suggestions = await suggestionsFromConversation(state.messages);
 
     // Send webpubsub message to client (in config)
-    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": config.configurable.patientId }
-    config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
+    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+    langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
 
     // console.log("Successfully saved context");
     return {vectorStore: state.vectorStore};
@@ -323,6 +341,128 @@ const workflow = new StateGraph(AgentState)
   .addEdge("tools", "callModel")
   .addEdge("prettify", "saveContext")
   .addEdge("saveContext", "__end__");
+
+/**
+ * Extrae eventos reportados por el usuario en la conversación
+ * Ejemplo: "el 17 de julio 24 cambio a 5 mg fue el cambio de dosis"
+ */
+async function extractUserReportedEvents(userMessage, patientId, userId, pubsubClient) {
+  try {
+    // Detectar si el mensaje contiene información factual que debería guardarse
+    const triggers = [
+      /cambio.*dosis/i,
+      /me recetaron/i,
+      /me han recetado/i,
+      /desde.*tomo/i,
+      /empecé.*tomar/i,
+      /dejé.*tomar/i,
+      /el.*\d{1,2}.*de.*(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i,
+      /\d{4}-\d{2}-\d{2}/,
+      /añadelo como evento/i,
+      /guarda.*evento/i
+    ];
+    
+    const shouldExtract = triggers.some(pattern => pattern.test(userMessage));
+    
+    if (!shouldExtract) {
+      return; // No hay eventos que extraer
+    }
+    
+    // Usar LLM para extraer eventos estructurados
+    const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - UserEvents`;
+    let { gpt4omini } = createModels(projectName, 'gpt4omini');
+    
+    const extractionPrompt = ChatPromptTemplate.fromMessages([
+      ["system", `You are an expert at extracting medical events from patient statements.
+      
+      Extract ONLY factual medical events that the patient is reporting about themselves.
+      DO NOT extract questions or hypotheticals.
+      
+      ### OUTPUT FORMAT:
+      Return a JSON array of objects with these keys:
+      - "name": Brief description of the event (e.g., "Cambio de dosis de Everolimus")
+      - "key": Event type (medication, diagnosis, treatment, test, appointment, symptom, other)
+      - "date": ISO date (YYYY-MM-DD) if mentioned, otherwise null
+      - "notes": Additional context from the patient's message
+      
+      ### EXAMPLES:
+      User: "el 17 de julio 24 cambio a 5 mg fue el cambio de dosis"
+      Output: [{"name": "Cambio de dosis a 5mg", "key": "medication", "date": "2024-07-17", "notes": "Cambio de dosis de medicación"}]
+      
+      User: "me han recetado aftarepair, un gel bucal"
+      Output: [{"name": "Prescripción de Aftarepair gel bucal", "key": "medication", "date": null, "notes": "Gel bucal para llagas"}]
+      
+      If no events found, return: []`],
+      ["human", "Patient message: {message}\n\nExtract events in JSON format:"]
+    ]);
+    
+    const chain = extractionPrompt.pipe(gpt4omini);
+    const result = await chain.invoke({ message: userMessage });
+    
+    let events = [];
+    try {
+      let content = result.content.trim();
+      if (content.startsWith("```json")) content = content.slice(7, -3).trim();
+      else if (content.startsWith("```")) content = content.slice(3, -3).trim();
+      events = JSON.parse(content);
+    } catch (parseError) {
+      console.error("Error parseando eventos del usuario:", parseError);
+      return;
+    }
+    
+    if (!Array.isArray(events) || events.length === 0) {
+      return; // No hay eventos para guardar
+    }
+    
+    // Guardar eventos en la base de datos
+    const savedEvents = [];
+    for (const event of events) {
+      const eventdb = new Events();
+      eventdb.name = event.name;
+      eventdb.key = event.key || 'other';
+      eventdb.date = event.date ? new Date(event.date) : null;
+      eventdb.notes = event.notes || '';
+      eventdb.origin = 'conversation';
+      eventdb.createdBy = patientId;
+      eventdb.addedBy = crypt.decrypt(userId);
+      
+      // Marcar como información proporcionada por el usuario
+      eventdb.source = {
+        kind: 'conversation',
+        reportDate: new Date()
+      };
+      eventdb.dateConfidence = event.date ? 'user_provided' : 'missing';
+      eventdb.confidence = 1.0; // Máxima confianza en lo que dice el paciente
+      
+      try {
+        const saved = await eventdb.save();
+        savedEvents.push({
+          name: saved.name,
+          date: saved.date,
+          key: saved.key,
+          dateConfidence: saved.dateConfidence
+        });
+      } catch (err) {
+        console.error("Error guardando evento del usuario:", err);
+      }
+    }
+    
+    // Notificar al usuario que se guardaron los eventos
+    if (savedEvents.length > 0 && pubsubClient) {
+      const patientIdCrypt = crypt.encrypt(patientId);
+      pubsubClient.sendToUser(userId, {
+        time: new Date().toISOString(),
+        status: "eventos guardados",
+        events: savedEvents,
+        step: "user_reported_events",
+        patientId: patientIdCrypt
+      });
+    }
+    
+  } catch (error) {
+    console.error("Error en extractUserReportedEvents:", error);
+  }
+}
 
 // Finally, we compile it!
 const graph = workflow.compile({
