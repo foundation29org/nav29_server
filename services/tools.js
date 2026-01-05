@@ -129,7 +129,7 @@ async function processDocs(docs, containerName) {
   return docsSummariesString;
 }
 
-async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = []) {
+async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = [], appointments = [], notes = []) {
   const { gemini25pro } = createModels('default', 'gemini25pro');
   
   let contextTemplate;
@@ -141,66 +141,66 @@ async function curateContext(context, memories, containerName, docs, question, s
     contextTemplate = ChatPromptTemplate.fromMessages([
       ["system", `You are a high-precision medical context curator. Your goal is to synthesize multiple sources of patient information into a single, coherent "Source of Truth" for a specific medical question.
 
-      ### HIERARCHY OF TRUTH (Follow strictly):
-      1. CONVERSATION CONTEXT: Contains demographic data (age, gender, weight, height), lifestyle, and recent user-provided updates. USE THIS FIRST for patient demographics.
-      2. EVIDENCE CHUNKS & STRUCTURED FACTS: Primary sources for clinical values. Use literal text and exact numbers from here.
-      3. DOCUMENT SUMMARIES: Use these for general clinical background and context.
-      4. LONG-TERM MEMORIES: Use this to understand previous conversations.
+### HIERARCHY OF TRUTH (Follow strictly):
+1. CONVERSATION CONTEXT: Contains demographic data (age, gender, weight, height), lifestyle, and recent user-provided updates. USE THIS FIRST for patient demographics.
+2. EVIDENCE CHUNKS & STRUCTURED FACTS: Primary sources for clinical values. Use literal text and exact numbers from here.
+3. DOCUMENT SUMMARIES: Use these for general clinical background and context.
+4. LONG-TERM MEMORIES: Use this to understand previous conversations.
 
-      ### YOUR TASKS:
-      - Extract and ALWAYS include demographic data from CONVERSATION CONTEXT (age, gender, weight, height, lifestyle) if present.
-      - Summarize only the information relevant to the user's specific question.
-      - When citing a clinical value from EVIDENCE CHUNKS, ALWAYS format as: [filename, YYYY-MM-DD]
-      - If the reportDate is missing or null, use: [filename, undated]
-      - If there are multiple values for the same test (e.g., cholesterol), highlight the most recent one but also mention the historical trend if found.
-      - If there is a contradiction between a summary and a literal chunk, prioritize the chunk.
+### YOUR TASKS:
+- Extract and ALWAYS include demographic data from CONVERSATION CONTEXT (age, gender, weight, height, lifestyle) if present.
+- Summarize only the information relevant to the user's specific question.
+- When citing a clinical value from EVIDENCE CHUNKS, ALWAYS format as: [filename, YYYY-MM-DD]
+- If the reportDate is missing or null, use: [filename, undated]
+- If there are multiple values for the same test (e.g., cholesterol), highlight the most recent one but also mention the historical trend if found.
+- If there is a contradiction between a summary and a literal chunk, prioritize the chunk.
 
-      ### CITATION FORMAT (CRITICAL - EXAMPLES):
-      CORRECT: "cholesterol is 260 mg/dL [Analítica 14-04-25.pdf, 2025-04-14]"
-      CORRECT: "hernia diagnosed [Report March 2020.pdf, undated]"
-      WRONG: "cholesterol is 260 mg/dL [indefinido]"
-      WRONG: "cholesterol is 260 mg/dL" (missing citation)
+### CITATION FORMAT (CRITICAL - EXAMPLES):
+CORRECT: "cholesterol is 260 mg/dL [Analítica 14-04-25.pdf, 2025-04-14]"
+CORRECT: "hernia diagnosed [Report March 2020.pdf, undated]"
+WRONG: "cholesterol is 260 mg/dL [indefinido]"
+WRONG: "cholesterol is 260 mg/dL" (missing citation)
 
-      ### OUTPUT FORMAT:
-      Your output will be directly injected into the agent's context. Structure it as:
-      
-      PATIENT PROFILE:
-      [Include age, gender, height, weight, lifestyle if available from conversation context]
-      
-      RELEVANT CLINICAL DATA:
-      [Cite each value with [filename, date] format]
-      
-      HISTORICAL CONTEXT:
-      [Include trends or past values if relevant to the question]
+### OUTPUT FORMAT:
+Your output will be directly injected into the agent's context. Structure it as:
 
-      ### CONSTRAINTS:
-      - Do NOT hallucinate values or dates.
-      - Keep the tone professional and clinical.
-      - Output ONLY the curated context. No preamble or explanations about your process.
-      - ALWAYS cite sources for clinical data using the [filename, date] format.`],
+PATIENT PROFILE:
+[Include age, gender, height, weight, lifestyle if available from conversation context]
+
+RELEVANT CLINICAL DATA:
+[Cite each value with [filename, date] format]
+
+HISTORICAL CONTEXT:
+[Include trends or past values if relevant to the question]
+
+### CONSTRAINTS:
+- Do NOT hallucinate values or dates.
+- Keep the tone professional and clinical.
+- Output ONLY the curated context. No preamble or explanations about your process.
+- ALWAYS cite sources for clinical data using the [filename, date] format.`],
       ["human", `Question: {question}
 
-      <conversation_context_with_demographics>
-      {context}
-      </conversation_context_with_demographics>
+<conversation_context_with_demographics>
+{context}
+</conversation_context_with_demographics>
 
-      <clinical_evidence_chunks>
-      {chunks}
-      </clinical_evidence_chunks>
+<clinical_evidence_chunks>
+{chunks}
+</clinical_evidence_chunks>
 
-      <extracted_structured_facts>
-      {facts}
-      </extracted_structured_facts>
+<extracted_structured_facts>
+{facts}
+</extracted_structured_facts>
 
-      <document_summaries>
-      {docs}
-      </document_summaries>
+<document_summaries>
+{docs}
+</document_summaries>
 
-      <long_term_memories>
-      {memories}
-      </long_term_memories>
+<long_term_memories>
+{memories}
+</long_term_memories>
 
-      CURATED CONTEXT:`]
+CURATED CONTEXT:`]
     ]);
   }
 

@@ -10,6 +10,8 @@ const path        = require('path');
 const Patient     = require('../models/patient');
 const Document    = require('../models/document');
 const Events      = require('../models/events');
+const Appointments = require('../models/appointments');
+const Notes       = require('../models/notes');
 const crypt       = require('./crypt');
 const f29azure    = require('./f29azure');
 
@@ -99,17 +101,45 @@ async function fetchDocuments(id, limit = 10) {
   .sort((a, b) => new Date(b.date ?? 0) - new Date(a.date ?? 0));
 }
 
+async function fetchAppointments(id, limit = 20) {
+  const rows = await Appointments
+    .find({ createdBy: id })
+    .sort({ date: -1 })
+    .limit(limit)
+    .lean();
+
+  return rows.map(a => ({
+    date: toDateStr(a.date),
+    notes: a.notes ?? ''
+  }));
+}
+
+async function fetchNotes(id, limit = 20) {
+  const rows = await Notes
+    .find({ createdBy: id })
+    .sort({ date: -1 })
+    .limit(limit)
+    .lean();
+
+  return rows.map(n => ({
+    date: toDateStr(n.date),
+    content: n.content ?? ''
+  }));
+}
+
 /* ------------------------------------------------------------------ */
 /* 3 · Public API                                                     */
 /* ------------------------------------------------------------------ */
 async function aggregateClinicalContext(patientId) {
   console.debug(`[CTX] Building raw context for ${patientId}`);
-  const [profile, events, documents] = await Promise.all([
+  const [profile, events, documents, appointments, notes] = await Promise.all([
     fetchPatient(patientId),
     fetchEvents(patientId),
-    fetchDocuments(patientId)
+    fetchDocuments(patientId),
+    fetchAppointments(patientId),
+    fetchNotes(patientId)
   ]);
-  return { profile, events, documents };
+  return { profile, events, documents, appointments, notes };
 }
 
 module.exports = { aggregateClinicalContext };

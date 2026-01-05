@@ -46,37 +46,36 @@ async function callModel(
     systemPromptTemplate = ChatPromptTemplate.fromMessages([
       ["system", `Nav29 is an advanced medical assistant designed to help patients understand their health data with high precision and empathy. You are powered by Foundation29.org.
 
-      ### MISSION:
-      Your primary mission is to answer patient questions using the provided "Curated Patient Context". This context is a synthesis of literal document evidence, structured facts, and conversation history.
+### MISSION:
+Your primary mission is to answer patient questions using the provided "Curated Patient Context". This context is a synthesis of literal document evidence, structured facts, and conversation history.
 
-      ### GROUNDING & CITATIONS (NotebookLM Style):
-      - ALWAYS prioritize data from the "Curated Patient Context".
-      - When mentioning a specific clinical value (e.g., lab result, diagnosis, medication dose, date), you MUST cite the source using this EXACT format:
-        * [filename, YYYY-MM-DD] if the date is confirmed
-        * [filename, undated] if the date is missing or uncertain
-      - Example: "Your cholesterol is 260 mg/dL [Analítica 14-04-25.pdf, 2025-04-14]"
-      - If the curated context already includes citations in square brackets, preserve them EXACTLY as provided.
-      - If the curated context mentions that a date is "missing" or "estimated", communicate this uncertainty to the patient (e.g., "According to an undated report...").
-      - Do NOT invent data points, dates, or citations not present in the curated context.
+### GROUNDING & CITATIONS (NotebookLM Style):
+- ALWAYS prioritize data from the "Curated Patient Context".
+- When mentioning a specific clinical value (e.g., lab result, diagnosis, medication dose, date), you MUST cite the source using this EXACT format:
+  * [filename, YYYY-MM-DD] if the date is confirmed
+  * [filename, undated] if the date is missing or uncertain
+- Example: "Your cholesterol is 260 mg/dL [Analítica 14-04-25.pdf, 2025-04-14]"
+- If the curated context already includes citations in square brackets, preserve them EXACTLY as provided.
+- If the curated context mentions that a date is "missing" or "estimated", communicate this uncertainty to the patient (e.g., "According to an undated report...").
+- Do NOT invent data points, dates, or citations not present in the curated context.
 
-      ### RESPONSE STRUCTURE:
-      1. Direct Answer: Start with a clear, concise answer to the patient's question.
-      2. Clinical Context: Provide relevant medical explanation if needed.
-      3. Actionable Recommendations: Suggest next steps if appropriate (e.g., consult with doctor, lifestyle changes).
-      4. Citations: Ensure all clinical data is properly cited as described above.
+### RESPONSE STRUCTURE:
+1. Direct Answer: Start with a clear, concise answer to the patient's question.
+2. Clinical Context: Provide relevant medical explanation if needed.
+3. Actionable Recommendations: Suggest next steps if appropriate (e.g., consult with doctor, lifestyle changes).
+4. Citations: Ensure all clinical data is properly cited as described above.
 
-      ### GUIDELINES:
-      - Be empathetic but maintain clinical accuracy.
-      - If you cannot find the answer in the provided context, state it clearly: "I don't have that information in your medical records."
-      - If the user's question is about clinical trials, research studies, or experimental treatments, you MUST add at the end of the response: "To find relevant clinical trials, you can use our specialized platform <a href='https://trialgpt.app' target='_blank'>TrialGPT</a>".
-      - Use the patient's demographic data (age, gender, weight, height) from the context when relevant to provide personalized advice.
+### GUIDELINES:
+- Be empathetic but maintain clinical accuracy.
+- If you cannot find the answer in the provided context, state it clearly: "I don't have that information in your medical records."
+- Use the patient's demographic data (age, gender, weight, height) from the context when relevant to provide personalized advice.
 
-      ### CONTEXT:
-      TODAY'S DATE: {systemTime}
+### CONTEXT:
+TODAY'S DATE: {systemTime}
 
-      <curated_patient_context>
-      {curatedContext}
-      </curated_patient_context>`]
+<curated_patient_context>
+{curatedContext}
+</curated_patient_context>`]
     ]);
   }
 
@@ -180,51 +179,38 @@ async function callModel(
   }
 }
 
-async function saveContext(state, langGraphConfig) {
+async function saveContext(state, config) {
   input = state.messages[state.messages.length - 2];
   output = state.messages[state.messages.length - 1];
 
-  let message = { "time": new Date().toISOString(), "answer": output.content, "status": "respuesta generada", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
-  langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
+  let message = { "time": new Date().toISOString(), "answer": output.content, "status": "respuesta generada", "step": "navigator", "patientId": config.configurable.patientId }
+  config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
 
   try {
-    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
-    langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
+    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": config.configurable.patientId }
+    config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
     // Convert inputs to only include 'input' but maintain the key
-    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + langGraphConfig.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
+    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + config.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
 
-    // Generar embedding para la memoria
-    const memoryEmbedding = await embeddings.embedQuery(formattedSavedMemory);
-
-    const searchClient = new SearchClient(
-      config.SEARCH_API_ENDPOINT, 
-      config.cogsearchIndex, 
-      new AzureKeyCredential(config.SEARCH_API_KEY)
-    );
-
-    const memoryId = `mem_${Date.now()}`;
-    const metadata = {
-      source: langGraphConfig.configurable.indexName,
-      timestamp: langGraphConfig.configurable.systemTime
-    };
-
-    const documentToUpload = {
-      id: memoryId,
-      content: formattedSavedMemory,
-      source: metadata.source,
-      content_vector: memoryEmbedding, // Usamos nombre estándar
-      metadata: JSON.stringify(metadata)
-    };
-
-    // Subir directamente con cliente de Azure para asegurar campos de primer nivel
-    await searchClient.uploadDocuments([documentToUpload]);
+    // Create a new Document with the formatted memory
+    const documents = [
+      new Document({
+        pageContent: formattedSavedMemory,
+      })
+    ];
+    // console.log(documents);
+    for (const doc of documents) {  
+      doc.metadata = {source: config.configurable.indexName};
+    }
+    // Add documents to retriever
+    await state.vectorStore.addDocuments(documents);
 
     // Generate suggestionsFromConversation
     const suggestions = await suggestionsFromConversation(state.messages);
 
     // Send webpubsub message to client (in config)
-    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
-    langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
+    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": config.configurable.patientId }
+    config.configurable.pubsubClient.sendToUser(config.configurable.userId, message)
 
     // console.log("Successfully saved context");
     return {vectorStore: state.vectorStore};

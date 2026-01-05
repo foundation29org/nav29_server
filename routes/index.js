@@ -210,6 +210,9 @@ api.put('/notes/:patientId/:noteId/:userId', auth.isAuthPatient(roles.All), chec
 api.delete('/notes/:patientId/:noteId', auth.isAuthPatient(roles.All), checkApiKey, notesCtrl.deleteNote)
 
 //gettoken
+api.get('/gettoken/', (req, res) => {
+  return res.status(401).json({ message: 'User ID is required' });
+});
 api.get('/gettoken/:userId', auth.isAuth(roles.All), checkApiKey, pubsubCtrl.getToken)
 
 //azureservices
