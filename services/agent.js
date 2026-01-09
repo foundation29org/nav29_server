@@ -212,8 +212,15 @@ async function saveContext(state, langGraphConfig) {
 
     message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": patientIdCrypt }
     langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
+    
+    // Truncar contenido para evitar exceder el límite del modelo de embeddings (8192 tokens ≈ 24000 chars)
+    const maxOutputChars = 20000;
+    const truncatedOutput = output.content.length > maxOutputChars 
+      ? output.content.substring(0, maxOutputChars) + '... [truncated for embedding]'
+      : output.content;
+    
     // Convert inputs to only include 'input' but maintain the key
-    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + langGraphConfig.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
+    const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + langGraphConfig.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + truncatedOutput + " </nav29_output> <end>";
 
     // Generar embedding para la memoria
     const memoryEmbedding = await embeddings.embedQuery(formattedSavedMemory);
