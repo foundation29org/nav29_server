@@ -396,6 +396,39 @@ async function deepLtranslate2(text, target) {
  
 }
 
+/**
+ * Traduce texto de inglés al idioma del usuario
+ * Usa DeepL si está soportado, sino Microsoft Translator
+ * @param {string} text - Texto en inglés a traducir
+ * @param {string} targetLang - Código de idioma destino (ej: 'es', 'fr', 'de')
+ * @returns {Promise<string>} - Texto traducido
+ */
+async function translateToUserLang(text, targetLang) {
+  try {
+    if (!text || text.trim() === '' || !targetLang || targetLang === 'en') {
+      return text; // No traducir si es vacío o ya es inglés
+    }
+    
+    const deeplCode = await getDeeplCode(targetLang);
+    
+    if (deeplCode) {
+      // Usar DeepL
+      return await deepLtranslate(text, deeplCode);
+    } else {
+      // Usar Microsoft Translator
+      const info = [{ "Text": text }];
+      const result = await getTranslationDictionaryInvertMicrosoft2(info, targetLang);
+      if (result && result[0] && result[0].translations && result[0].translations[0]) {
+        return result[0].translations[0].text;
+      }
+      return text;
+    }
+  } catch (error) {
+    console.error('Error in translateToUserLang:', error);
+    return text; // En caso de error, devolver el texto original
+  }
+}
+
 module.exports = {
   getDetectLanguage,
   getTranslationDictionary,
@@ -404,5 +437,6 @@ module.exports = {
   getDeeplCode,
   deepLtranslate,
   getdeeplTranslationDictionaryInvert,
-  getTranslationTimeline
+  getTranslationTimeline,
+  translateToUserLang
 }

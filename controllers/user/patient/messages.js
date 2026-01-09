@@ -19,7 +19,10 @@ function getMessages (req, res){
 		}
 		if(!messages) return res.status(202).send({message: 'There are no messages'})
 	    let messagesArray = messages.toObject()
-		return res.status(200).send({messages: messagesArray.messages})
+		return res.status(200).send({
+			messages: messagesArray.messages,
+			lastSuggestions: messagesArray.lastSuggestions || []
+		})
 	})
 }
 
@@ -66,7 +69,7 @@ function saveMessages (req, res){
 
 
 function deleteMessages (req, res){
-	let patientId=req.params.patientId
+	let patientId = crypt.decrypt(req.params.patientId)
 	let userId = crypt.decrypt(req.params.userId)
 
 	Messages.findOne({"createdBy": patientId, "userId": userId}, {"createdBy" : false }, (err, messages) => {

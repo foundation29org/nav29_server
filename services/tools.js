@@ -1,4 +1,5 @@
 const OpenAI = require('openai');
+const axios = require('axios');
 const { DynamicStructuredTool } = require("@langchain/core/tools");
 const {createModels} = require('../services/langchain');
 const azure_blobs = require('../services/f29azure');
@@ -29,29 +30,197 @@ if (!globalThis.crypto) {
   globalThis.crypto = require('node:crypto').webcrypto;
 }
 
-const perplexity = new OpenAI({
-  apiKey: PERPLEXITY_API_KEY,
-  baseURL: 'https://api.perplexity.ai',
-});
-
 const perplexityTool = new DynamicStructuredTool({
   name: "call_perplexity",
-  description: "Use this default tool get an answer to a live web search question. You can also use this tool to get answers about medication, papers, clinical trials, etc. You can also use this for general web search questions.",
+  description: "ONLY use this tool when you need VERY RECENT information (2025-2026, latest news, breaking updates) that is NOT in your training data or the patient's documents. Do NOT use this for general medical questions that you can answer with your knowledge or the patient's medical records. Use this ONLY for: (1) Latest research papers published in 2025-2026, (2) Recent news or regulatory approvals from 2025-2026, (3) Very current clinical trial status updates (2025-2026), (4) Information explicitly requested as 'latest', 'recent', 'breaking', or 'new' that you cannot find in patient documents. IMPORTANT: Always include the current year (2026) in your search query to ensure you get the most recent information.",
   schema: z.object({
-    question: z.string().describe("The question to ask Perplexity"),
+    question: z.string().describe("The specific question to ask Perplexity about very recent information. MUST include '2025' or '2026' or 'latest' or 'recent' in the query to ensure current information."),
   }),
-  func: async ({ question }) => {
+  func: async ({ question }, config) => {
     try {
-      const response = await perplexity.chat.completions.create({
-        model: 'llama-3.1-sonar-large-128k-online',
-        messages: [{ role: "user", content: question }],
+      // Asegurar que la pregunta incluya el año actual para forzar búsqueda reciente
+      const currentDate = new Date();
+      const currentYear = currentDate.getFullYear();
+      const previousYear = currentYear - 1;
+      const currentMonth = currentDate.toLocaleString('en-US', { month: 'long' });
+      const currentDay = currentDate.getDate();
+      
+      // Obtener contexto curado del paciente si está disponible
+      const curatedContext = config?.configurable?.curatedContext || '';
+      
+      // Construir prompt que incluya el contexto del paciente
+      // Perplexity se encargará de extraer la información relevante del contexto
+      let enhancedQuestion = question;
+      
+      // Si hay contexto curado, añadirlo al prompt para que Perplexity tenga información del paciente
+      // Limitar a 1000 caracteres para no saturar el prompt pero mantener información relevante
+      if (curatedContext && curatedContext.length > 0) {
+        const contextSnippet = curatedContext.substring(0, 1000);
+        enhancedQuestion = `${question}\n\nPatient medical context (for reference): ${contextSnippet}`;
+        console.log(`🔍 [PERPLEXITY] Contexto añadido: ${contextSnippet.length} chars`);
+      }
+      
+      // Si no menciona años recientes, añadirlos
+      if (!/\b(202[4-6]|2025|2026|latest|recent|breaking|new)\b/i.test(enhancedQuestion)) {
+        enhancedQuestion = `${enhancedQuestion} Focus exclusively on information from ${previousYear} and ${currentYear}. Only include information published or updated in ${previousYear}-${currentYear}. Ignore any information from before ${previousYear}.`;
+      } else {
+        // Reforzar el año actual si ya menciona años
+        enhancedQuestion = `${enhancedQuestion} Prioritize information from ${currentYear} and ${previousYear}. Exclude information from before ${previousYear}.`;
+      }
+      
+      // System prompt que fuerza el uso de información reciente y búsqueda activa
+      // Si hay contexto del paciente, enfocarse en su diagnóstico específico
+      const hasPatientContext = curatedContext && curatedContext.length > 0;
+      const contextInstruction = hasPatientContext 
+        ? `\n\nPATIENT-SPECIFIC FOCUS:
+- The user's question includes patient medical context. Extract the specific diagnosis, condition, or genetic mutation from the context.
+- Focus your search on information relevant to THAT SPECIFIC PATIENT'S CONDITION, not general information.
+- If the patient has a specific genetic mutation, disease subtype, or rare condition mentioned in the context, prioritize information about that specific condition.
+- Only provide general information if you cannot find information specific to the patient's condition.
+- Always relate your findings back to the patient's specific diagnosis when possible.`
+        : '';
+
+      const systemPrompt = `You are a medical search engine specialized in finding the LATEST medical information. Today is ${currentMonth} ${currentDay}, ${currentYear}.
+
+CRITICAL INSTRUCTIONS:
+1. You MUST search the web actively for information from ${previousYear} and ${currentYear}. Do NOT rely on your training data which may be outdated.
+2. Prioritize information published in ${currentYear} over ${previousYear}.
+3. If you find information from before ${previousYear}, explicitly state that it is historical context, not current.
+4. For medical treatments, FDA approvals, clinical trials, or research papers, ONLY include information from ${previousYear}-${currentYear}.
+5. If you cannot find recent information (${previousYear}-${currentYear}), state clearly: "I could not find information from ${previousYear}-${currentYear} on this topic. The following is historical information that may be outdated."
+6. Always cite the publication date or year when available.
+7. IMPORTANT: If you successfully searched the web and found results, provide them directly. Do NOT say "I attempted to fetch", "I couldn't complete the search", "I wasn't able to retrieve", or similar phrases. Only mention search issues if you genuinely found NO results after searching.
+8. Be direct and confident in your answers when you have information from web search.${contextInstruction}
+
+Your goal is to provide the MOST CURRENT medical information available on the web, not information from your training data.`;
+
+      console.log(`🔍 [PERPLEXITY] Query: "${enhancedQuestion.substring(0, 100)}..."`);
+      
+      // Usar axios directamente con sonar-pro (sin fallback)
+      const perplexityResponse = await axios.post('https://api.perplexity.ai/chat/completions', {
+        model: 'sonar-pro',
+        messages: [
+          { 
+            role: "system", 
+            content: systemPrompt
+          },
+          { 
+            role: "user", 
+            content: enhancedQuestion 
+          }
+        ],
+        search_mode: "academic",
+        web_search_options: { 
+          search_context_size: "medium" // 'low', 'medium', or 'high'
+        }
+      }, {
+        headers: {
+          'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
       });
-      console.log(response);
-      return response.choices[0].message.content || "No response from Perplexity";
+      
+      // Extraer contenido, citaciones y resultados de búsqueda
+      const responseContent = perplexityResponse.data.choices[0]?.message?.content || '';
+      const citations = perplexityResponse.data.citations || [];
+      const searchResults = perplexityResponse.data.search_results || [];
+      
+      const responseLength = responseContent.length;
+      console.log(`✅ [PERPLEXITY] Response: ${responseLength} chars`);
+      console.log(`   Citations available: ${citations.length > 0 ? 'Yes' : 'No'}, Search results: ${searchResults.length}`);
+      
+      // Log de estructura para debugging (solo si hay citaciones)
+      if (citations.length > 0) {
+        console.log(`   First citation example:`, JSON.stringify(citations[0]).substring(0, 100));
+      }
+      
+      // Asegurar que el resultado sea texto plano y directo
+      if (!responseContent || responseContent.trim().length === 0) {
+        console.error('❌ [PERPLEXITY] Empty response');
+        return "I searched for recent information but did not find specific results for 2025-2026. Please try rephrasing your question or asking about a more specific topic.";
+      }
+      
+      // Si la respuesta contiene mensajes de error o indica que no pudo buscar, intentar limpiarla
+      // Pero solo si realmente no tiene contenido útil
+      const hasErrorPhrases = /(?:could not|couldn't|attempted to fetch|failed to|unable to|wasn't able to retrieve)/i.test(responseContent);
+      const hasUsefulContent = responseContent.length > 200 && !/(?:no results|no information found|error occurred)/i.test(responseContent);
+      
+      let cleanedContent = responseContent;
+      
+      if (hasErrorPhrases && !hasUsefulContent) {
+        console.warn('⚠️ [PERPLEXITY] Error indicators, no useful content');
+        return `I searched for recent information (2025-2026) but did not find specific updates on this topic. The information available extends to mid-2024. If you need the absolute latest information, please try rephrasing your question or asking about a more specific aspect.`;
+      } else if (hasErrorPhrases && hasUsefulContent) {
+        console.warn('⚠️ [PERPLEXITY] Error indicators but has useful content, cleaning...');
+        cleanedContent = responseContent
+          .replace(/(?:I\s+)?(?:wasn't|was not|couldn't|could not)\s+(?:able to\s+)?(?:retrieve|fetch|get|complete|access).*?(?:\.|$)/gi, '')
+          .replace(/(?:I\s+)?attempted\s+(?:to\s+)?(?:fetch|retrieve|get|search).*?(?:\.|$)/gi, '')
+          .replace(/(?:I\s+)?encountered\s+an\s+error.*?(?:\.|$)/gi, '')
+          .trim();
+        
+        if (cleanedContent.length <= 100) {
+          cleanedContent = responseContent; // Si la limpieza fue demasiado agresiva, usar el original
+        }
+      }
+      
+      // Si hay citaciones, formatearlas y añadirlas al final
+      if (citations && citations.length > 0) {
+        // NO remover las referencias numéricas del texto - mantenerlas para que el usuario pueda relacionar
+        // Las citaciones al final servirán como referencia completa
+        
+        // Añadir sección de referencias al final con formato HTML (para que prettify pueda añadir target="_blank")
+        let referencesSection = '\n\n---\n\n### Referencias\n\n';
+        
+        citations.forEach((citation, index) => {
+          const citationNum = index + 1;
+          if (typeof citation === 'string') {
+            // Si es un string (URL), formatearlo como enlace HTML con target="_blank"
+            referencesSection += `${citationNum}. <a href="${citation}" target="_blank">${citation}</a>\n`;
+          } else if (citation.url) {
+            // Si es un objeto con URL y título
+            const title = citation.title || citation.url;
+            const url = citation.url;
+            referencesSection += `${citationNum}. <a href="${url}" target="_blank">${title}</a>\n`;
+          } else if (citation.text) {
+            // Si tiene texto pero no URL
+            referencesSection += `${citationNum}. ${citation.text}\n`;
+          } else {
+            // Fallback: mostrar el objeto como string
+            referencesSection += `${citationNum}. ${JSON.stringify(citation)}\n`;
+          }
+        });
+        
+        cleanedContent += referencesSection;
+      } else if (searchResults && searchResults.length > 0) {
+        // Si no hay citaciones pero hay resultados de búsqueda, usarlos como referencias
+        let referencesSection = '\n\n---\n\n### Fuentes consultadas\n\n';
+        
+        searchResults.forEach((result, index) => {
+          const resultNum = index + 1;
+          if (typeof result === 'string') {
+            referencesSection += `${resultNum}. ${result}\n`;
+          } else if (result.url) {
+            const title = result.title || result.name || result.url;
+            referencesSection += `${resultNum}. <a href="${result.url}" target="_blank">${title}</a>\n`;
+          } else {
+            referencesSection += `${resultNum}. ${JSON.stringify(result)}\n`;
+          }
+        });
+        
+        cleanedContent += referencesSection;
+      }
+      
+      return cleanedContent;
     } catch (error) {
-      console.error('Error calling Perplexity API:', error);
+      // Logging de error más visible y claro
+      console.error('\n❌❌❌ [PERPLEXITY ERROR] ❌❌❌');
+      console.error(`Status: ${error.response?.status || 'N/A'}`);
+      console.error(`Message: ${error.message}`);
+      console.error(`Response: ${JSON.stringify(error.response?.data || {}, null, 2)}`);
+      console.error('❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n');
+      
       insights.error({ message: 'Error calling Perplexity API', error: error });
-      throw error;
+      return `I encountered an error while searching for recent information. Please try again or rephrase your question.`;
     }
   },
 });

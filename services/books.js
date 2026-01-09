@@ -536,9 +536,9 @@ async function callNavigator(req, res) {
 		var docs = req.body.docs;
 		var originalQuestion = req.body.question;
 		
-		// Get user language - try from request body first, then from user model
-		let userLang = req.body.lang || req.body.userLang || 'en';
-		if (!req.body.lang && req.body.userId) {
+		// Get user language - try from request body first (detectedLang from client), then from user model
+		let userLang = req.body.detectedLang || req.body.lang || req.body.userLang || 'en';
+		if (!req.body.detectedLang && !req.body.lang && req.body.userId) {
 			try {
 				const userId = crypt.decrypt(req.body.userId);
 				const user = await User.findById(userId, { "lang": true, "preferredResponseLanguage": true });

@@ -10,6 +10,7 @@ const { conndbdata } = require('../db_connect')
 const MessagesSchema = Schema({
 	date: {type: Date, default: Date.now},
 	messages: {type: Object, default: []},
+	lastSuggestions: {type: [String], default: []},
 	createdBy: { type: Schema.Types.ObjectId, ref: "Patient"},
 	userId: {type: String}
 })

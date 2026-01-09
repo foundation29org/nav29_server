@@ -59,7 +59,7 @@ const RETRIEVAL_PLANS = {
 async function detectIntent(question, patientId) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Intent`;
-    let { gpt4omini } = createModels(projectName, 'gpt4omini');
+    let { gpt5mini } = createModels(projectName, 'gpt5mini');
     
     // Attempt to pull from Hub
     let intentPrompt;
@@ -89,10 +89,10 @@ async function detectIntent(question, patientId) {
       ]);
     }
 
-    const chain = intentPrompt.pipe(gpt4omini);
+    const chain = intentPrompt.pipe(gpt5mini);
     const response = await chain.invoke({ question });
     const detectedId = response.content.trim().toUpperCase();
-
+    
     return RETRIEVAL_PLANS[detectedId] || RETRIEVAL_PLANS.AMBIGUOUS;
   } catch (error) {
     console.error("Error detecting intent with LLM:", error);
@@ -194,7 +194,7 @@ function deterministicRerank(chunks, plan) {
 async function extractStructuredFacts(chunks, question, patientId) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Extraction`;
-    let { gpt4omini } = createModels(projectName, 'gpt4omini');
+    let { gpt5mini } = createModels(projectName, 'gpt5mini');
     
     let extractionPrompt;
     try {
@@ -224,7 +224,7 @@ async function extractStructuredFacts(chunks, question, patientId) {
 
     const chunksText = chunks.map((c, i) => `[Chunk ${i+1}] (Doc: ${c.metadata.filename}, Fecha: ${c.metadata.reportDate})\n${c.pageContent}`).join('\n\n');
     
-    const runnable = extractionPrompt.pipe(gpt4omini);
+    const runnable = extractionPrompt.pipe(gpt5mini);
     const result = await runnable.invoke({
       context: chunksText,
       question: question

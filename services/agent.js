@@ -4,7 +4,7 @@ const { AzureKeyCredential } = require("@azure/core-auth");
 const { suggestionsFromConversation } = require('../services/tools');
 const { pull } = require('langchain/hub');
 const config = require('../config');
-const { HumanMessage, AIMessage, SystemMessage } = require("@langchain/core/messages");
+const { HumanMessage, AIMessage, SystemMessage, ToolMessage } = require("@langchain/core/messages");
 const { MessagesAnnotation, StateGraph, Annotation } = require("@langchain/langgraph");
 const { ToolNode } = require("@langchain/langgraph/prebuilt");
 const { perplexityTool, mediSearchTool, clinicalTrialsTool, curateContext } = require('../services/tools');
@@ -14,7 +14,9 @@ const { Document } = require("@langchain/core/documents");
 const { ChatPromptTemplate } = require("@langchain/core/prompts");
 const { setContextVariable } = require("@langchain/core/context");
 const Events = require('../models/events');
+const Messages = require('../models/messages');
 const crypt = require('./crypt');
+const { translateToUserLang } = require('./translation');
 
 const AttributesState = Annotation.Root({
   vectorStore: Annotation,
@@ -115,7 +117,7 @@ TODAY'S DATE: {systemTime}
   // 4. Re-ranking determinista y Selección de evidencia
   const selectedChunks = deterministicRerank(candidateChunks, plan);
   console.log(`Seleccionados ${selectedChunks.length} chunks de evidencia final`);
-  
+
   // DEBUG: Verificar metadata de chunks seleccionados
   if (selectedChunks.length > 0) {
     console.log('\n📋 METADATA DE CHUNKS SELECCIONADOS:');
@@ -141,6 +143,9 @@ TODAY'S DATE: {systemTime}
     selectedChunks,
     structuredFacts
   );
+
+  // Guardar el contexto curado en el config para que esté disponible en las herramientas
+  config.configurable.curatedContext = curatedContext.content;
 
   const model = baseModel.bindTools(TOOLS);
   const prompt = await systemPromptTemplate.format({ 
@@ -185,14 +190,27 @@ async function saveContext(state, langGraphConfig) {
   input = state.messages[state.messages.length - 2];
   output = state.messages[state.messages.length - 1];
 
-  let message = { "time": new Date().toISOString(), "answer": output.content, "status": "respuesta generada", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+  const patientIdCrypt = crypt.encrypt(langGraphConfig.configurable.patientId);
+  const userLang = langGraphConfig.configurable.userLang || 'en';
+  
+  // Traducir la respuesta al idioma del usuario antes de emitir y guardar
+  let translatedAnswer = output.content;
+  if (userLang && userLang !== 'en') {
+    try {
+      translatedAnswer = await translateToUserLang(output.content, userLang);
+      console.log(`Translated answer from en to ${userLang}`);
+    } catch (translateError) {
+      console.error('Error translating answer:', translateError);
+      // Si falla la traducción, usar la respuesta original
+    }
+  }
+  
+  let message = { "time": new Date().toISOString(), "answer": translatedAnswer, "status": "respuesta generada", "step": "navigator", "patientId": patientIdCrypt }
   langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
 
   try {
-    // Extraer eventos reportados por el usuario (si los hay)
-    await extractUserReportedEvents(input.content, langGraphConfig.configurable.patientId, langGraphConfig.configurable.userId, langGraphConfig.configurable.pubsubClient);
-    
-    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+
+    message = { "time": new Date().toISOString(), "status": "generando sugerencias", "step": "navigator", "patientId": patientIdCrypt }
     langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
     // Convert inputs to only include 'input' but maintain the key
     const formattedSavedMemory = "<start> This is an interaction between the user and Nav29 from " + langGraphConfig.configurable.systemTime + ". <user_input> " + input.content + " </user_input> <nav29_output> " + output.content + " </nav29_output> <end>";
@@ -224,11 +242,60 @@ async function saveContext(state, langGraphConfig) {
     await searchClient.uploadDocuments([documentToUpload]);
 
     // Generate suggestionsFromConversation
-    const suggestions = await suggestionsFromConversation(state.messages);
+    const suggestionsRaw = await suggestionsFromConversation(state.messages);
+    
+    // Traducir las sugerencias al idioma del usuario
+    let suggestions = suggestionsRaw;
+    if (userLang && userLang !== 'en' && Array.isArray(suggestionsRaw)) {
+      try {
+        suggestions = await Promise.all(
+          suggestionsRaw.map(s => translateToUserLang(s, userLang))
+        );
+        console.log(`Translated ${suggestions.length} suggestions to ${userLang}`);
+      } catch (translateError) {
+        console.error('Error translating suggestions:', translateError);
+        suggestions = suggestionsRaw;
+      }
+    }
 
     // Send webpubsub message to client (in config)
-    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": langGraphConfig.configurable.patientId }
+    message = { "time": new Date().toISOString(), "suggestions": suggestions, "status": "sugerencias generadas", "step": "navigator", "patientId": patientIdCrypt }
     langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
+
+    // Guardar los mensajes y sugerencias en la BD para que estén disponibles cuando el usuario vuelva
+    try {
+      const patientId = langGraphConfig.configurable.patientId;
+      // Desencriptar userId para mantener consistencia con el formato anterior de la BD
+      const userId = crypt.decrypt(langGraphConfig.configurable.userId);
+      const now = Date.now(); // Unix timestamp en milisegundos
+      
+      // Crear los objetos de mensaje con el formato original del frontend
+      const userMessage = {
+        isNew: false,
+        timestamp: now,
+        isUser: true,
+        text: langGraphConfig.configurable.originalQuestion || input.content
+      };
+      const assistantMessage = {
+        isNew: false,
+        timestamp: now,
+        isUser: false,
+        text: translatedAnswer,
+        loading: false
+      };
+      
+      await Messages.findOneAndUpdate(
+        { createdBy: patientId, userId: userId },
+        { 
+          $push: { messages: { $each: [userMessage, assistantMessage] } },
+          $set: { lastSuggestions: suggestions, date: new Date() }
+        },
+        { upsert: true } // Crear el documento si no existe
+      );
+    } catch (dbError) {
+      console.error("Error saving messages to DB:", dbError);
+      // No bloqueamos el flujo si falla el guardado
+    }
 
     // console.log("Successfully saved context");
     return {vectorStore: state.vectorStore};
@@ -278,7 +345,14 @@ async function prettify(state, config) {
     /<a\s+href=['"]https:\/\/trialgpt\.app['"](?![^>]*target=)/gi,
     '<a href="https://trialgpt.app" target="_blank"'
   );
-  
+
+  // Asegurar que TODOS los enlaces externos (http/https) tengan target="_blank"
+  // Esto incluye las citaciones de Perplexity y cualquier otro enlace externo
+  cleanOutput = cleanOutput.replace(
+    /<a\s+href=['"](https?:\/\/[^'"]+)['"](?![^>]*target=)/gi,
+    '<a href="$1" target="_blank"'
+  );
+
   state.messages[state.messages.length - 1].content = cleanOutput;
   return state;
 }
@@ -292,12 +366,38 @@ async function routeModelOutput(state, config) {
   if (lastMessage.tool_calls?.length || 0 > 0) {
     return "tools";
   }
-  // Otherwise end the graph and save the context.
-  else {
-    config.configurable.pubsubClient.sendToUser(config.configurable.userId, { "time": new Date().toISOString(), "status": "generando respuesta", "step": "navigator", "patientId": config.configurable.patientId });
-    // Here we will use the function saveContext() that will save the last pair of messages to the Azure Search
-    return "prettify";
+  
+  // Si el último mensaje es un AIMessage y el penúltimo es un ToolMessage,
+  // significa que toolNodeWithGraphState ya añadió la respuesta final (clinical_trials_search o perplexity)
+  // Ir directamente a prettify sin volver a callModel
+  if (lastMessage instanceof AIMessage && !lastMessage.tool_calls?.length) {
+    const secondLastMessage = messages.length > 1 ? messages[messages.length - 2] : null;
+    if (secondLastMessage && (secondLastMessage instanceof ToolMessage || secondLastMessage.getType?.() === 'tool')) {
+      // Es una respuesta de una herramienta que ya tiene su respuesta final, ir directamente a prettify
+      const patientIdCrypt = crypt.encrypt(config.configurable.patientId);
+      config.configurable.pubsubClient.sendToUser(config.configurable.userId, { 
+        "time": new Date().toISOString(), 
+        "status": "generando respuesta", 
+        "step": "navigator", 
+        "patientId": patientIdCrypt 
+      });
+      return "prettify";
+    }
   }
+  
+  // Si el último mensaje es un ToolMessage, forzar que el LLM genere una respuesta final
+  // Esto asegura que después de ejecutar cualquier herramienta (excepto clinical_trials_search),
+  // siempre se genere una respuesta
+  if (lastMessage instanceof ToolMessage || lastMessage.getType?.() === 'tool') {
+    // Volver a callModel para que el LLM procese el resultado de la herramienta
+    return "callModel";
+  }
+  
+  // Otherwise end the graph and save the context.
+  const patientIdCrypt = crypt.encrypt(config.configurable.patientId);
+  config.configurable.pubsubClient.sendToUser(config.configurable.userId, { "time": new Date().toISOString(), "status": "generando respuesta", "step": "navigator", "patientId": patientIdCrypt });
+  // Here we will use the function saveContext() that will save the last pair of messages to the Azure Search
+  return "prettify";
 }
 
 const toolNodeWithGraphState = async (state, config) => {
@@ -310,10 +410,38 @@ const toolNodeWithGraphState = async (state, config) => {
     'action': state.messages[state.messages.length - 1].tool_calls[0].name,
     'action_input': state.messages[state.messages.length - 1].tool_calls[0].args,
     'log': state.messages[state.messages.length - 1].tool_calls[0],
-}
-  config.configurable.pubsubClient.sendToUser(config.configurable.userId, { "time": new Date().toISOString(), "status": "action", "action": ActionDict, "step": "navigator", "patientId": config.configurable.patientId });
+  }
+  const patientIdCrypt = crypt.encrypt(config.configurable.patientId);
+  config.configurable.pubsubClient.sendToUser(config.configurable.userId, { "time": new Date().toISOString(), "status": "action", "action": ActionDict, "step": "navigator", "patientId": patientIdCrypt });
+  
+  // Crear ToolNode con config para que las herramientas tengan acceso al contexto curado
   const toolNodeWithConfig = new ToolNode(TOOLS);
-  return toolNodeWithConfig.invoke(state);
+  // Pasar el config al invoke para que las herramientas puedan acceder a él
+  const result = await toolNodeWithConfig.invoke(state, { configurable: config.configurable });
+  
+  // Para clinical_trials_search y perplexity: añadir un AIMessage después del ToolMessage con el resultado
+  // Esto permite que el flujo continúe sin volver a callModel (el AIMessage se usará directamente)
+  // Ambos devuelven contenido formateado que debe mostrarse directamente
+  const toolName = state.messages[state.messages.length - 1].tool_calls[0].name;
+  if (toolName === 'clinical_trials_search' || toolName === 'call_perplexity') {
+    // Obtener el resultado de la herramienta (último mensaje ToolMessage)
+    const toolResult = result.messages[result.messages.length - 1];
+    if (toolResult && toolResult.content) {
+      // Crear una respuesta final usando el resultado de la herramienta directamente
+      // Añadimos un AIMessage después del ToolMessage (NO reemplazamos el ToolMessage)
+      const finalResponse = new AIMessage({
+        content: toolResult.content
+        // No incluimos tool_calls, por lo que routeModelOutput irá a "prettify"
+      });
+      
+      // Añadir el AIMessage después del ToolMessage (mantener el ToolMessage para la secuencia correcta)
+      result.messages.push(finalResponse);
+    }
+  }
+  // Para mediSearch: el ToolMessage se mantiene y routeModelOutput
+  // detectará que es un ToolMessage y forzará que el LLM genere una respuesta final
+  
+  return result;
 };
 
 
@@ -337,132 +465,14 @@ const workflow = new StateGraph(AgentState)
   // Look in context-docs node (prio 1)
   // Look in long-term-memory node (prio 2)
   // After that, use the required tool if needed or answer directly
-  // This means that after `tools` is called, `callModel` node is called next.
-  .addEdge("tools", "callModel")
+  // Después de tools, usar routeModelOutput para decidir si volver a callModel o ir a prettify
+  .addConditionalEdges(
+    "tools",
+    routeModelOutput,
+  )
   .addEdge("prettify", "saveContext")
   .addEdge("saveContext", "__end__");
 
-/**
- * Extrae eventos reportados por el usuario en la conversación
- * Ejemplo: "el 17 de julio 24 cambio a 5 mg fue el cambio de dosis"
- */
-async function extractUserReportedEvents(userMessage, patientId, userId, pubsubClient) {
-  try {
-    // Detectar si el mensaje contiene información factual que debería guardarse
-    const triggers = [
-      /cambio.*dosis/i,
-      /me recetaron/i,
-      /me han recetado/i,
-      /desde.*tomo/i,
-      /empecé.*tomar/i,
-      /dejé.*tomar/i,
-      /el.*\d{1,2}.*de.*(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i,
-      /\d{4}-\d{2}-\d{2}/,
-      /añadelo como evento/i,
-      /guarda.*evento/i
-    ];
-    
-    const shouldExtract = triggers.some(pattern => pattern.test(userMessage));
-    
-    if (!shouldExtract) {
-      return; // No hay eventos que extraer
-    }
-    
-    // Usar LLM para extraer eventos estructurados
-    const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - UserEvents`;
-    let { gpt4omini } = createModels(projectName, 'gpt4omini');
-    
-    const extractionPrompt = ChatPromptTemplate.fromMessages([
-      ["system", `You are an expert at extracting medical events from patient statements.
-      
-      Extract ONLY factual medical events that the patient is reporting about themselves.
-      DO NOT extract questions or hypotheticals.
-      
-      ### OUTPUT FORMAT:
-      Return a JSON array of objects with these keys:
-      - "name": Brief description of the event (e.g., "Cambio de dosis de Everolimus")
-      - "key": Event type (medication, diagnosis, treatment, test, appointment, symptom, other)
-      - "date": ISO date (YYYY-MM-DD) if mentioned, otherwise null
-      - "notes": Additional context from the patient's message
-      
-      ### EXAMPLES:
-      User: "el 17 de julio 24 cambio a 5 mg fue el cambio de dosis"
-      Output: [{"name": "Cambio de dosis a 5mg", "key": "medication", "date": "2024-07-17", "notes": "Cambio de dosis de medicación"}]
-      
-      User: "me han recetado aftarepair, un gel bucal"
-      Output: [{"name": "Prescripción de Aftarepair gel bucal", "key": "medication", "date": null, "notes": "Gel bucal para llagas"}]
-      
-      If no events found, return: []`],
-      ["human", "Patient message: {message}\n\nExtract events in JSON format:"]
-    ]);
-    
-    const chain = extractionPrompt.pipe(gpt4omini);
-    const result = await chain.invoke({ message: userMessage });
-    
-    let events = [];
-    try {
-      let content = result.content.trim();
-      if (content.startsWith("```json")) content = content.slice(7, -3).trim();
-      else if (content.startsWith("```")) content = content.slice(3, -3).trim();
-      events = JSON.parse(content);
-    } catch (parseError) {
-      console.error("Error parseando eventos del usuario:", parseError);
-      return;
-    }
-    
-    if (!Array.isArray(events) || events.length === 0) {
-      return; // No hay eventos para guardar
-    }
-    
-    // Guardar eventos en la base de datos
-    const savedEvents = [];
-    for (const event of events) {
-      const eventdb = new Events();
-      eventdb.name = event.name;
-      eventdb.key = event.key || 'other';
-      eventdb.date = event.date ? new Date(event.date) : null;
-      eventdb.notes = event.notes || '';
-      eventdb.origin = 'conversation';
-      eventdb.createdBy = patientId;
-      eventdb.addedBy = crypt.decrypt(userId);
-      
-      // Marcar como información proporcionada por el usuario
-      eventdb.source = {
-        kind: 'conversation',
-        reportDate: new Date()
-      };
-      eventdb.dateConfidence = event.date ? 'user_provided' : 'missing';
-      eventdb.confidence = 1.0; // Máxima confianza en lo que dice el paciente
-      
-      try {
-        const saved = await eventdb.save();
-        savedEvents.push({
-          name: saved.name,
-          date: saved.date,
-          key: saved.key,
-          dateConfidence: saved.dateConfidence
-        });
-      } catch (err) {
-        console.error("Error guardando evento del usuario:", err);
-      }
-    }
-    
-    // Notificar al usuario que se guardaron los eventos
-    if (savedEvents.length > 0 && pubsubClient) {
-      const patientIdCrypt = crypt.encrypt(patientId);
-      pubsubClient.sendToUser(userId, {
-        time: new Date().toISOString(),
-        status: "eventos guardados",
-        events: savedEvents,
-        step: "user_reported_events",
-        patientId: patientIdCrypt
-      });
-    }
-    
-  } catch (error) {
-    console.error("Error en extractUserReportedEvents:", error);
-  }
-}
 
 // Finally, we compile it!
 const graph = workflow.compile({
