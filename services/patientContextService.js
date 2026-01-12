@@ -71,7 +71,7 @@ async function fetchEvents(id, limit = 50) {
       name : e.name,
       date : toDateStr(e.date),
       notes: e.notes ?? '',
-      dateConfidence: e.dateConfidence || 'missing' // Incluir confianza de fecha
+      dateConfidence: e.dateConfidence || 'missing'
     }));
 }
 

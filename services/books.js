@@ -13,6 +13,7 @@ const translate = require('../services/translation');
 const openAIserviceCtrl = require('../services/openai')
 const { graph } = require('../services/agent')
 const userController = require('../controllers/all/user')
+const { filterAndAggregateEvents } = require('../services/eventFilterService')
 const fs = require('fs');
 const { default: createDocumentIntelligenceClient, getLongRunningPoller, isUnexpected } = require("@azure-rest/ai-document-intelligence");
 // const { pdf } = require("pdf-to-img");
@@ -535,6 +536,41 @@ async function callNavigator(req, res) {
 		var content = req.body.context;
 		var docs = req.body.docs;
 		var originalQuestion = req.body.question;
+
+		// Filtrar eventos del contexto si hay muchos (reducir ruido para el agente)
+		try {
+			if (content && Array.isArray(content) && content.length > 0) {
+				// Buscar el mensaje que contiene los eventos (generalmente el primero con role "assistant")
+				const eventsMessageIndex = content.findIndex(msg => 
+					msg.role === 'assistant' && msg.content && typeof msg.content === 'string'
+				);
+				
+				if (eventsMessageIndex !== -1) {
+					let eventsContent = content[eventsMessageIndex].content;
+					
+					// Intentar parsear como JSON (los eventos vienen serializados)
+					try {
+						let events = JSON.parse(eventsContent);
+						
+						// Si es un array con muchos eventos, filtrar con IA
+						if (Array.isArray(events) && events.length > 60) {
+							console.log(`[callNavigator] Filtrando eventos: ${events.length} eventos en contexto`);
+							
+							const filterResult = await filterAndAggregateEvents(events, { maxEvents: 60 });
+							
+							// Reemplazar con eventos filtrados
+							content[eventsMessageIndex].content = JSON.stringify(filterResult.events);
+							console.log(`[callNavigator] Eventos filtrados: ${filterResult.stats.original} → ${filterResult.stats.final} (${filterResult.stats.reductionPercent}% reducción)`);
+						}
+					} catch (parseError) {
+						// No es JSON válido, probablemente es texto normal - ignorar
+					}
+				}
+			}
+		} catch (filterError) {
+			console.error('[callNavigator] Error filtrando eventos (continuando sin filtrar):', filterError.message);
+			// Continuar sin filtrar si hay error
+		}
 		
 		// Get user language - try from request body first (detectedLang from client), then from user model
 		let userLang = req.body.detectedLang || req.body.lang || req.body.userLang || 'en';

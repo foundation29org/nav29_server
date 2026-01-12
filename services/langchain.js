@@ -1290,82 +1290,6 @@ const formatToday = () => {
   return { dayOfWeek, isoDate };
 };
 
-async function extractTimelineEvents(question, userId, patientId) {
-  /*
-  This functions analyses the user question and try to extract a timeline of events from the patient's documents.
-  It uses the model32k to do so. It returns a JSON object with the timeline of events.
-  The timeline should be structured as a list of events, with each individual event containing a date, type and an small description of the event.
-
-  */
-  return new Promise(async (resolve, reject) => {
-    const patientIdCrypt = crypt.encrypt(patientId);
-    pubsub.sendToUser(userId, { "time": new Date().toISOString(), "status": "analizando respuesta timeline", "step": "extract events", "patientId": patientIdCrypt })
-    // Create the models
-    const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k } = createModels(projectName, 'model32k');
-    try {
-      // Use the function to get today's date and day
-      const { dayOfWeek, isoDate } = formatToday();
-
-      // Generate a prompt with the question's user
-      let extract_events_prompt = await pull("foundation29/extract_timeline_events_v1");
-
-      const chainExtractEvents = extract_events_prompt.pipe(model32k);
-
-      const extractedEvents = await chainExtractEvents.invoke({
-        questionText: question,
-        dayOfWeek: dayOfWeek,
-        isoDate: isoDate
-      });
-
-      let eventJson
-      try {
-        // Eliminar posibles caracteres extra al inicio y al final
-        let extractedText = extractedEvents.content.trim();
-        if (extractedText.startsWith("```json") && extractedText.endsWith("```")) {
-          extractedText = extractedText.slice(7, -3).trim();
-        }
-
-        // Intentar parsear el texto
-        const parsedData = JSON.parse(extractedText);
-
-        // Verificar si el resultado parseado es un array
-        if (Array.isArray(parsedData)) {
-          eventJson = parsedData;
-        } else {
-          eventJson = [];
-        }
-      } catch (error) {
-        eventJson = [];
-      }
-
-      // Iterate over the extracted events and add the current date only if the event does not have a proper ISO date or is unknown
-      if (Array.isArray(eventJson) && eventJson.length > 0) {
-        eventJson.forEach(event => {
-          if (!event.date || isNaN(Date.parse(event.date)) || event.date.toLowerCase() === 'unknown') {
-            event.date = new Date().toISOString();
-          }
-        });
-      }
-
-      pubsub.sendToUser(userId, {
-        time: new Date().toISOString(),
-        status: "respuesta timeline analizada",
-        events: eventJson,
-        step: "extract events",
-        patientId: patientIdCrypt
-      });
-
-      resolve(eventJson);
-
-      // Add the extracted events to the verified events (will require a verification from the user?)
-    } catch (error) {
-      insights.error(error);
-      console.error(error);
-    }
-  });
-}
-
 async function extractEvents(question, answer, userId, patientId, keyEvents) {
   /*
   This functions analyses a pair of question and answer and compares it to the patient's verified events.
@@ -1377,7 +1301,7 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
     pubsub.sendToUser(userId, { "time": new Date().toISOString(), "status": "analizando respuesta", "step": "extract events", "patientId": patientIdCrypt })
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k } = createModels(projectName, 'model32k');
+    let { gpt4omini } = createModels(projectName, 'gpt4omini');
     try {
 
       // Get all the verified events for this patient
@@ -1402,7 +1326,7 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
       // Generate a prompt with the question's user, answer from Navigator and the events and ask the model to extract new events
       let extract_events_prompt = await pull("foundation29/extract_events_v1");
 
-      const chainExtractEvents = extract_events_prompt.pipe(model32k);
+      const chainExtractEvents = extract_events_prompt.pipe(gpt4omini);
 
       const extractedEvents = await chainExtractEvents.invoke({
         questionText: question,
@@ -1441,10 +1365,15 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
         });
       }
 
-      // Remove events with future dates
+      // Remove events with future dates, except for appointments and reminders
+      const allowedFutureTypes = ['appointment', 'reminder'];
       eventJson = eventJson.filter(event => {
         const eventDate = new Date(event.date);
         const currentDate = new Date();
+        // Allow future dates for appointments and reminders
+        if (allowedFutureTypes.includes(event.key)) {
+          return true;
+        }
         return eventDate <= currentDate;
       });
 
@@ -1736,7 +1665,6 @@ module.exports = {
   summarizePatientBrute,
   summarySuggestions,
   extractEvents,
-  extractTimelineEvents,
   extractInitialEvents,
   divideElements,
   explainMedicalEvent,
