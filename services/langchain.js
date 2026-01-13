@@ -942,7 +942,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { model32k} = createModels(projectName, 'model32k');
+      let { gpt5mini} = createModels(projectName, 'gpt5mini');
 
       const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 15000 });
       const docs = await textSplitter.createDocuments([text]);
@@ -950,7 +950,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
       let anonymize_prompt = await pull("foundation29/anonymize_doc_base_v1");
 
       // This function creates a document chain prompted to anonymize a set of documents.
-      const chain = anonymize_prompt.pipe(model32k);
+      const chain = anonymize_prompt.pipe(gpt5mini);
 
       const patientIdCrypt = crypt.encrypt(patientId);
       let docIdEnc = crypt.encrypt(docId);
@@ -1586,9 +1586,6 @@ async function extractInitialEvents(patientId, ogLang) {
 
 
 async function divideElements(event, patientId) {
-  /*
-  This functions analyses a text and divides it into elements. Using the model32k to do so. It returns a list of elements.
-  */
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
@@ -1620,20 +1617,15 @@ async function divideElements(event, patientId) {
 }
 
 async function explainMedicalEvent(eventDescription, patientId) {
-  /*
-  This function analyzes a medical event description and provides a detailed explanation of the event.
-  It uses the model32k to do so and returns the explanation in a user-friendly format, limited to one paragraph.
-  The explanation will be in the same language as the input event description.
-  */
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k} = createModels(projectName, 'model32k');
+    let { gpt5mini} = createModels(projectName, 'gpt5mini');
     try {
       // Generate a prompt with the medical event
       let explain_event_prompt = await pull("foundation29/explain_medical_event_v1");
 
-      const chainExplainEvent = explain_event_prompt.pipe(model32k);
+      const chainExplainEvent = explain_event_prompt.pipe(gpt5mini);
 
       const explanation = await chainExplainEvent.invoke({
         eventDescription: eventDescription,

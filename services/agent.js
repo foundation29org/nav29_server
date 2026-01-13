@@ -89,12 +89,27 @@ TODAY'S DATE: {systemTime}
   const question = state.messages[state.messages.length - 1].content;
   const originalQuestion = config.configurable.originalQuestion || question;
   const patientId = config.configurable.patientId;
+  const patientIdCrypt = crypt.encrypt(patientId);
+  
+  // Helper para enviar estado al usuario
+  const sendStatus = (status, extra = {}) => {
+    config.configurable.pubsubClient.sendToUser(config.configurable.userId, {
+      time: new Date().toISOString(),
+      status,
+      step: "navigator",
+      patientId: patientIdCrypt,
+      ...extra
+    });
+  };
 
   // 1. Detección de intención (usamos la original para mejor detección de erratas médicas)
+  sendStatus("detectando intención");
   const plan = await detectIntent(originalQuestion, patientId);
   console.log(`Intento detectado: ${plan.id} para la pregunta: "${originalQuestion}"`);
+  sendStatus("intent detectado", { intent: plan.id });
 
   // 2. Recuperación de memorias de conversación (k=3, filtro por source)
+  sendStatus("recuperando historial");
   let conversationVectorStore = await createIndexIfNone(cogsearchIndex, embeddings, vectorStoreAddress, vectorStorePassword);
   
   const conversationFilter = {
@@ -109,12 +124,14 @@ TODAY'S DATE: {systemTime}
   const memories = await conversationRetriever.invoke(question);
 
   // 3. Recuperación de Document Chunks (Candidatos)
+  sendStatus("buscando en documentos");
   // Si la pregunta traducida es muy diferente, pasamos ambas al retriever para búsqueda híbrida
   const searchQuery = question !== originalQuestion ? `${question} ${originalQuestion}` : question;
   const candidateChunks = await retrieveChunks(searchQuery, patientId, plan);
   console.log(`Recuperados ${candidateChunks.length} candidatos para chunks usando: "${searchQuery}"`);
 
   // 4. Re-ranking determinista y Selección de evidencia
+  sendStatus("analizando documentos", { documentsFound: candidateChunks.length });
   const selectedChunks = deterministicRerank(candidateChunks, plan);
   console.log(`Seleccionados ${selectedChunks.length} chunks de evidencia final`);
 
@@ -131,9 +148,11 @@ TODAY'S DATE: {systemTime}
   }
 
   // 5. Extracción estructurada (Fase 7)
+  sendStatus("extrayendo datos clínicos");
   const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
 
   // 6. Curación de contexto (Pasamos memorias, chunks seleccionados y hechos estructurados)
+  sendStatus("preparando contexto");
   const curatedContext = await curateContext(
     config.configurable.context, 
     memories, 
@@ -152,6 +171,9 @@ TODAY'S DATE: {systemTime}
     systemTime: config.configurable.systemTime, 
     curatedContext: curatedContext.content 
   });
+  
+  // Informar que el modelo está procesando
+  sendStatus("invocando modelo");
   
   if (config.configurable.context.length > 1) {
     let context = config.configurable.context.slice(1);
