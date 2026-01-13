@@ -73,7 +73,7 @@ Your primary mission is to answer patient questions using the provided "Curated 
 - Be empathetic but maintain clinical accuracy.
 - If you cannot find the answer in the provided context, state it clearly: "I don't have that information in your medical records."
 - Use the patient's demographic data (age, gender, weight, height) from the context when relevant to provide personalized advice.
-
+{countryGuidance}
 ### CONTEXT:
 TODAY'S DATE: {systemTime}
 
@@ -83,13 +83,25 @@ TODAY'S DATE: {systemTime}
     ]);
   }
 
-  let { gpt5mini } = createModels('default', 'gpt5mini');
-  let baseModel = gpt5mini;
+  // Seleccionar modelo según chatMode: 'fast' = gpt4omini (~11s), 'advanced' = gpt5mini (~25s)
+  const chatMode = config.configurable.chatMode || 'fast';
+  let baseModel;
+  if (chatMode === 'advanced') {
+    const { gpt5mini } = createModels('default', 'gpt5mini');
+    baseModel = gpt5mini;
+  } else {
+    const { gpt4omini } = createModels('default', 'gpt4omini');
+    baseModel = gpt4omini;
+  }
 
   const question = state.messages[state.messages.length - 1].content;
   const originalQuestion = config.configurable.originalQuestion || question;
   const patientId = config.configurable.patientId;
   const patientIdCrypt = crypt.encrypt(patientId);
+  
+  // Timer para medir rendimiento
+  const startTime = Date.now();
+  const logTime = (step) => console.log(`⏱️ [${((Date.now() - startTime) / 1000).toFixed(1)}s] [${chatMode}] ${step}`);
   
   // Helper para enviar estado al usuario
   const sendStatus = (status, extra = {}) => {
@@ -102,16 +114,15 @@ TODAY'S DATE: {systemTime}
     });
   };
 
-  // 1. Detección de intención (usamos la original para mejor detección de erratas médicas)
+  // 1. Detección de intención
+  logTime('Inicio callModel');
   sendStatus("detectando intención");
   const plan = await detectIntent(originalQuestion, patientId);
-  console.log(`Intento detectado: ${plan.id} para la pregunta: "${originalQuestion}"`);
+  logTime(`Intent detectado: ${plan.id}`);
   sendStatus("intent detectado", { intent: plan.id });
 
-  // 2. Recuperación de memorias de conversación (k=3, filtro por source)
-  sendStatus("recuperando historial");
+  // 2. Preparar retriever de memorias
   let conversationVectorStore = await createIndexIfNone(cogsearchIndex, embeddings, vectorStoreAddress, vectorStorePassword);
-  
   const conversationFilter = {
     filterExpression: `source eq '${config.configurable.indexName}'`,
     vectorFilterMode: "preFilter"
@@ -121,37 +132,31 @@ TODAY'S DATE: {systemTime}
     filter: conversationFilter,
     searchType: "similarity"
   });
-  const memories = await conversationRetriever.invoke(question);
+  logTime('VectorStore listo');
 
-  // 3. Recuperación de Document Chunks (Candidatos)
-  sendStatus("buscando en documentos");
-  // Si la pregunta traducida es muy diferente, pasamos ambas al retriever para búsqueda híbrida
+  // 3. Recuperación PARALELA de memorias y chunks
+  sendStatus("recuperando historial");
   const searchQuery = question !== originalQuestion ? `${question} ${originalQuestion}` : question;
-  const candidateChunks = await retrieveChunks(searchQuery, patientId, plan);
-  console.log(`Recuperados ${candidateChunks.length} candidatos para chunks usando: "${searchQuery}"`);
+  
+  const [memories, candidateChunks] = await Promise.all([
+    conversationRetriever.invoke(question),
+    retrieveChunks(searchQuery, patientId, plan)
+  ]);
+  logTime(`Recuperación paralela: ${memories.length} memorias, ${candidateChunks.length} chunks`);
+  
+  sendStatus("buscando en documentos");
 
-  // 4. Re-ranking determinista y Selección de evidencia
+  // 4. Re-ranking determinista
   sendStatus("analizando documentos", { documentsFound: candidateChunks.length });
   const selectedChunks = deterministicRerank(candidateChunks, plan);
-  console.log(`Seleccionados ${selectedChunks.length} chunks de evidencia final`);
+  logTime(`Re-ranking: ${selectedChunks.length} chunks seleccionados`);
 
-  // DEBUG: Verificar metadata de chunks seleccionados
-  if (selectedChunks.length > 0) {
-    console.log('\n📋 METADATA DE CHUNKS SELECCIONADOS:');
-    selectedChunks.slice(0, 3).forEach((chunk, i) => {
-      console.log(`Chunk ${i + 1}:`);
-      console.log(`  - filename: ${chunk.metadata?.filename || 'MISSING'}`);
-      console.log(`  - reportDate: ${chunk.metadata?.reportDate || 'MISSING'}`);
-      console.log(`  - documentId: ${chunk.metadata?.documentId || 'MISSING'}`);
-    });
-    console.log('');
-  }
-
-  // 5. Extracción estructurada (Fase 7)
+  // 5. Extracción estructurada
   sendStatus("extrayendo datos clínicos");
-  const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+  const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId, chatMode);
+  logTime(`Extracción: ${structuredFacts.length} facts`);
 
-  // 6. Curación de contexto (Pasamos memorias, chunks seleccionados y hechos estructurados)
+  // 6. Curación de contexto
   sendStatus("preparando contexto");
   const curatedContext = await curateContext(
     config.configurable.context, 
@@ -160,20 +165,41 @@ TODAY'S DATE: {systemTime}
     config.configurable.docs, 
     question,
     selectedChunks,
-    structuredFacts
+    structuredFacts,
+    [], // appointments
+    [], // notes
+    chatMode
   );
+  logTime('Contexto curado');
 
   // Guardar el contexto curado en el config para que esté disponible en las herramientas
   config.configurable.curatedContext = curatedContext.content;
 
   const model = baseModel.bindTools(TOOLS);
+  // Construir sección de país SOLO si existe el dato
+  let countryGuidance = '';
+  const patientCountry = config.configurable.patientCountry;
+  if (patientCountry) {
+    countryGuidance = `
+### COUNTRY-SPECIFIC GUIDANCE:
+The patient is located in: ${patientCountry}
+Contextualize your responses accordingly:
+- Use healthcare system terminology appropriate for their country (e.g., "centro de salud" for Spain, "primary care physician" for US)
+- Reference local medication brand names when known (e.g., Paracetamol in EU, Tylenol in US)
+- Provide country-appropriate healthcare access advice (public vs private systems)
+- Use local units of measurement (metric for most countries, imperial for US)
+`;
+  }
+
   const prompt = await systemPromptTemplate.format({ 
     systemTime: config.configurable.systemTime, 
-    curatedContext: curatedContext.content 
+    curatedContext: curatedContext.content,
+    countryGuidance: countryGuidance
   });
   
   // Informar que el modelo está procesando
   sendStatus("invocando modelo");
+  logTime('Invocando modelo principal');
   
   if (config.configurable.context.length > 1) {
     let context = config.configurable.context.slice(1);
@@ -193,6 +219,7 @@ TODAY'S DATE: {systemTime}
       ...inputMessages,
       ...state.messages,
     ]);
+    logTime('Respuesta del modelo recibida');
     return {messages: [response], vectorStore: conversationVectorStore};
   } else {
     const response = await model.invoke([
@@ -202,6 +229,7 @@ TODAY'S DATE: {systemTime}
     },
     ...state.messages,
   ]);
+  logTime('Respuesta del modelo recibida');
 
   // We return a list, because this will get added to the existing list
   return { messages: [response], vectorStore: conversationVectorStore };
@@ -220,7 +248,6 @@ async function saveContext(state, langGraphConfig) {
   if (userLang && userLang !== 'en') {
     try {
       translatedAnswer = await translateToUserLang(output.content, userLang);
-      console.log(`Translated answer from en to ${userLang}`);
     } catch (translateError) {
       console.error('Error translating answer:', translateError);
       // Si falla la traducción, usar la respuesta original
@@ -280,7 +307,6 @@ async function saveContext(state, langGraphConfig) {
         suggestions = await Promise.all(
           suggestionsRaw.map(s => translateToUserLang(s, userLang))
         );
-        console.log(`Translated ${suggestions.length} suggestions to ${userLang}`);
       } catch (translateError) {
         console.error('Error translating suggestions:', translateError);
         suggestions = suggestionsRaw;

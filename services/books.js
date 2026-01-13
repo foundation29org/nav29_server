@@ -586,6 +586,17 @@ async function callNavigator(req, res) {
 			}
 		}
 		
+		// Get patient country for contextualizing responses (healthcare system, medication names, etc.)
+		let patientCountry = null;
+		try {
+			const patient = await Patient.findById(patientId, { "country": true, "countrybirth": true });
+			if (patient) {
+				patientCountry = patient.country || patient.countrybirth || null;
+			}
+		} catch (error) {
+			console.log('Error getting patient country:', error);
+		}
+		
 		// Detectar idioma del mensaje y traducir si es necesario (usando las mismas funciones que el cliente)
 		let questionToProcess = originalQuestion;
 		if (originalQuestion && originalQuestion.length > 0) {
@@ -683,8 +694,10 @@ async function callNavigator(req, res) {
 				containerName: containerName,
 				userId: req.body.userId,
 				userLang: userLang,
+				patientCountry: patientCountry, // Country for contextualizing healthcare advice
 				originalQuestion: originalQuestion,
-				pubsubClient: pubsub
+				pubsubClient: pubsub,
+				chatMode: req.body.chatMode || 'fast' // 'fast' = gpt4omini, 'advanced' = gpt5mini
 			},
 			callbacks: tracer ? [tracer] : [] 
 		}).catch(error => {

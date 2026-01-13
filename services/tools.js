@@ -57,7 +57,6 @@ const perplexityTool = new DynamicStructuredTool({
       if (curatedContext && curatedContext.length > 0) {
         const contextSnippet = curatedContext.substring(0, 1000);
         enhancedQuestion = `${question}\n\nPatient medical context (for reference): ${contextSnippet}`;
-        console.log(`🔍 [PERPLEXITY] Contexto añadido: ${contextSnippet.length} chars`);
       }
       
       // Si no menciona años recientes, añadirlos
@@ -94,7 +93,6 @@ CRITICAL INSTRUCTIONS:
 
 Your goal is to provide the MOST CURRENT medical information available on the web, not information from your training data.`;
 
-      console.log(`🔍 [PERPLEXITY] Query: "${enhancedQuestion.substring(0, 100)}..."`);
       
       // Usar axios directamente con sonar-pro (sin fallback)
       const perplexityResponse = await axios.post('https://api.perplexity.ai/chat/completions', {
@@ -124,15 +122,6 @@ Your goal is to provide the MOST CURRENT medical information available on the we
       const responseContent = perplexityResponse.data.choices[0]?.message?.content || '';
       const citations = perplexityResponse.data.citations || [];
       const searchResults = perplexityResponse.data.search_results || [];
-      
-      const responseLength = responseContent.length;
-      console.log(`✅ [PERPLEXITY] Response: ${responseLength} chars`);
-      console.log(`   Citations available: ${citations.length > 0 ? 'Yes' : 'No'}, Search results: ${searchResults.length}`);
-      
-      // Log de estructura para debugging (solo si hay citaciones)
-      if (citations.length > 0) {
-        console.log(`   First citation example:`, JSON.stringify(citations[0]).substring(0, 100));
-      }
       
       // Asegurar que el resultado sea texto plano y directo
       if (!responseContent || responseContent.trim().length === 0) {
@@ -298,8 +287,16 @@ async function processDocs(docs, containerName) {
   return docsSummariesString;
 }
 
-async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = [], appointments = [], notes = []) {
-  const { gemini25pro } = createModels('default', 'gemini25pro');
+async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = [], appointments = [], notes = [], chatMode = 'fast') {
+  // Seleccionar modelo según chatMode: 'fast' = gpt4omini, 'advanced' = gemini25pro
+  let model;
+  if (chatMode === 'advanced') {
+    const { gemini25pro } = createModels('default', 'gemini25pro');
+    model = gemini25pro;
+  } else {
+    const { gpt4omini } = createModels('default', 'gpt4omini');
+    model = gpt4omini;
+  }
   
   let contextTemplate;
   try {
@@ -373,7 +370,7 @@ CURATED CONTEXT:`]
     ]);
   }
 
-  const runnable = contextTemplate.pipe(gemini25pro);
+  const runnable = contextTemplate.pipe(model);
   
   let docsSummaries = await processDocs(docs, containerName);
   let contextContent = context.map(c => `${c.role}: ${JSON.stringify(c.content)}`).join('\n\n');
@@ -393,9 +390,6 @@ CURATED CONTEXT:`]
     return `<Evidence Chunk ${i+1} (Doc: ${c.metadata?.filename || 'unknown'}, Fecha: ${formattedDate})>\n${c.pageContent}\n</Evidence Chunk ${i+1}>`;
   }).join('\n\n');
   
-  // DEBUG: Verificar formato de chunks antes de pasar al prompt
-  console.log('\n🔍 CHUNKS FORMATEADOS PARA CURACIÓN:');
-  console.log(chunksString.substring(0, 500) + '...\n');
   
   let factsString = JSON.stringify(structuredFacts, null, 2);
 

@@ -190,11 +190,20 @@ function deterministicRerank(chunks, plan) {
 
 /**
  * Extracts structured facts from chunks using an LLM
+ * @param {string} chatMode - 'fast' uses gpt4omini, 'advanced' uses gpt5mini
  */
-async function extractStructuredFacts(chunks, question, patientId) {
+async function extractStructuredFacts(chunks, question, patientId, chatMode = 'fast') {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Extraction`;
-    let { gpt5mini } = createModels(projectName, 'gpt5mini');
+    // Seleccionar modelo según chatMode
+    let model;
+    if (chatMode === 'advanced') {
+      const { gpt5mini } = createModels(projectName, 'gpt5mini');
+      model = gpt5mini;
+    } else {
+      const { gpt4omini } = createModels(projectName, 'gpt4omini');
+      model = gpt4omini;
+    }
     
     let extractionPrompt;
     try {
@@ -224,7 +233,7 @@ async function extractStructuredFacts(chunks, question, patientId) {
 
     const chunksText = chunks.map((c, i) => `[Chunk ${i+1}] (Doc: ${c.metadata.filename}, Fecha: ${c.metadata.reportDate})\n${c.pageContent}`).join('\n\n');
     
-    const runnable = extractionPrompt.pipe(gpt5mini);
+    const runnable = extractionPrompt.pipe(model);
     const result = await runnable.invoke({
       context: chunksText,
       question: question

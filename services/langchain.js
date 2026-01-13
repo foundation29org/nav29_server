@@ -197,11 +197,7 @@ function createModels(projectName, modelType = null) {
 
       // Verificar la configuración del modelo
       if (model) {
-        console.log('Model Configuration:', {
-          hasAzureKey: !!model.azureOpenAIApiKey,
-          instanceName: model.azureOpenAIApiInstanceName,
-          deploymentName: model.azureOpenAIApiDeploymentName
-        });
+        console.log('Model Configuration:', model.azureOpenAIApiDeploymentName);
       }
 
       return { [modelType]: model };
