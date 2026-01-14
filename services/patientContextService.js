@@ -104,42 +104,65 @@ async function fetchDocuments(id, limit = 10) {
 async function fetchAppointments(id, limit = 20) {
   const rows = await Appointments
     .find({ createdBy: id })
-    .sort({ date: -1 })
     .limit(limit)
     .lean();
 
-  return rows.map(a => ({
-    date: toDateStr(a.date),
-    notes: a.notes ?? ''
-  }));
+  // Sort en memoria (evita requerir índice en Cosmos DB)
+  return rows
+    .sort((a, b) => new Date(b.date ?? 0) - new Date(a.date ?? 0))
+    .map(a => ({
+      date: toDateStr(a.date),
+      notes: a.notes ?? ''
+    }));
 }
 
 async function fetchNotes(id, limit = 20) {
   const rows = await Notes
     .find({ createdBy: id })
-    .sort({ date: -1 })
     .limit(limit)
     .lean();
 
-  return rows.map(n => ({
-    date: toDateStr(n.date),
-    content: n.content ?? ''
-  }));
+  // Sort en memoria (evita requerir índice en Cosmos DB)
+  return rows
+    .sort((a, b) => new Date(b.date ?? 0) - new Date(a.date ?? 0))
+    .map(n => ({
+      date: toDateStr(n.date),
+      content: n.content ?? ''
+    }));
 }
 
 /* ------------------------------------------------------------------ */
 /* 3 · Public API                                                     */
 /* ------------------------------------------------------------------ */
-async function aggregateClinicalContext(patientId) {
+/**
+ * Agrega el contexto clínico relevante para funciones de IA (DxGPT, Rarescope, etc.)
+ * 
+ * @param {string} patientId - ID del paciente
+ * @param {Object} options - Opciones
+ * @param {boolean} options.includeAppointments - Incluir citas (default: false)
+ * @param {boolean} options.includeNotes - Incluir notas personales (default: false)
+ */
+async function aggregateClinicalContext(patientId, options = {}) {
   console.debug(`[CTX] Building raw context for ${patientId}`);
-  const [profile, events, documents, appointments, notes] = await Promise.all([
+  
+  // Datos clínicos principales (siempre se cargan)
+  const [profile, events, documents] = await Promise.all([
     fetchPatient(patientId),
     fetchEvents(patientId),
-    fetchDocuments(patientId),
-    fetchAppointments(patientId),
-    fetchNotes(patientId)
+    fetchDocuments(patientId)
   ]);
-  return { profile, events, documents, appointments, notes };
+  
+  const result = { profile, events, documents };
+  
+  // Datos opcionales (diary) - solo si se solicitan explícitamente
+  if (options.includeAppointments) {
+    result.appointments = await fetchAppointments(patientId);
+  }
+  if (options.includeNotes) {
+    result.notes = await fetchNotes(patientId);
+  }
+  
+  return result;
 }
 
 module.exports = { aggregateClinicalContext };

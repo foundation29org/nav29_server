@@ -1658,5 +1658,8 @@ module.exports = {
   explainMedicalEvent,
   getPatientData,
   createModels,
-  embeddings
+  embeddings,
+  // Para scripts de migración
+  timelineServer,
+  saveEventTimeline
 };
