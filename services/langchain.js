@@ -761,7 +761,10 @@ function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDa
     eventdb.origin = 'automatic';
     eventdb.docId = doc_id;
     eventdb.createdBy = patientId;
-    eventdb.addedBy = crypt.decrypt(userId);
+    // addedBy es opcional (puede ser null en migraciones/scripts)
+    if (userId) {
+      eventdb.addedBy = crypt.decrypt(userId);
+    }
 
     // Nuevos campos de fuente para arquitectura de tres capas
     eventdb.source = {
@@ -1661,5 +1664,7 @@ module.exports = {
   embeddings,
   // Para scripts de migración
   timelineServer,
+  summarizeServer,
+  anomaliesServer,
   saveEventTimeline
 };
