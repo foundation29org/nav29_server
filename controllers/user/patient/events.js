@@ -10,6 +10,7 @@ const crypt = require('../../../services/crypt')
 const insights = require('../../../services/insights')
 const langchain = require('../../../services/langchain')
 const f29azureService = require("../../../services/f29azure")
+const { getOrGenerateTimeline, invalidateTimelineCache } = require('../../../services/timelineConsolidationService')
 // Aquí puedes añadir más campos si los necesitas...
 
 function getEventsDate(req, res) {
@@ -379,6 +380,61 @@ async function explainMedicalEvent(req, res) {
 
 }
 
+/**
+ * GET /api/timeline/consolidated/:patientId
+ * Obtiene el timeline consolidado (cacheado o generado)
+ */
+async function getConsolidatedTimeline(req, res) {
+	try {
+		const patientId = crypt.decrypt(req.params.patientId);
+		const userLang = req.query.lang || 'es';
+		const forceRegenerate = req.query.regenerate === 'true';
+		
+		console.log(`[Timeline] Solicitando timeline consolidado para ${patientId}, lang=${userLang}, force=${forceRegenerate}`);
+		
+		const timeline = await getOrGenerateTimeline(patientId, userLang, forceRegenerate);
+		
+		res.status(200).json(timeline);
+	} catch (error) {
+		console.error('[Timeline] Error:', error);
+		insights.error({ message: 'Error getting consolidated timeline', error: error.message });
+		res.status(500).json({ 
+			success: false, 
+			message: 'Error generating timeline',
+			error: error.message 
+		});
+	}
+}
+
+/**
+ * POST /api/timeline/regenerate/:patientId
+ * Fuerza la regeneración del timeline consolidado
+ */
+async function regenerateConsolidatedTimeline(req, res) {
+	try {
+		const patientId = crypt.decrypt(req.params.patientId);
+		const userLang = req.body.lang || req.query.lang || 'es';
+		
+		console.log(`[Timeline] Regenerando timeline para ${patientId}`);
+		
+		// Invalidar caché primero
+		await invalidateTimelineCache(patientId);
+		
+		// Generar nuevo
+		const timeline = await getOrGenerateTimeline(patientId, userLang, true);
+		
+		res.status(200).json(timeline);
+	} catch (error) {
+		console.error('[Timeline] Error regenerando:', error);
+		insights.error({ message: 'Error regenerating timeline', error: error.message });
+		res.status(500).json({ 
+			success: false, 
+			message: 'Error regenerating timeline',
+			error: error.message 
+		});
+	}
+}
+
 module.exports = {
 	getEventsDate,
 	getEvents,
@@ -392,5 +448,7 @@ module.exports = {
 	deleteEvent,
 	deleteAllEvents,
 	deleteEvents,
-	explainMedicalEvent
+	explainMedicalEvent,
+	getConsolidatedTimeline,
+	regenerateConsolidatedTimeline
 }

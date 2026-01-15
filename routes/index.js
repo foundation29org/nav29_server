@@ -189,6 +189,10 @@ api.delete('/events/:patientId/:eventId', auth.isAuthPatient(roles.All), checkAp
 api.post('/deleteevents/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.deleteEvents)
 api.post('/explainmedicalevent/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.explainMedicalEvent)
 
+// Timeline consolidado (genera timeline limpio a partir de eventos crudos)
+api.get('/timeline/consolidated/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.getConsolidatedTimeline)
+api.post('/timeline/regenerate/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.regenerateConsolidatedTimeline)
+
 api.get('/lastappointments/:patientId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.getLastAppointments)
 api.get('/appointments/:patientId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.getAppointments)
 api.post('/appointments/:patientId/:userId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.saveAppointment)
