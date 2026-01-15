@@ -191,10 +191,55 @@ Contextualize your responses accordingly:
 `;
   }
 
+  // Construir guía de perfil de usuario (medicalLevel + role)
+  const medicalLevel = config.configurable.medicalLevel || '1';
+  const userRole = config.configurable.userRole || 'User';
+  
+  // Mapeo de medicalLevel a instrucciones de comunicación
+  const medicalLevelGuidance = {
+    '0': `The reader has LOW LITERACY and does NOT understand medical terminology.
+- Use extremely simple, everyday language
+- Avoid ALL medical jargon - explain everything as if to a child
+- Use analogies and examples from daily life
+- Break down complex concepts into very small steps`,
+    '1': `The reader is a BASIC PATIENT with limited medical knowledge.
+- Use simple, accessible language
+- Explain medical terms when you must use them (e.g., "blood pressure (the force of blood pushing against artery walls)")
+- Focus on practical, actionable information
+- Avoid overwhelming with technical details`,
+    '2': `The reader is an ADVANCED PATIENT who understands medical terminology.
+- You can use medical terms without extensive explanation
+- Provide more detailed physiological context when relevant
+- Include specific values and ranges
+- Strike a balance between accuracy and accessibility`,
+    '3': `The reader is a CLINICAL PROFESSIONAL or scientist.
+- Use precise medical/scientific terminology
+- Include exact values, scales, and clinical references (e.g., Ki-67, SUVmax, Krenning scale)
+- Reference clinical guidelines when relevant
+- Provide detailed pathophysiological explanations`
+  };
+
+  // Mapeo de role a enfoque de respuesta
+  const roleGuidance = {
+    'User': `Focus on: Personal health understanding, what this means for daily life, self-care recommendations.`,
+    'Caregiver': `Focus on: Warning signs to watch for (red flags), medication administration, care logistics, when to seek emergency help, support resources.`,
+    'Clinical': `Focus on: Clinical data accuracy, differential considerations, treatment protocols, evidence-based recommendations.`
+  };
+
+  let userProfileGuidance = `
+### USER PROFILE ADAPTATION:
+Medical Understanding Level: ${medicalLevel === '0' ? 'Low Literacy' : medicalLevel === '1' ? 'Basic Patient' : medicalLevel === '2' ? 'Advanced Patient' : 'Clinical Professional'}
+User Role: ${userRole}
+
+${medicalLevelGuidance[medicalLevel] || medicalLevelGuidance['1']}
+
+${roleGuidance[userRole] || roleGuidance['User']}
+`;
+
   const prompt = await systemPromptTemplate.format({ 
     systemTime: config.configurable.systemTime, 
     curatedContext: curatedContext.content,
-    countryGuidance: countryGuidance
+    countryGuidance: countryGuidance + userProfileGuidance
   });
   
   // Informar que el modelo está procesando
@@ -380,10 +425,26 @@ async function prettify(state, config) {
   
   
   // For other content, proceed with normal formatting
+  // Pass medicalLevel and userRole to adapt HTML structure
+  const medicalLevel = config.configurable.medicalLevel || '1';
+  const userRole = config.configurable.userRole || 'User';
+  
+  // Adaptar instrucciones de formateo según nivel médico
+  const formattingInstructions = {
+    '0': 'Use very short paragraphs, simple bullet points, and large text emphasis. Avoid tables. Use icons/emojis to highlight key points.',
+    '1': 'Use clear headings, short paragraphs, and simple bullet lists. Keep tables simple if needed.',
+    '2': 'Standard professional formatting with sections, tables where useful, and clear organization.',
+    '3': 'Clinical formatting: use tables for lab values, technical sections, references to guidelines.'
+  };
+  
   const htmlFormatter = await pull("foundation29/html_formatter_v1");
   const runnable = htmlFormatter.pipe(azuregpt4o);
-  const formattedOutput = await runnable.invoke({ content: output.content });
-  // TODO: Also use the medicalLevel variable to improve the readability of the output
+  const formattedOutput = await runnable.invoke({ 
+    content: output.content,
+    medicalLevel: medicalLevel,
+    formattingStyle: formattingInstructions[medicalLevel] || formattingInstructions['1'],
+    userRole: userRole
+  });
   // Clean the ```html ``` tags
   let cleanOutput = formattedOutput.content.replace(/```html/g, '').replace(/```/g, '');
   

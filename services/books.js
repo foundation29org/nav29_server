@@ -572,17 +572,24 @@ async function callNavigator(req, res) {
 			// Continuar sin filtrar si hay error
 		}
 		
-		// Get user language - try from request body first (detectedLang from client), then from user model
+		// Get user language, medicalLevel, and role from user model
 		let userLang = req.body.detectedLang || req.body.lang || req.body.userLang || 'en';
-		if (!req.body.detectedLang && !req.body.lang && req.body.userId) {
+		let medicalLevel = '1'; // Default: basic patient
+		let userRole = 'User'; // Default: patient/user
+		
+		if (req.body.userId) {
 			try {
 				const userId = crypt.decrypt(req.body.userId);
-				const user = await User.findById(userId, { "lang": true, "preferredResponseLanguage": true });
+				const user = await User.findById(userId, { "lang": true, "preferredResponseLanguage": true, "medicalLevel": true, "role": true });
 				if (user) {
-					userLang = user.preferredResponseLanguage || user.lang || 'en';
+					if (!req.body.detectedLang && !req.body.lang) {
+						userLang = user.preferredResponseLanguage || user.lang || 'en';
+					}
+					medicalLevel = user.medicalLevel || '1';
+					userRole = user.role || 'User';
 				}
 			} catch (error) {
-				console.log('Error getting user language:', error);
+				console.log('Error getting user data:', error);
 			}
 		}
 		
@@ -695,6 +702,8 @@ async function callNavigator(req, res) {
 				userId: req.body.userId,
 				userLang: userLang,
 				patientCountry: patientCountry, // Country for contextualizing healthcare advice
+				medicalLevel: medicalLevel, // 0=low, 1=basic, 2=advanced, 3=clinical
+				userRole: userRole, // User, Caregiver, Clinical
 				originalQuestion: originalQuestion,
 				pubsubClient: pubsub,
 				chatMode: req.body.chatMode || 'fast' // 'fast' = gpt4omini, 'advanced' = gpt5mini
