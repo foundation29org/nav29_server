@@ -284,15 +284,34 @@ async function suggestionsFromConversation(messages) {
 
 async function processDocs(docs, containerName) {
   let docsSummaries = [];
+  
+  if (!docs || !Array.isArray(docs) || docs.length === 0) {
+    return '';
+  }
+  
   for (let doc of docs) {
     try {
-      let url = doc.replace(/\/[^\/]*$/, '/summary_translated.txt');
+      // Manejar tanto strings (URLs) como objetos Document
+      let docUrl;
+      if (typeof doc === 'string') {
+        docUrl = doc;
+      } else if (doc && typeof doc === 'object' && doc.url) {
+        docUrl = doc.url;
+      } else {
+        console.warn(`[processDocs] Skipping invalid doc format:`, typeof doc);
+        continue;
+      }
+      
+      let url = docUrl.replace(/\/[^\/]*$/, '/summary_translated.txt');
       let docSummary = await azure_blobs.downloadBlob(containerName, url);
-      docsSummaries.push(docSummary);
+      if (docSummary) {
+        docsSummaries.push(docSummary);
+      }
     } catch (error) {
-      console.error(`[processDocs] Error downloading summary for doc: ${doc}`, error.message);
-      insights.error({ message: '[processDocs] Error downloading document summary', error: error.message, doc: doc, containerName: containerName });
-      // Continuar con los demás documentos
+      // Silently skip documents without summaries - this is common
+      if (!error.message?.includes('BlobNotFound')) {
+        console.warn(`[processDocs] Error downloading summary:`, error.message);
+      }
     }
   }
   let docsSummariesString = docsSummaries.map((summary, i) => `<Document Summary ${i+1}>\n${summary}\n</Document Summary ${i+1}>`).join('\n\n');

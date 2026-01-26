@@ -1183,19 +1183,20 @@ async function handleInfographicRequest(req, res) {
         const raw = await patientContextService.aggregateClinicalContext(patientId);
         const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
         
-        // Curar contexto
+        // Curar contexto - firma: (context, memories, containerName, docs, question, selectedChunks, structuredFacts)
+        const containerName = crypt.getContainerName(patientId);
         const curatedResult = await curateContext(
-          [],
-          [],
-          selectedChunks,
-          raw.events || [],
-          structuredFacts,
-          patientId,
-          raw.profile || {}
+          [],                    // context
+          [],                    // memories
+          containerName,         // containerName
+          [],                    // docs
+          searchQuery,           // question
+          selectedChunks,        // selectedChunks
+          structuredFacts        // structuredFacts
         );
         
         patientSummary = curatedResult.content;
-        console.log(`[Infographic] Context built from RAG (${patientSummary.length} chars)`);
+        console.log(`[Infographic] Context built from RAG (${patientSummary?.length || 0} chars)`);
       } catch (ragError) {
         console.warn('[Infographic] RAG failed, using basic context:', ragError.message);
         
@@ -1427,14 +1428,16 @@ async function handleSoapReportRequest(req, res) {
         const raw = await patientContextService.aggregateClinicalContext(patientId);
         const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
         
+        // Curar contexto - firma: (context, memories, containerName, docs, question, selectedChunks, structuredFacts)
+        const containerName = crypt.getContainerName(patientId);
         const curatedResult = await curateContext(
-          [],
-          [],
-          selectedChunks,
-          raw.events || [],
-          structuredFacts,
-          patientId,
-          raw.profile || {}
+          [],                    // context
+          [],                    // memories
+          containerName,         // containerName
+          [],                    // docs
+          searchQuery,           // question
+          selectedChunks,        // selectedChunks
+          structuredFacts        // structuredFacts
         );
         
         patientContext = curatedResult.content || 'No previous medical history available.';
