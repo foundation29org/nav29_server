@@ -37,20 +37,33 @@ const User = require('../models/user')
 
 
 async function analizeDoc(containerName, url, documentId, filename, patientId, userId, saveTimeline, medicalLevel) {
+	const logContext = { patientId, documentId, filename, containerName };
+	
 	if (!containerName || !url || !documentId || !filename || !patientId) {
+		console.warn('[analizeDoc] Missing required parameters, skipping analysis');
+		insights.error({ message: '[analizeDoc] Missing required parameters', missingParams: { containerName: !containerName, url: !url, documentId: !documentId, filename: !filename, patientId: !patientId } });
 		return;
 	}
-	// Call the langchain function to summarize the document
-	langchain.processDocument(patientId, containerName, url, documentId, filename, userId, saveTimeline, medicalLevel);
-	let isDonating = await isDonatingData(patientId);
-	if (isDonating) {
-		setStateAnonymizedDoc(documentId, 'inProcess')
-		let anonymized = await langchain.anonymize(patientId, containerName, url, documentId, filename, userId);
-		if (anonymized) {
-			setStateAnonymizedDoc(documentId, 'true')
-		} else {
-			setStateAnonymizedDoc(documentId, 'false')
+	
+	try {
+		// Call the langchain function to summarize the document
+		langchain.processDocument(patientId, containerName, url, documentId, filename, userId, saveTimeline, medicalLevel);
+		
+		let isDonating = await isDonatingData(patientId);
+		if (isDonating) {
+			setStateAnonymizedDoc(documentId, 'inProcess');
+			try {
+				let anonymized = await langchain.anonymize(patientId, containerName, url, documentId, filename, userId);
+				setStateAnonymizedDoc(documentId, anonymized ? 'true' : 'false');
+			} catch (anonymizeError) {
+				console.error('[analizeDoc] Error in anonymization process:', anonymizeError.message);
+				insights.error({ message: '[analizeDoc] Error in anonymization process', error: anonymizeError.message, stack: anonymizeError.stack, ...logContext });
+				setStateAnonymizedDoc(documentId, 'false');
+			}
 		}
+	} catch (error) {
+		console.error('[analizeDoc] Error analyzing document:', error.message);
+		insights.error({ message: '[analizeDoc] Error analyzing document', error: error.message, stack: error.stack, ...logContext });
 	}
 }
 
@@ -100,12 +113,13 @@ const updateDocStatus = async (doc_id, status) => {
   };
   
 async function form_recognizer(patientId, documentId, containerName, url, filename, userId, saveTimeline, medicalLevel, isTextFile, preferredResponseLanguage) {
-	return new Promise(async function (resolve, reject) {
-		try {
-			const patientIdCrypt = crypt.encrypt(patientId);
-			let docIdEnc = crypt.encrypt(documentId);
-			pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "inProcess", "filename": filename, "patientId": patientIdCrypt });
-			await updateDocStatus(documentId, 'inProcess');
+	const logContext = { patientId, documentId, filename, url };
+	
+	try {
+		const patientIdCrypt = crypt.encrypt(patientId);
+		let docIdEnc = crypt.encrypt(documentId);
+		pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "inProcess", "filename": filename, "patientId": patientIdCrypt });
+		await updateDocStatus(documentId, 'inProcess');
 			let content = null;
 			if(!isTextFile){
 				var url2 = "https://" + accountname + ".blob.core.windows.net/" + containerName + "/" + url + sas;
@@ -131,7 +145,8 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 	
 				if (result.status === 'failed') {
 					const errorDetails = result.error || { code: 'Unknown', message: 'Document analysis failed' };
-					console.error('Error in analyzing document:', errorDetails);
+					console.error('[form_recognizer] Error in analyzing document:', errorDetails);
+					insights.error({ message: '[form_recognizer] Document Intelligence analysis failed', errorDetails: errorDetails, ...logContext });
 					
 					// Detectar si es DOCX basándose en el filename
 					const isDocxFile = filename && (filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc'));
@@ -139,7 +154,7 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 					
 					// Si es DOCX y falla, lanzar error con key corto
 					if (isDocxFile && errorCode === 'InternalServerError') {
-						console.error('DOCX file failed to process:', filename);
+						console.error('[form_recognizer] DOCX file failed to process:', filename);
 						throw new Error('messages.error.docx.convertToPdf');
 					}
 					
@@ -155,9 +170,10 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			let doc_lang;
 			try {
 			  doc_lang = await openAIserviceCtrl.detectLang(content);
-			  console.log('Detected language:', doc_lang);
+			  console.log('[form_recognizer] Detected language:', doc_lang);
 			} catch (error) {
-			  console.error('Error detecting language:', error);
+			  console.error('[form_recognizer] Error detecting language:', error.message);
+			  insights.error({ message: '[form_recognizer] Error detecting language', error: error.message, stack: error.stack, ...logContext });
 			  throw error; // Propaga el error para ser manejado por el catch principal
 			}
 			/*let lang_response = await translate.getDetectLanguage(content)
@@ -194,16 +210,16 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			try {
 				({ categoryTag, documentDate } = await langchain.categorizeDocs(userId, translatedContent, patientId, containerName, url, documentId, filename));
 			  } catch (error) {
-				console.error('Error categorizing document:', error);
+				console.error('[form_recognizer] Error categorizing document:', error.message);
+				insights.error({ message: '[form_recognizer] Error categorizing document', error: error.message, stack: error.stack, ...logContext });
 				throw new Error('Error categorizing document: ' + error.message);
 			  }
 
 			Document.findByIdAndUpdate(documentId, { categoryTag: categoryTag, originaldate: validateDate(documentDate) }, { new: true }, (err, documentUpdated) => {
 				if (err) {
-					insights.error(err);
-					console.log(err)
+					console.error('[form_recognizer] Error updating document category:', err.message);
+					insights.error({ message: '[form_recognizer] Error updating document category', error: err.message, ...logContext });
 				}
-				// console.log('Updated Document:', documentUpdated);
 			});
 
 			// Call the Node server
@@ -213,8 +229,13 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			resolve(response);
 
 		} catch (error) {
-			console.log(error);
-			insights.error(error);
+			console.error('[form_recognizer] Error processing document:', error.message);
+			insights.error({ 
+				message: '[form_recognizer] Error processing document', 
+				error: error.message, 
+				stack: error.stack,
+				...logContext
+			});
 			const patientIdCrypt = crypt.encrypt(patientId);
 			let docIdEnc = crypt.encrypt(documentId);
 			
@@ -231,140 +252,136 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			};
 			
 			pubsub.sendToUser(userId, message2);
-			try {
-				await updateDocStatus(documentId, 'failed');
-			} catch (error) {
-				console.log(`Error updating document status to failed:`, error);
-				insights.error(error);
-			}
-			//reject(error);
+		try {
+			await updateDocStatus(documentId, 'failed');
+		} catch (updateError) {
+			console.error('[form_recognizer] Error updating document status to failed:', updateError.message);
+			insights.error({ message: '[form_recognizer] Error updating document status to failed', error: updateError.message, ...logContext });
 		}
-	});
+	}
 }
 
 async function form_recognizerwizard(patientId, documentId, containerName, url, filename, userId, saveTimeline, medicalLevel, isTextFile, preferredResponseLanguage) {
-	return new Promise(async function (resolve, reject) {
-		try {
-			const patientIdCrypt = crypt.encrypt(patientId);
-			let docIdEnc = crypt.encrypt(documentId);
-			pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "inProcess", "filename": filename, "patientId": patientIdCrypt });
-			await updateDocStatus(documentId, 'inProcess');
-			let content = null;
-			if(!isTextFile){
-				var url2 = "https://" + accountname + ".blob.core.windows.net/" + containerName + "/" + url + sas;
-				const modelId = "prebuilt-layout"; // replace with your model id
+	const logContext = { patientId, documentId, filename, url };
 	
-				const clientIntelligence = createDocumentIntelligenceClient(form_recognizer_endpoint, { key: form_recognizer_key });
-				const initialResponse = await clientIntelligence
-					.path("/documentModels/{modelId}:analyze", modelId).post({
-						contentType: "application/json",
-						body: { urlSource: url2 },
-						queryParameters: { outputContentFormat: "markdown" }
-					});
-	
-				if (isUnexpected(initialResponse)) {
-					throw initialResponse.body.error;
-				}
-	
-				const poller = await getLongRunningPoller(clientIntelligence, initialResponse);
-	
-				const result = (await poller.pollUntilDone()).body;
-	
-				// console.log(result); 
-	
-				if (result.status === 'failed') {
-					const errorDetails = result.error || { code: 'Unknown', message: 'Document analysis failed' };
-					console.error('Error in analyzing document (wizard):', errorDetails);
-					
-					// Detectar si es DOCX basándose en el filename
-					const isDocxFile = filename && (filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc'));
-					const errorCode = errorDetails.code || 'InternalServerError';
-					
-					// Si es DOCX y falla, lanzar error con key corto
-					if (isDocxFile && errorCode === 'InternalServerError') {
-						console.error('DOCX file failed to process (wizard):', filename);
-						throw new Error('messages.error.docx.convertToPdf');
-					}
-					
-					// Para otros tipos de archivo o errores, usar mensaje genérico
-					throw new Error('messages.error.document.processingFailed');
-				} else {
-					content = result.analyzeResult.content;
-				}
-			}else{
-				content = await azure_blobs.downloadBlob(containerName, url);
+	try {
+		const patientIdCrypt = crypt.encrypt(patientId);
+		let docIdEnc = crypt.encrypt(documentId);
+		pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "inProcess", "filename": filename, "patientId": patientIdCrypt });
+		await updateDocStatus(documentId, 'inProcess');
+		let content = null;
+		if(!isTextFile){
+			var url2 = "https://" + accountname + ".blob.core.windows.net/" + containerName + "/" + url + sas;
+			const modelId = "prebuilt-layout"; // replace with your model id
+
+			const clientIntelligence = createDocumentIntelligenceClient(form_recognizer_endpoint, { key: form_recognizer_key });
+			const initialResponse = await clientIntelligence
+				.path("/documentModels/{modelId}:analyze", modelId).post({
+					contentType: "application/json",
+					body: { urlSource: url2 },
+					queryParameters: { outputContentFormat: "markdown" }
+				});
+
+			if (isUnexpected(initialResponse)) {
+				throw initialResponse.body.error;
 			}
-			
-			// // 4. Traducir el contenido del documento
-			let doc_lang;
-			try {
-			  doc_lang = await openAIserviceCtrl.detectLang(content);
-			  console.log('Detected language:', doc_lang);
-			} catch (error) {
-			  console.error('Error detecting language:', error);
-			  throw error; // Propaga el error para ser manejado por el catch principal
-			}
-			/*let lang_response = await translate.getDetectLanguage(content)
-			  let doc_lang = lang_response[0].language;*/
-			let deepl_code = null;
-			let translatedContent = null;
-			if (doc_lang != "en") {
-				deepl_code = await translate.getDeeplCode(doc_lang);
-				translatedContent = await translateText(content, deepl_code, doc_lang);
+
+			const poller = await getLongRunningPoller(clientIntelligence, initialResponse);
+
+			const result = (await poller.pollUntilDone()).body;
+
+			if (result.status === 'failed') {
+				const errorDetails = result.error || { code: 'Unknown', message: 'Document analysis failed' };
+				console.error('[form_recognizerwizard] Error in analyzing document:', errorDetails);
+				insights.error({ message: '[form_recognizerwizard] Document Intelligence analysis failed', errorDetails: errorDetails, ...logContext });
+				
+				// Detectar si es DOCX basándose en el filename
+				const isDocxFile = filename && (filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc'));
+				const errorCode = errorDetails.code || 'InternalServerError';
+				
+				// Si es DOCX y falla, lanzar error con key corto
+				if (isDocxFile && errorCode === 'InternalServerError') {
+					console.error('[form_recognizerwizard] DOCX file failed to process:', filename);
+					throw new Error('messages.error.docx.convertToPdf');
+				}
+				
+				// Para otros tipos de archivo o errores, usar mensaje genérico
+				throw new Error('messages.error.document.processingFailed');
 			} else {
-				translatedContent = content;
+				content = result.analyzeResult.content;
 			}
-
-			// 5. Upload the document to Azure Blob Storage
-			const azureResponse = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/language.txt'), preferredResponseLanguage);
-			// console.log(`Language stored in Azure: ${azureResponse}`);
-
-			const azureResponse2 = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/extracted.txt'), content);
-			// console.log(`OCR stored in Azure: ${azureResponse2}`);
-			let message = { "time": new Date().toISOString(), "docId": docIdEnc, "status": "extracted done", "filename": filename, "patientId": patientIdCrypt };
-			pubsub.sendToUser(userId, message);
-			await updateDocStatus(documentId, 'extracted done');
-
-			const azureResponse3 = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/extracted_translated.txt'), translatedContent);
-			// console.log(`OCR translation stored in Azure: ${azureResponse3}`);
-
-			message["time"] = new Date().toISOString();
-			message["status"] = "extracted_translated done";
-			message["patientId"] = patientIdCrypt
-			pubsub.sendToUser(userId, message);
-			await updateDocStatus(documentId, 'extracted_translated done');
-			var response = { "msg": "Done" }
-			resolve(response);
-		} catch (error) {
-			console.log(error);
-			insights.error(error);
-			const patientIdCrypt = crypt.encrypt(patientId);
-			let docIdEnc = crypt.encrypt(documentId);
-			
-			// Usar el mensaje del error si está disponible (ya será amigable si viene de nuestro manejo)
-			let errorMessage = error.message || error.toString();
-			
-			let message2 = { 
-				"time": new Date().toISOString(), 
-				"docId": docIdEnc, 
-				"status": "failed", 
-				"filename": filename, 
-				"patientId": patientIdCrypt,
-				"error": errorMessage
-			};
-			
-			pubsub.sendToUser(userId, message2);
-			try {
-				await updateDocStatus(documentId, 'failed');
-			} catch (error) {
-				console.log(`Error updating document status to failed:`, error);
-				insights.error(error);
-			}
-			//reject(error);
-			var response = { "msg": "failed" }
-			resolve(response);
+		} else {
+			content = await azure_blobs.downloadBlob(containerName, url);
 		}
-	});
+		
+		// 4. Traducir el contenido del documento
+		let doc_lang;
+		try {
+			doc_lang = await openAIserviceCtrl.detectLang(content);
+			console.log('[form_recognizerwizard] Detected language:', doc_lang);
+		} catch (error) {
+			console.error('[form_recognizerwizard] Error detecting language:', error.message);
+			insights.error({ message: '[form_recognizerwizard] Error detecting language', error: error.message, stack: error.stack, ...logContext });
+			throw error; // Propaga el error para ser manejado por el catch principal
+		}
+
+		let deepl_code = null;
+		let translatedContent = null;
+		if (doc_lang != "en") {
+			deepl_code = await translate.getDeeplCode(doc_lang);
+			translatedContent = await translateText(content, deepl_code, doc_lang);
+		} else {
+			translatedContent = content;
+		}
+
+		// 5. Upload the document to Azure Blob Storage
+		const azureResponse = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/language.txt'), preferredResponseLanguage);
+
+		const azureResponse2 = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/extracted.txt'), content);
+		let message = { "time": new Date().toISOString(), "docId": docIdEnc, "status": "extracted done", "filename": filename, "patientId": patientIdCrypt };
+		pubsub.sendToUser(userId, message);
+		await updateDocStatus(documentId, 'extracted done');
+
+		const azureResponse3 = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/extracted_translated.txt'), translatedContent);
+
+		message["time"] = new Date().toISOString();
+		message["status"] = "extracted_translated done";
+		message["patientId"] = patientIdCrypt;
+		pubsub.sendToUser(userId, message);
+		await updateDocStatus(documentId, 'extracted_translated done');
+		return { "msg": "Done" };
+	} catch (error) {
+		console.error('[form_recognizerwizard] Error processing document:', error.message);
+		insights.error({ 
+			message: '[form_recognizerwizard] Error processing document', 
+			error: error.message, 
+			stack: error.stack,
+			...logContext
+		});
+		const patientIdCrypt = crypt.encrypt(patientId);
+		let docIdEnc = crypt.encrypt(documentId);
+		
+		// Usar el mensaje del error si está disponible (ya será amigable si viene de nuestro manejo)
+		let errorMessage = error.message || error.toString();
+		
+		let message2 = { 
+			"time": new Date().toISOString(), 
+			"docId": docIdEnc, 
+			"status": "failed", 
+			"filename": filename, 
+			"patientId": patientIdCrypt,
+			"error": errorMessage
+		};
+		
+		pubsub.sendToUser(userId, message2);
+		try {
+			await updateDocStatus(documentId, 'failed');
+		} catch (updateError) {
+			console.error('[form_recognizerwizard] Error updating document status to failed:', updateError.message);
+			insights.error({ message: '[form_recognizerwizard] Error updating document status to failed', error: updateError.message, ...logContext });
+		}
+		return { "msg": "failed" };
+	}
 }
 
 function validateDate(documentDate) {
@@ -380,21 +397,14 @@ function validateDate(documentDate) {
 }
 
 async function isDonatingData(patientId) {
-	return new Promise(async function (resolve, reject) {
-		Patient.findById(patientId, { "_id": false, "createdBy": false }, (err, patient) => {
-			if (err) resolve(false)
-			if (patient) {
-				if (patient.donation) {
-					resolve(true);
-				} else {
-					resolve(false);
-				}
-			} else {
-				resolve(false);
-			}
-
-		})
-	});
+	try {
+		const patient = await Patient.findById(patientId, { "_id": false, "createdBy": false, "donation": true });
+		return patient?.donation || false;
+	} catch (error) {
+		console.error('[isDonatingData] Error checking donation status:', error.message);
+		insights.error({ message: '[isDonatingData] Error checking donation status', error: error.message, stack: error.stack, patientId: patientId });
+		return false;
+	}
 }
 
 async function anonymizeBooks(documents) {
@@ -443,17 +453,17 @@ async function anonymizeDocument(document) {
 
 }
 
-function setStateAnonymizedDoc(documentId, state) {
-	Document.findByIdAndUpdate(documentId, { anonymized: state }, { new: true }, (err, documentUpdated) => {
-		if (err) {
-			insights.error(err);
-			console.log(err)
-		}
+async function setStateAnonymizedDoc(documentId, state) {
+	try {
+		const documentUpdated = await Document.findByIdAndUpdate(documentId, { anonymized: state }, { new: true });
 		if (!documentUpdated) {
-			insights.error('Error updating document');
-			console.log('Error updating document')
+			console.error('[setStateAnonymizedDoc] Document not found for update');
+			insights.error({ message: '[setStateAnonymizedDoc] Document not found for update', documentId: documentId, state: state });
 		}
-	})
+	} catch (error) {
+		console.error('[setStateAnonymizedDoc] Error updating document anonymized state:', error.message);
+		insights.error({ message: '[setStateAnonymizedDoc] Error updating document anonymized state', error: error.message, stack: error.stack, documentId: documentId, state: state });
+	}
 }
 
 async function getUserId(patientId) {
@@ -529,13 +539,25 @@ async function deleteIndexAzure(indexName) {
 
 async function callNavigator(req, res) {
 	try{
-	var index = crypt.decrypt(req.body.index);
-	var patientId = index; // Usar el ID desencriptado (ObjectId de MongoDB)
+		var index = crypt.decrypt(req.body.index);
+		var patientId = index; // Usar el ID desencriptado (ObjectId de MongoDB)
 		// Calcular containerName desde patientId encriptado (usar req.params.patientId)
 		var containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
 		var content = req.body.context;
 		var docs = req.body.docs;
 		var originalQuestion = req.body.question;
+
+		// Validar parámetros requeridos
+		if (!req.body.index || !req.params.patientId || !req.body.question) {
+			const missingParams = [];
+			if (!req.body.index) missingParams.push('index');
+			if (!req.params.patientId) missingParams.push('patientId');
+			if (!req.body.question) missingParams.push('question');
+			const errorMsg = `Missing required parameters: ${missingParams.join(', ')}`;
+			console.error('[callNavigator] ' + errorMsg);
+			insights.error({ message: '[callNavigator] Missing required parameters', missingParams: missingParams });
+			return res.status(400).send({ message: errorMsg });
+		}
 
 		// Filtrar eventos del contexto si hay muchos (reducir ruido para el agente)
 		try {
@@ -564,11 +586,13 @@ async function callNavigator(req, res) {
 						}
 					} catch (parseError) {
 						// No es JSON válido, probablemente es texto normal - ignorar
+						console.debug('[callNavigator] Events content is not valid JSON, skipping filter');
 					}
 				}
 			}
 		} catch (filterError) {
 			console.error('[callNavigator] Error filtrando eventos (continuando sin filtrar):', filterError.message);
+			insights.error({ message: '[callNavigator] Error filtering events', error: filterError.message, stack: filterError.stack });
 			// Continuar sin filtrar si hay error
 		}
 		
@@ -589,7 +613,8 @@ async function callNavigator(req, res) {
 					userRole = user.role || 'User';
 				}
 			} catch (error) {
-				console.log('Error getting user data:', error);
+				console.error('[callNavigator] Error getting user data:', error.message);
+				insights.error({ message: '[callNavigator] Error getting user data', userId: req.body.userId, error: error.message, stack: error.stack });
 			}
 		}
 		
@@ -601,7 +626,8 @@ async function callNavigator(req, res) {
 				patientCountry = patient.country || patient.countrybirth || null;
 			}
 		} catch (error) {
-			console.log('Error getting patient country:', error);
+			console.error('[callNavigator] Error getting patient country:', error.message);
+			insights.error({ message: '[callNavigator] Error getting patient country', patientId: patientId, error: error.message, stack: error.stack });
 		}
 		
 		// Detectar idioma del mensaje y traducir si es necesario (usando las mismas funciones que el cliente)
@@ -624,21 +650,23 @@ async function callNavigator(req, res) {
 						
 						if (translatedResult && !translatedResult.error && translatedResult[0] && translatedResult[0].translations && translatedResult[0].translations[0]) {
 							questionToProcess = translatedResult[0].translations[0].text;
-							console.log(`Translated question from ${detectedLanguage} to en: ${originalQuestion.substring(0, 50)}... -> ${questionToProcess.substring(0, 50)}...`);
+							console.log(`[callNavigator] Translated question from ${detectedLanguage} to en: ${originalQuestion.substring(0, 50)}... -> ${questionToProcess.substring(0, 50)}...`);
 						} else {
-							console.log('Translation failed, using original question');
+							console.log('[callNavigator] Translation failed, using original question');
+							insights.error({ message: '[callNavigator] Translation failed - invalid response', detectedLanguage: detectedLanguage, translatedResult: translatedResult });
 						}
 					} else if (confidenceScore < confidenceThreshold) {
-						console.log(`Low confidence in language detection (${confidenceScore}), using original question`);
+						console.log(`[callNavigator] Low confidence in language detection (${confidenceScore}), using original question`);
 					} else {
-						console.log(`Question is already in English, using original`);
+						console.log(`[callNavigator] Question is already in English, using original`);
 					}
 				} else {
-					console.log('Language detection failed or invalid response, using original question');
+					console.log('[callNavigator] Language detection failed or invalid response, using original question');
+					insights.error({ message: '[callNavigator] Language detection failed or invalid response', detectedLangResult: detectedLangResult });
 				}
 			} catch (error) {
-				console.log('Error detecting/translating language:', error);
-				insights.error(error);
+				console.error('[callNavigator] Error detecting/translating language:', error.message);
+				insights.error({ message: '[callNavigator] Error detecting/translating language', error: error.message, stack: error.stack });
 				// En caso de error, usar el mensaje original
 				questionToProcess = originalQuestion;
 			}
@@ -662,12 +690,12 @@ async function callNavigator(req, res) {
 					client: client2,
 				});
 			} catch (error) {
-				console.warn('LangSmith tracer initialization failed, continuing without tracer:', error.message);
-				insights.error({ message: 'LangSmith tracer initialization failed', error: error });
+				console.warn('[callNavigator] LangSmith tracer initialization failed, continuing without tracer:', error.message);
+				insights.error({ message: '[callNavigator] LangSmith tracer initialization failed', error: error.message, stack: error.stack });
 				tracer = null;
 			}
 		} else {
-			console.warn('LANGSMITH_API_KEY not configured, continuing without tracer');
+			console.warn('[callNavigator] LANGSMITH_API_KEY not configured, continuing without tracer');
 		}
 		//console.log('client2:', client2);
 		
@@ -710,8 +738,15 @@ async function callNavigator(req, res) {
 			},
 			callbacks: tracer ? [tracer] : [] 
 		}).catch(error => {
-			console.error('Error invoking agent:', error);
-			insights.error({ message: 'Error invoking agent', error: error });
+			console.error('[callNavigator] Error invoking agent:', error.message);
+			insights.error({ 
+				message: '[callNavigator] Error invoking agent', 
+				error: error.message, 
+				stack: error.stack,
+				patientId: patientId,
+				userId: req.body.userId,
+				question: originalQuestion?.substring(0, 100)
+			});
 			// Notificar al usuario que algo ha ido mal para que no se quede colgado
 			pubsub.sendToUser(req.body.userId, { 
 				"time": new Date().toISOString(), 
@@ -722,9 +757,19 @@ async function callNavigator(req, res) {
 			});
 		});
 	} catch (error) {
-		console.error(error);
-		insights.error(error);
-		res.status(500).send({ message: `Error` })
+		console.error('[callNavigator] Unexpected error:', error.message);
+		insights.error({ 
+			message: '[callNavigator] Unexpected error', 
+			error: error.message, 
+			stack: error.stack,
+			requestBody: {
+				hasIndex: !!req.body?.index,
+				hasQuestion: !!req.body?.question,
+				hasUserId: !!req.body?.userId,
+				patientIdParam: !!req.params?.patientId
+			}
+		});
+		res.status(500).send({ message: 'Error processing request' });
 	}
 }
 

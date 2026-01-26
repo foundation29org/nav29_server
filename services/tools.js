@@ -266,28 +266,41 @@ const clinicalTrialsTool = new DynamicStructuredTool({
 });
 
 async function suggestionsFromConversation(messages) {
-  let { claude35sonnet } = createModels('default', 'claude35sonnet');
-  const suggestionsTemplate = await pull('foundation29/conv_suggestions_base_v1');
-  const runnable = suggestionsTemplate.pipe(claude35sonnet);
-  const suggestions = await runnable.invoke({
-    chat_history: messages
-  });
-  let suggestionsArray = JSON.parse(suggestions.suggestions);
-  return suggestionsArray.suggestions;
+  try {
+    let { claude35sonnet } = createModels('default', 'claude35sonnet');
+    const suggestionsTemplate = await pull('foundation29/conv_suggestions_base_v1');
+    const runnable = suggestionsTemplate.pipe(claude35sonnet);
+    const suggestions = await runnable.invoke({
+      chat_history: messages
+    });
+    let suggestionsArray = JSON.parse(suggestions.suggestions);
+    return suggestionsArray.suggestions;
+  } catch (error) {
+    console.error('[suggestionsFromConversation] Error generating suggestions:', error.message);
+    insights.error({ message: '[suggestionsFromConversation] Error generating suggestions', error: error.message, stack: error.stack });
+    return []; // Devolver array vacío para que el flujo continúe
+  }
 }
 
 async function processDocs(docs, containerName) {
   let docsSummaries = [];
   for (let doc of docs) {
-    let url = doc.replace(/\/[^\/]*$/, '/summary_translated.txt');
-    let docSummary = await azure_blobs.downloadBlob(containerName, url);
-    docsSummaries.push(docSummary);
+    try {
+      let url = doc.replace(/\/[^\/]*$/, '/summary_translated.txt');
+      let docSummary = await azure_blobs.downloadBlob(containerName, url);
+      docsSummaries.push(docSummary);
+    } catch (error) {
+      console.error(`[processDocs] Error downloading summary for doc: ${doc}`, error.message);
+      insights.error({ message: '[processDocs] Error downloading document summary', error: error.message, doc: doc, containerName: containerName });
+      // Continuar con los demás documentos
+    }
   }
   let docsSummariesString = docsSummaries.map((summary, i) => `<Document Summary ${i+1}>\n${summary}\n</Document Summary ${i+1}>`).join('\n\n');
   return docsSummariesString;
 }
 
 async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = [], appointments = [], notes = [], chatMode = 'fast') {
+  try {
   // Seleccionar modelo según chatMode: 'fast' = gpt4omini, 'advanced' = gemini25pro
   let model;
   if (chatMode === 'advanced') {
@@ -303,7 +316,8 @@ async function curateContext(context, memories, containerName, docs, question, s
     // New version name to avoid affecting production
     contextTemplate = await pull('foundation29/context_curation_v2');
   } catch (e) {
-    console.warn("Prompt foundation29/context_curation_v2 not found, using local fallback");
+    console.warn("[curateContext] Prompt foundation29/context_curation_v2 not found, using local fallback");
+    insights.error({ message: '[curateContext] Prompt not found in LangChain Hub, using fallback', error: e.message });
     contextTemplate = ChatPromptTemplate.fromMessages([
       ["system", `You are a high-precision medical context curator. Your goal is to synthesize multiple sources of patient information into a single, coherent "Source of Truth" for a specific medical question.
 
@@ -403,6 +417,12 @@ CURATED CONTEXT:`]
   });
 
   return curatedContext;
+  } catch (error) {
+    console.error('[curateContext] Error curating context:', error.message);
+    insights.error({ message: '[curateContext] Error curating context', error: error.message, stack: error.stack, question: question?.substring(0, 100) });
+    // Devolver un contexto mínimo para que el agente pueda seguir funcionando
+    return { content: 'Error processing patient context. Please try again.' };
+  }
 }
 
 module.exports = { 

@@ -70,6 +70,7 @@ OUTPUT FORMAT - Respond ONLY with a JSON array of the filtered/merged events:
       filteredEvents = JSON.parse(content.trim());
     } catch (parseError) {
       console.error('[EventFilter] Error parsing AI response:', parseError.message);
+      insights.error({ message: '[EventFilter] Error parsing AI response', error: parseError.message, textPreview: content?.substring(0, 300), originalEventsCount: events.length });
       // Fallback: devolver eventos sin filtrar (limitados)
       return {
         events: events.slice(0, maxEvents),

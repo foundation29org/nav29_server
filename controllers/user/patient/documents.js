@@ -194,87 +194,156 @@ function deleteEvents (docId){
 }
 
 async function uploadFile(req, res) {
-	if (req.files != null) {
+	const requestContext = {
+		patientId: req.params?.patientId?.substring(0, 20),
+		url: req.body?.url,
+		userId: req.body?.userId?.substring(0, 20)
+	};
+	
+	try {
+		if (req.files == null) {
+			console.error('[uploadFile] Error: no files provided');
+			insights.error({ message: '[uploadFile] Error: no files provided', context: requestContext });
+			return res.status(400).send({ message: 'Error: no files' });
+		}
+
+		// Validar parámetros requeridos
+		if (!req.params.patientId || !req.body.url || !req.body.userId) {
+			const missingParams = [];
+			if (!req.params.patientId) missingParams.push('patientId');
+			if (!req.body.url) missingParams.push('url');
+			if (!req.body.userId) missingParams.push('userId');
+			const errorMsg = `Missing required parameters: ${missingParams.join(', ')}`;
+			console.error('[uploadFile] ' + errorMsg);
+			insights.error({ message: '[uploadFile] Missing required parameters', missingParams: missingParams });
+			return res.status(400).send({ message: errorMsg });
+		}
+
 		let patientId = crypt.decrypt(req.params.patientId);
 		// Calcular containerName desde patientId encriptado (ignorar lo que envía el cliente)
 		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
+		
 		var data1 = await saveBlob(containerName, req.body.url, req.files.thumbnail);
-		if (data1) {
-			//save document
-			var document = await saveDocument(patientId, req.body.url, req.body.userId);
-			var tempId = document._id.toString();
-			//guardar en una variable docId document._id in lowercase 
-			var docId = tempId.toLowerCase();
-			if (document != "Doc failed save") {
-				//createbook
-				const filename = path.basename(req.body.url);
-				let isTextFile = false;
-				if (req.files.thumbnail.mimetype == 'text/plain') {
-					isTextFile = true;
-				}
-				bookService.form_recognizer(patientId, docId, containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
-				let docIdEnc = crypt.encrypt(docId);
-				res.status(200).send({ message: "Done", docId: docIdEnc })
-				
-
-			} else {
-				//delete blob
-				var data5 = await f29azureService.deleteBlobsInFolder(containerName, req.body.url);
-				insights.error('error saving the document');
-				res.status(500).send({ message: `Error` })
-			}
-
-		} else {
-			insights.error('error saving the document in blob');
-			res.status(500).send({ message: `Error` })
+		if (!data1) {
+			console.error('[uploadFile] Error saving file to blob storage');
+			insights.error({ message: '[uploadFile] Error saving file to blob storage', containerName: containerName, url: req.body.url });
+			return res.status(500).send({ message: 'Error saving file to storage' });
 		}
-	} else {
-		insights.error('Error: no files');
-		res.status(500).send({ message: `Error: no files` })
-	}
 
+		//save document
+		var document = await saveDocument(patientId, req.body.url, req.body.userId);
+		
+		if (document === "Doc failed save" || !document || !document._id) {
+			//delete blob
+			try {
+				await f29azureService.deleteBlobsInFolder(containerName, req.body.url);
+			} catch (deleteError) {
+				console.error('[uploadFile] Error cleaning up blob after document save failure:', deleteError.message);
+				insights.error({ message: '[uploadFile] Error cleaning up blob after document save failure', error: deleteError.message, containerName: containerName, url: req.body.url });
+			}
+			console.error('[uploadFile] Error saving document to database');
+			insights.error({ message: '[uploadFile] Error saving document to database', patientId: patientId, url: req.body.url });
+			return res.status(500).send({ message: 'Error saving document' });
+		}
+
+		var tempId = document._id.toString();
+		//guardar en una variable docId document._id in lowercase 
+		var docId = tempId.toLowerCase();
+		
+		//createbook
+		const filename = path.basename(req.body.url);
+		let isTextFile = req.files.thumbnail.mimetype === 'text/plain';
+		
+		bookService.form_recognizer(patientId, docId, containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
+		let docIdEnc = crypt.encrypt(docId);
+		res.status(200).send({ message: "Done", docId: docIdEnc });
+
+	} catch (error) {
+		console.error('[uploadFile] Unexpected error:', error.message);
+		insights.error({ 
+			message: '[uploadFile] Unexpected error', 
+			error: error.message, 
+			stack: error.stack,
+			context: requestContext
+		});
+		res.status(500).send({ message: 'Error processing upload' });
+	}
 }
 
 async function uploadFileWizard(req, res) {
-	if (req.files != null) {
+	const requestContext = {
+		patientId: req.params?.patientId?.substring(0, 20),
+		url: req.body?.url,
+		userId: req.body?.userId?.substring(0, 20)
+	};
+	
+	try {
+		if (req.files == null) {
+			console.error('[uploadFileWizard] Error: no files provided');
+			insights.error({ message: '[uploadFileWizard] Error: no files provided', context: requestContext });
+			return res.status(400).send({ message: 'Error: no files' });
+		}
+
+		// Validar parámetros requeridos
+		if (!req.params.patientId || !req.body.url || !req.body.userId) {
+			const missingParams = [];
+			if (!req.params.patientId) missingParams.push('patientId');
+			if (!req.body.url) missingParams.push('url');
+			if (!req.body.userId) missingParams.push('userId');
+			const errorMsg = `Missing required parameters: ${missingParams.join(', ')}`;
+			console.error('[uploadFileWizard] ' + errorMsg);
+			insights.error({ message: '[uploadFileWizard] Missing required parameters', missingParams: missingParams });
+			return res.status(400).send({ message: errorMsg });
+		}
+
 		let patientId = crypt.decrypt(req.params.patientId);
 		// Calcular containerName desde patientId encriptado (ignorar lo que envía el cliente)
 		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
+		
 		var data1 = await saveBlob(containerName, req.body.url, req.files.thumbnail);
-		if (data1) {
-			//save document
-			var document = await saveDocument(patientId, req.body.url, req.body.userId);
-			var tempId = document._id.toString();
-			//guardar en una variable docId document._id in lowercase 
-			var docId = tempId.toLowerCase();
-
-
-			if (document != "Doc failed save") {
-				//createbook
-				const filename = path.basename(req.body.url);
-				let isTextFile = false;
-				if (req.files.thumbnail.mimetype == 'text/plain') {
-					isTextFile = true;
-				}
-				let reponse = await bookService.form_recognizerwizard(patientId, docId, containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
-				let docIdEnc = crypt.encrypt(docId);
-				res.status(200).send({ message: reponse.msg, docId: docIdEnc })
-			} else {
-				//delete blob
-				var data5 = await f29azureService.deleteBlobsInFolder(containerName, req.body.url);
-				insights.error('error saving the document');
-				res.status(500).send({ message: `Error` })
-			}
-
-		} else {
-			insights.error('error saving the document in blob');
-			res.status(500).send({ message: `Error` })
+		if (!data1) {
+			console.error('[uploadFileWizard] Error saving file to blob storage');
+			insights.error({ message: '[uploadFileWizard] Error saving file to blob storage', containerName: containerName, url: req.body.url });
+			return res.status(500).send({ message: 'Error saving file to storage' });
 		}
-	} else {
-		insights.error('Error: no files');
-		res.status(500).send({ message: `Error: no files` })
-	}
 
+		//save document
+		var document = await saveDocument(patientId, req.body.url, req.body.userId);
+		
+		if (document === "Doc failed save" || !document || !document._id) {
+			//delete blob
+			try {
+				await f29azureService.deleteBlobsInFolder(containerName, req.body.url);
+			} catch (deleteError) {
+				console.error('[uploadFileWizard] Error cleaning up blob after document save failure:', deleteError.message);
+				insights.error({ message: '[uploadFileWizard] Error cleaning up blob after document save failure', error: deleteError.message, containerName: containerName, url: req.body.url });
+			}
+			console.error('[uploadFileWizard] Error saving document to database');
+			insights.error({ message: '[uploadFileWizard] Error saving document to database', patientId: patientId, url: req.body.url });
+			return res.status(500).send({ message: 'Error saving document' });
+		}
+
+		var tempId = document._id.toString();
+		var docId = tempId.toLowerCase();
+		
+		//createbook
+		const filename = path.basename(req.body.url);
+		let isTextFile = req.files.thumbnail.mimetype === 'text/plain';
+		
+		let response = await bookService.form_recognizerwizard(patientId, docId, containerName, req.body.url, filename, req.body.userId, true, req.body.medicalLevel, isTextFile, req.body.preferredResponseLanguage);
+		let docIdEnc = crypt.encrypt(docId);
+		res.status(200).send({ message: response.msg, docId: docIdEnc });
+
+	} catch (error) {
+		console.error('[uploadFileWizard] Unexpected error:', error.message);
+		insights.error({ 
+			message: '[uploadFileWizard] Unexpected error', 
+			error: error.message, 
+			stack: error.stack,
+			context: requestContext
+		});
+		res.status(500).send({ message: 'Error processing upload' });
+	}
 }
 
 function sleep(ms) {
@@ -351,36 +420,45 @@ function validateDate(documentDate) {
 }
 
 async function saveBlob(containerName, url, thumbnail) {
-	return new Promise(async function (resolve, reject) {
+	try {
 		// Save file to Blob
 		var result = await f29azureService.createBlob(containerName, url, thumbnail.data);
-		if (result) {
-			resolve(true);
-		} else {
-			resolve(false);
-		}
-	});
+		return !!result;
+	} catch (error) {
+		console.error('[saveBlob] Error saving blob:', error.message);
+		insights.error({ 
+			message: '[saveBlob] Error saving blob', 
+			error: error.message, 
+			stack: error.stack,
+			containerName: containerName,
+			url: url
+		});
+		return false;
+	}
 }
 
-function saveDocument(patientId, url, userId) {
-	return new Promise(async function (resolve, reject) {
+async function saveDocument(patientId, url, userId) {
+	try {
 		let userIdDecrypted = crypt.decrypt(userId);
-		let eventdb = new Document()
+		let eventdb = new Document();
 		eventdb.url = url;
-		eventdb.createdBy = patientId
+		eventdb.createdBy = patientId;
 		eventdb.addedBy = userIdDecrypted;
 
 		// when you save, returns an id in eventdbStored to access that document
-		eventdb.save((err, eventdbStored) => {
-			if (err) {
-				resolve('Doc failed save');
-			}
-			if (eventdbStored) {
-				resolve(eventdbStored);
-			}
-		})
-
-	});
+		const eventdbStored = await eventdb.save();
+		return eventdbStored;
+	} catch (error) {
+		console.error('[saveDocument] Error saving document:', error.message);
+		insights.error({ 
+			message: '[saveDocument] Error saving document', 
+			error: error.message, 
+			stack: error.stack,
+			patientId: patientId,
+			url: url
+		});
+		return 'Doc failed save';
+	}
 }
 
 function updateDocumentStatus(documentId, status) {

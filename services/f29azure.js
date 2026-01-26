@@ -241,6 +241,33 @@ function getAzureBlobSasTokenWithContainer(req, res) {
 }
 
 /**
+ * Genera SAS token para un contenedor de forma programática (sin req/res)
+ * @param {string} containerName - Nombre del contenedor
+ * @returns {{sasToken: string, blobAccountUrl: string, containerName: string}}
+ */
+function generateSasToken(containerName) {
+  var startDate = new Date();
+  var expiryDate = new Date();
+  startDate.setTime(startDate.getTime() - 5 * 60 * 1000);
+  expiryDate.setTime(expiryDate.getTime() + 24 * 60 * 60 * 1000);
+
+  var containerSAS = storage.generateBlobSASQueryParameters({
+    expiresOn: expiryDate,
+    permissions: storage.ContainerSASPermissions.parse("rlc"),
+    protocol: storage.SASProtocol.Https,
+    containerName: containerName,
+    startsOn: startDate,
+    version: "2017-11-09"
+  }, sharedKeyCredentialGenomics).toString();
+  
+  return {
+    sasToken: '?' + containerSAS,
+    blobAccountUrl: `https://${accountname}.blob.core.windows.net/`,
+    containerName: containerName
+  };
+}
+
+/**
  * Genera SAS token para un paciente usando el containerName SHA256
  * El cliente envía el patientId encriptado y recibe el containerName correcto + SAS token
  */
@@ -351,6 +378,7 @@ module.exports = {
   listContainerFiles,
   getAzureBlobSasTokenWithContainer,
   getAzureBlobSasTokenForPatient,
+  generateSasToken,
   listBlobsInRoot,
   moveBlob,
   renameBlob

@@ -8,6 +8,7 @@ if (!globalThis.crypto) {
 
 const { AzureAISearchVectorStore, AzureAISearchQueryType } = require("@langchain/community/vectorstores/azure_aisearch");
 const config = require('../config');
+const insights = require('./insights');
 
 async function createIndexIfNone(indexName, embeddings, vectorStoreAddress, vectorStorePassword) {
   const indexClient = new SearchIndexClient(vectorStoreAddress, new AzureKeyCredential(vectorStorePassword));
@@ -154,7 +155,8 @@ async function reindexDocumentMetadata(documentId, patientId, newMetadata) {
     }
     return false;
   } catch (error) {
-    console.error(`Error reindexando:`, error);
+    console.error(`[reindexDocumentMetadata] Error reindexing document:`, error.message);
+    insights.error({ message: '[reindexDocumentMetadata] Error reindexing document metadata', error: error.message, stack: error.stack, documentId: documentId, patientId: patientId });
     throw error;
   }
 }

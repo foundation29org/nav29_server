@@ -17,6 +17,7 @@ const Events = require('../models/events');
 const Messages = require('../models/messages');
 const crypt = require('./crypt');
 const { translateToUserLang } = require('./translation');
+const insights = require('./insights');
 
 const AttributesState = Annotation.Root({
   vectorStore: Annotation,
@@ -41,12 +42,17 @@ async function callModel(
   config,
 ) {
   /** Call the LLM powering our agent. **/
+  const patientIdForLogging = config.configurable?.patientId || 'unknown';
+  const userIdForLogging = config.configurable?.userId || 'unknown';
+  
+  try {
   let systemPromptTemplate;
   try {
     // New version name to avoid affecting production
     systemPromptTemplate = await pull("foundation29/agent_system_prompt_v2");
   } catch (e) {
-    console.warn("Prompt foundation29/agent_system_prompt_v2 not found, using local fallback");
+    console.warn("[callModel] Prompt foundation29/agent_system_prompt_v2 not found, using local fallback");
+    insights.error({ message: '[callModel] Prompt not found in LangChain Hub, using fallback', error: e.message, patientId: patientIdForLogging });
     systemPromptTemplate = ChatPromptTemplate.fromMessages([
       ["system", `Nav29 is an advanced medical assistant designed to help patients understand their health data with high precision and empathy. You are powered by Foundation29.org.
 
@@ -279,9 +285,23 @@ ${roleGuidance[userRole] || roleGuidance['User']}
   // We return a list, because this will get added to the existing list
   return { messages: [response], vectorStore: conversationVectorStore };
   }
+  } catch (error) {
+    console.error('[callModel] Error in callModel:', error.message);
+    insights.error({ 
+      message: '[callModel] Error processing model call', 
+      error: error.message, 
+      stack: error.stack,
+      patientId: patientIdForLogging,
+      userId: userIdForLogging
+    });
+    throw error; // Re-throw para que el flujo pueda manejarlo
+  }
 }
 
 async function saveContext(state, langGraphConfig) {
+  const patientIdForLogging = langGraphConfig.configurable?.patientId || 'unknown';
+  const userIdForLogging = langGraphConfig.configurable?.userId || 'unknown';
+  
   input = state.messages[state.messages.length - 2];
   output = state.messages[state.messages.length - 1];
 
@@ -294,7 +314,8 @@ async function saveContext(state, langGraphConfig) {
     try {
       translatedAnswer = await translateToUserLang(output.content, userLang);
     } catch (translateError) {
-      console.error('Error translating answer:', translateError);
+      console.error('[saveContext] Error translating answer:', translateError.message);
+      insights.error({ message: '[saveContext] Error translating answer', error: translateError.message, stack: translateError.stack, userLang: userLang, patientId: patientIdForLogging });
       // Si falla la traducción, usar la respuesta original
     }
   }
@@ -353,7 +374,8 @@ async function saveContext(state, langGraphConfig) {
           suggestionsRaw.map(s => translateToUserLang(s, userLang))
         );
       } catch (translateError) {
-        console.error('Error translating suggestions:', translateError);
+        console.error('[saveContext] Error translating suggestions:', translateError.message);
+        insights.error({ message: '[saveContext] Error translating suggestions', error: translateError.message, stack: translateError.stack, userLang: userLang, patientId: patientIdForLogging });
         suggestions = suggestionsRaw;
       }
     }
@@ -393,14 +415,16 @@ async function saveContext(state, langGraphConfig) {
         { upsert: true } // Crear el documento si no existe
       );
     } catch (dbError) {
-      console.error("Error saving messages to DB:", dbError);
+      console.error("[saveContext] Error saving messages to DB:", dbError.message);
+      insights.error({ message: '[saveContext] Error saving messages to DB', error: dbError.message, stack: dbError.stack, patientId: patientIdForLogging, userId: userIdForLogging });
       // No bloqueamos el flujo si falla el guardado
     }
 
     // console.log("Successfully saved context");
     return {vectorStore: state.vectorStore};
   } catch (error) {
-    console.error("Error saving context:", error);
+    console.error("[saveContext] Error saving context:", error.message);
+    insights.error({ message: '[saveContext] Error saving context', error: error.message, stack: error.stack, patientId: patientIdForLogging, userId: userIdForLogging });
     return {vectorStore: state.vectorStore};
   }
 }

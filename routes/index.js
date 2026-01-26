@@ -160,6 +160,7 @@ api.post('/getinitialevents/:patientId', auth.isAuthPatient(roles.All), checkApi
 api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleRarescopeRequest)
 api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
 api.post('/ai/disease-info/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDiseaseInfoRequest)
+api.post('/ai/infographic/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleInfographicRequest)
 
 // Rarescope routes
 api.post('/rarescope/save/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.saveRarescopeData)

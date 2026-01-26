@@ -4,6 +4,7 @@ const config = require('../config');
 const { AzureAISearchQueryType } = require("@langchain/community/vectorstores/azure_aisearch");
 const { pull } = require('langchain/hub');
 const { ChatPromptTemplate } = require("@langchain/core/prompts");
+const insights = require('./insights');
 
 /**
  * Retrieval Plans - Internal logic in English
@@ -95,7 +96,8 @@ async function detectIntent(question, patientId) {
     
     return RETRIEVAL_PLANS[detectedId] || RETRIEVAL_PLANS.AMBIGUOUS;
   } catch (error) {
-    console.error("Error detecting intent with LLM:", error);
+    console.error("[detectIntent] Error detecting intent with LLM:", error.message);
+    insights.error({ message: '[detectIntent] Error detecting intent', error: error.message, stack: error.stack, patientId: patientId, question: question?.substring(0, 100) });
     return RETRIEVAL_PLANS.AMBIGUOUS;
   }
 }
@@ -107,55 +109,61 @@ async function retrieveChunks(question, patientId, plan) {
   const { SearchClient, AzureKeyCredential } = require("@azure/search-documents");
   const { Document } = require("@langchain/core/documents");
   
-  const vectorStoreAddress = config.SEARCH_API_ENDPOINT;
-  const vectorStorePassword = config.SEARCH_API_KEY;
-  const indexName = config.cogsearchIndexChunks;
-  
-  // Crear SearchClient nativo para control total
-  const searchClient = new SearchClient(
-    vectorStoreAddress,
-    indexName,
-    new AzureKeyCredential(vectorStorePassword)
-  );
-  
-  // Generar embedding de la pregunta
-  const queryEmbedding = await embeddings.embedQuery(question);
-  
-  // Búsqueda híbrida (vectorial + filtro por patientId)
-  const searchResults = await searchClient.search(question, {
-    filter: `patientId eq '${patientId}'`,
-    vectorSearchOptions: {
-      queries: [{
-        kind: 'vector',
-        vector: queryEmbedding,
-        kNearestNeighborsCount: plan.k_candidates,
-        fields: ['content_vector']
-      }]
-    },
-    select: ['id', 'content', 'filename', 'reportDate', 'dateStatus', 'documentId', 'documentType', 'patientId'],
-    top: plan.k_candidates
-  });
-  
-  // Convertir resultados a formato Document de LangChain
-  const documents = [];
-  for await (const result of searchResults.results) {
-    const doc = new Document({
-      pageContent: result.document.content || '',
-      metadata: {
-        id: result.document.id,
-        filename: result.document.filename,
-        reportDate: result.document.reportDate,
-        dateStatus: result.document.dateStatus,
-        documentId: result.document.documentId,
-        documentType: result.document.documentType,
-        patientId: result.document.patientId,
-        score: result.score
-      }
+  try {
+    const vectorStoreAddress = config.SEARCH_API_ENDPOINT;
+    const vectorStorePassword = config.SEARCH_API_KEY;
+    const indexName = config.cogsearchIndexChunks;
+    
+    // Crear SearchClient nativo para control total
+    const searchClient = new SearchClient(
+      vectorStoreAddress,
+      indexName,
+      new AzureKeyCredential(vectorStorePassword)
+    );
+    
+    // Generar embedding de la pregunta
+    const queryEmbedding = await embeddings.embedQuery(question);
+    
+    // Búsqueda híbrida (vectorial + filtro por patientId)
+    const searchResults = await searchClient.search(question, {
+      filter: `patientId eq '${patientId}'`,
+      vectorSearchOptions: {
+        queries: [{
+          kind: 'vector',
+          vector: queryEmbedding,
+          kNearestNeighborsCount: plan.k_candidates,
+          fields: ['content_vector']
+        }]
+      },
+      select: ['id', 'content', 'filename', 'reportDate', 'dateStatus', 'documentId', 'documentType', 'patientId'],
+      top: plan.k_candidates
     });
-    documents.push(doc);
+    
+    // Convertir resultados a formato Document de LangChain
+    const documents = [];
+    for await (const result of searchResults.results) {
+      const doc = new Document({
+        pageContent: result.document.content || '',
+        metadata: {
+          id: result.document.id,
+          filename: result.document.filename,
+          reportDate: result.document.reportDate,
+          dateStatus: result.document.dateStatus,
+          documentId: result.document.documentId,
+          documentType: result.document.documentType,
+          patientId: result.document.patientId,
+          score: result.score
+        }
+      });
+      documents.push(doc);
+    }
+    
+    return documents;
+  } catch (error) {
+    console.error("[retrieveChunks] Error retrieving chunks from Azure Search:", error.message);
+    insights.error({ message: '[retrieveChunks] Error retrieving chunks', error: error.message, stack: error.stack, patientId: patientId, planId: plan?.id });
+    return []; // Devolver array vacío para que el flujo pueda continuar
   }
-  
-  return documents;
 }
 
 /**
@@ -246,12 +254,14 @@ async function extractStructuredFacts(chunks, question, patientId, chatMode = 'f
       else if (content.startsWith("```")) content = content.slice(3, -3).trim();
       structuredData = JSON.parse(content);
     } catch (parseError) {
-      console.error("Error parseando extracción estructurada:", parseError);
+      console.error("[extractStructuredFacts] Error parsing structured extraction:", parseError.message);
+      insights.error({ message: '[extractStructuredFacts] Error parsing JSON', error: parseError.message, patientId: patientId });
     }
 
     return structuredData;
   } catch (error) {
-    console.error("Error en extractStructuredFacts:", error);
+    console.error("[extractStructuredFacts] Error in extractStructuredFacts:", error.message);
+    insights.error({ message: '[extractStructuredFacts] Error extracting facts', error: error.message, stack: error.stack, patientId: patientId, question: question?.substring(0, 100) });
     return [];
   }
 }

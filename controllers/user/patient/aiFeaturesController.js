@@ -24,6 +24,7 @@ const { retrieveChunks, extractStructuredFacts } = require('../../../services/re
 const { curateContext } = require('../../../services/tools');
 
 const { generatePatientUUID } = require('../../../services/uuid');
+const { generatePatientInfographic } = require('../../../services/langchain');
 
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
@@ -1095,10 +1096,219 @@ async function handleDiseaseInfoRequest(req, res) {
 }
 
 /*--------------------------------------------------------------------
+ * 3.4 INFOGRAPHIC REQUEST
+ *------------------------------------------------------------------*/
+
+/** Helper: Buscar infografía existente en blob storage */
+async function findExistingInfographic(containerName) {
+  try {
+    const files = await f29azure.listContainerFiles(containerName);
+    // Buscar archivos de infografía ordenados por fecha (más reciente primero)
+    const infographicFiles = files
+      .filter(f => f.startsWith('raitofile/infographic/patient_infographic_') && f.endsWith('.png'))
+      .sort((a, b) => {
+        // Extraer timestamp del nombre del archivo
+        const tsA = parseInt(a.match(/patient_infographic_(\d+)\.png/)?.[1] || '0');
+        const tsB = parseInt(b.match(/patient_infographic_(\d+)\.png/)?.[1] || '0');
+        return tsB - tsA; // Ordenar descendente (más reciente primero)
+      });
+    
+    if (infographicFiles.length > 0) {
+      const latestFile = infographicFiles[0];
+      // Extraer timestamp del nombre
+      const timestampMatch = latestFile.match(/patient_infographic_(\d+)\.png/);
+      const generatedAt = timestampMatch ? new Date(parseInt(timestampMatch[1])).toISOString() : null;
+      return { blobPath: latestFile, generatedAt };
+    }
+    return null;
+  } catch (error) {
+    console.warn('[Infographic] Error searching for existing infographic:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Genera una infografía visual del paciente usando Gemini 3 Pro Image Preview
+ * @route POST /api/ai/infographic/:patientId
+ */
+async function handleInfographicRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const regenerate = req.body.regenerate || false;
+  const userId = req.body.userId ? crypt.decrypt(req.body.userId) : null;
+  
+  console.log(`[Infographic] Request for patient ${patientId}, lang: ${lang}, regenerate: ${regenerate}`);
+  
+  try {
+    const containerName = crypt.getContainerName(patientId);
+    
+    /* ▸ Verificar si ya existe una infografía (si no se pide regenerar) --- */
+    if (!regenerate) {
+      const existing = await findExistingInfographic(containerName);
+      if (existing) {
+        console.log(`[Infographic] Found existing infographic: ${existing.blobPath}`);
+        
+        // Generar URL con SAS token
+        const sasToken = f29azure.generateSasToken(containerName);
+        const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${existing.blobPath}${sasToken.sasToken}`;
+        
+        return res.json({
+          success: true,
+          imageUrl: imageUrl,
+          blobPath: existing.blobPath,
+          generatedAt: existing.generatedAt,
+          cached: true,
+          message: 'Existing infographic found'
+        });
+      }
+    }
+    
+    /* ▸ Obtener el resumen del paciente --------------------------------- */
+    let patientSummary = null;
+    
+    // Primero intentar obtener el resumen existente (final_card.txt)
+    patientSummary = await getPatientSummaryIfExists(patientId);
+    
+    // Si no existe resumen, construir contexto desde eventos y documentos
+    if (!patientSummary) {
+      console.log('[Infographic] No existing summary, building context from RAG...');
+      
+      try {
+        // Usar arquitectura RAG para obtener contexto
+        const searchQuery = "Complete patient health overview: diagnoses, medications, symptoms, treatments, and medical history";
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND");
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        
+        // Obtener eventos de la timeline
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        // Curar contexto
+        const curatedResult = await curateContext(
+          [],
+          [],
+          selectedChunks,
+          raw.events || [],
+          structuredFacts,
+          patientId,
+          raw.profile || {}
+        );
+        
+        patientSummary = curatedResult.content;
+        console.log(`[Infographic] Context built from RAG (${patientSummary.length} chars)`);
+      } catch (ragError) {
+        console.warn('[Infographic] RAG failed, using basic context:', ragError.message);
+        
+        // Fallback: usar contexto básico
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        
+        // Construir resumen básico
+        const summaryParts = [];
+        
+        if (raw.profile) {
+          if (raw.profile.gender) summaryParts.push(`Gender: ${raw.profile.gender}`);
+          if (raw.profile.birthDate) summaryParts.push(`Birth Date: ${raw.profile.birthDate}`);
+          if (raw.profile.chronic && raw.profile.chronic.length > 0) {
+            summaryParts.push(`Chronic Conditions: ${raw.profile.chronic.join(', ')}`);
+          }
+        }
+        
+        if (raw.events && raw.events.length > 0) {
+          const diagnoses = raw.events.filter(e => e.type === 'diagnosis').slice(0, 10);
+          const medications = raw.events.filter(e => e.type === 'medication').slice(0, 10);
+          const symptoms = raw.events.filter(e => e.type === 'symptom').slice(0, 10);
+          
+          if (diagnoses.length > 0) {
+            summaryParts.push(`Diagnoses: ${diagnoses.map(d => d.name).join(', ')}`);
+          }
+          if (medications.length > 0) {
+            summaryParts.push(`Medications: ${medications.map(m => m.name).join(', ')}`);
+          }
+          if (symptoms.length > 0) {
+            summaryParts.push(`Symptoms: ${symptoms.map(s => s.name).join(', ')}`);
+          }
+        }
+        
+        patientSummary = summaryParts.join('\n\n');
+      }
+    }
+    
+    // Verificar que tenemos contenido suficiente
+    if (!patientSummary || patientSummary.trim().length < 50) {
+      return res.status(400).json({
+        success: false,
+        error: 'Not enough patient data to generate an infographic. Please upload more medical documents.'
+      });
+    }
+    
+    /* ▸ Generar la infografía ------------------------------------------- */
+    console.log(`[Infographic] Generating infographic with summary (${patientSummary.length} chars)...`);
+    
+    const result = await generatePatientInfographic(patientId, patientSummary, lang);
+    
+    if (result.success) {
+      // Guardar la imagen en Azure Blob Storage
+      const generatedAt = new Date();
+      const blobPath = `raitofile/infographic/patient_infographic_${generatedAt.getTime()}.png`;
+      
+      try {
+        // Convertir base64 a buffer y subir
+        const imageBuffer = Buffer.from(result.imageData, 'base64');
+        await f29azure.createBlob(containerName, blobPath, imageBuffer);
+        
+        console.log(`[Infographic] Image saved to ${blobPath}`);
+        
+        // Generar URL con SAS token para acceder a la imagen
+        const sasToken = f29azure.generateSasToken(containerName);
+        const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${blobPath}${sasToken.sasToken}`;
+        
+        res.json({
+          success: true,
+          imageUrl: imageUrl,
+          blobPath: blobPath,
+          generatedAt: generatedAt.toISOString(),
+          cached: false,
+          message: 'Infographic generated successfully'
+        });
+      } catch (uploadError) {
+        console.warn('[Infographic] Failed to save to blob, returning image data:', uploadError.message);
+        // Si falla el guardado, devolver la imagen base64 como fallback
+        res.json({
+          success: true,
+          imageData: result.imageData,
+          mimeType: result.mimeType,
+          cached: false,
+          message: 'Infographic generated (not saved to storage)'
+        });
+      }
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to generate infographic'
+      });
+    }
+    
+  } catch (error) {
+    console.error('[Infographic] Error:', error.message);
+    insights.error({ 
+      message: '[Infographic] Error handling request', 
+      error: error.message, 
+      patientId 
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Error generating infographic',
+      details: error.message
+    });
+  }
+}
+
+/*--------------------------------------------------------------------
  * 4. EXPORTS
  *------------------------------------------------------------------*/
 module.exports = {
   handleRarescopeRequest,
   handleDxGptRequest,
-  handleDiseaseInfoRequest
+  handleDiseaseInfoRequest,
+  handleInfographicRequest
 };

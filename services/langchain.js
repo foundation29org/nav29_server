@@ -18,6 +18,7 @@ const { LangChainTracer } = require("@langchain/core/tracers/tracer_langchain");
 const { BedrockChat } = require("@langchain/community/chat_models/bedrock");
 const { ChatBedrockConverse } = require("@langchain/aws");
 const { ChatGoogleGenerativeAI } = require("@langchain/google-genai");
+const { GoogleGenAI } = require("@google/genai");
 const axios = require('axios');
 const { SearchIndexClient, SearchClient } = require("@azure/search-documents");
 const { AzureKeyCredential } = require("@azure/core-auth");
@@ -168,6 +169,15 @@ function createModels(projectName, modelType = null) {
             apiKey: config.GOOGLE_API_KEY,
             temperature: 0,
             timeout: 140000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          break;
+        case 'gemini3proimagepreview':
+          model = new ChatGoogleGenerativeAI({
+            model: "gemini-3-pro-image-preview",
+            apiKey: config.GOOGLE_API_KEY,
+            temperature: 0.7,
+            timeout: 180000,
             callbacks: tracer ? [tracer] : undefined
           });
           break;
@@ -367,7 +377,8 @@ async function extractAndParse(summaryText) {
     const extractedJson = JSON.parse(matches[1]);
     return JSON.stringify(extractedJson);
   } catch (error) {
-    console.warn("Invalid JSON format in <output> tags.");
+    console.warn("[extractTimelineOutput] Invalid JSON format in <output> tags:", error.message);
+    insights.error({ message: '[extractTimelineOutput] Invalid JSON format', error: error.message, textPreview: matches[1]?.substring(0, 200) });
     return "[]";
   }
 }
@@ -594,8 +605,8 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
 
       console.log(`Documento ${doc_id} vectorizado en chunks (${chunksToUpload.length} fragmentos)`);
     } catch (vError) {
-      console.error('Error vectorizando chunks:', vError);
-      insights.error({ message: 'Error vectorizando chunks', error: vError, docId: doc_id });
+      console.error('[processDocument] Error vectorizando chunks:', vError.message);
+      insights.error({ message: '[processDocument] Error vectorizando chunks', error: vError.message, stack: vError.stack, docId: doc_id, patientId: patientId, filename: filename });
       // No bloqueamos el proceso principal si falla la vectorización por ahora
     }
 
@@ -621,14 +632,16 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
         await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/anomalies.json'), result3);
       }
     } catch (error) {
-      insights.error(error);
+      console.error('[processDocument] Error processing anomalies:', error.message);
+      insights.error({ message: '[processDocument] Error processing anomalies', error: error.message, stack: error.stack, docId: doc_id, patientId: patientId });
       try {
         await email.sendMailError(error, "anomalies", patientId, url);
-      } catch (error) {
-        console.error(`Failed to send email: ${error.message}`);
+      } catch (emailError) {
+        console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+        insights.error({ message: '[processDocument] Failed to send anomalies error email', error: emailError.message, docId: doc_id });
       }
 
-      sendMessage("error anomalies", { error: error }, patientId);
+      sendMessage("error anomalies", { error: error.message }, patientId);
       await updateDocStatus('failed');
       return;
     }
@@ -647,14 +660,16 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
         sendMessage("timeline ready", {}, patientId);
       }
     } catch (error) {
-      insights.error(error);
+      console.error('[processDocument] Error processing timeline:', error.message);
+      insights.error({ message: '[processDocument] Error processing timeline', error: error.message, stack: error.stack, docId: doc_id, patientId: patientId });
       try {
         email.sendMailError(error, "timeline", patientId, url);
-      } catch (error) {
-        console.error(`Failed to send email: ${error.message}`);
+      } catch (emailError) {
+        console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+        insights.error({ message: '[processDocument] Failed to send timeline error email', error: emailError.message, docId: doc_id });
       }
 
-      sendMessage("error timeline", { error: error }, patientId);
+      sendMessage("error timeline", { error: error.message }, patientId);
       await updateDocStatus('failed');
       return;
     }
@@ -672,26 +687,30 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
       sendMessage("resumen ready", {}, patientId);
       await updateDocStatus('resumen ready');
     } catch (error) {
-      insights.error(error);
+      console.error('[processDocument] Error processing summary:', error.message);
+      insights.error({ message: '[processDocument] Error processing summary', error: error.message, stack: error.stack, docId: doc_id, patientId: patientId });
 
       try {
         await email.sendMailError(error, "summarize", patientId, url);
-      } catch (error) {
-        console.error(`Failed to send email: ${error.message}`);
+      } catch (emailError) {
+        console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+        insights.error({ message: '[processDocument] Failed to send summarize error email', error: emailError.message, docId: doc_id });
       }
-      sendMessage("error summarize", { error: error }, patientId);
+      sendMessage("error summarize", { error: error.message }, patientId);
       await updateDocStatus('failed');
       return;
     }
   } catch (error) {
-    insights.error({ message: 'Failed to summarize document: '+doc_id, error: error.message || error, stack: error.stack || 'No stack trace available' });
+    console.error('[processDocument] Failed to process document:', error.message);
+    insights.error({ message: '[processDocument] Failed to process document', docId: doc_id, patientId: patientId, error: error.message, stack: error.stack });
     try {
       email.sendMailError(error, "preparing", patientId, url);
-    } catch (error) {
-      console.error(`Failed to send email: ${error.message}`);
+    } catch (emailError) {
+      console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+      insights.error({ message: '[processDocument] Failed to send preparing error email', error: emailError.message, docId: doc_id });
     }
 
-    sendMessage("failed", { error: error }, patientId);
+    sendMessage("failed", { error: error.message }, patientId);
     await updateDocStatus('failed');
   }
 }
@@ -919,25 +938,24 @@ function validateDate(documentDate) {
 }
 
 async function anonymize(patientId, containerName, url, docId, filename, userId) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      let url2 = url.replace(/\/[^\/]*$/, '/fast_extracted_translated.txt');
-      let lang_url = url.replace(/\/[^\/]*$/, '/language.txt');
-      let text, doc_lang;
+  const logContext = { patientId, docId, filename, containerName };
+  
+  try {
+    let url2 = url.replace(/\/[^\/]*$/, '/fast_extracted_translated.txt');
+    let lang_url = url.replace(/\/[^\/]*$/, '/language.txt');
+    let text, doc_lang;
 
-      try {
-        // Try to download the translation
-        text = await azure_blobs.downloadBlob(containerName, url2);
-        doc_lang = await azure_blobs.downloadBlob(containerName, lang_url);
-        //.log("Lang: ", doc_lang);
-      } catch (error) {
-        insights.error(error);
-        console.error('Error downloading the translated blob:', error);
-        // Handle the error and make a different call here
-        // For example:
-        let url3 = url.replace(/\/[^\/]*$/, '/fast_extracted.txt');
-        text = await azure_blobs.downloadBlob(containerName, url3);
-      }
+    try {
+      // Try to download the translation
+      text = await azure_blobs.downloadBlob(containerName, url2);
+      doc_lang = await azure_blobs.downloadBlob(containerName, lang_url);
+    } catch (error) {
+      console.error('[anonymize] Error downloading translated blob, trying fallback:', error.message);
+      insights.error({ message: '[anonymize] Error downloading translated blob', error: error.message, stack: error.stack, ...logContext });
+      // Handle the error and make a different call here
+      let url3 = url.replace(/\/[^\/]*$/, '/fast_extracted.txt');
+      text = await azure_blobs.downloadBlob(containerName, url3);
+    }
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
@@ -991,21 +1009,25 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
         const blob_response2 = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/anonymized.txt'), source_text)
       }
 
-      // Alert the client that the summary is ready (change status in the message)
-      message["time"] = new Date().toISOString();
-      message["status"] = "anonymize ready"
-      message["patientId"] = patientIdCrypt
-      pubsub.sendToUser(userId, message)
-      resolve(true);
-    } catch (error) {
-      console.log("Error happened: ", error)
-      insights.error(error);
-      const patientIdCrypt = crypt.encrypt(patientId);
-      let docIdEnc = crypt.encrypt(docId);
-      pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "error anonymize", "filename": filename, "error": error, "step": "anonymize", "patientId": patientIdCrypt })
-      resolve(false);
-    };
-  });
+    // Alert the client that the summary is ready (change status in the message)
+    message["time"] = new Date().toISOString();
+    message["status"] = "anonymize ready"
+    message["patientId"] = patientIdCrypt
+    pubsub.sendToUser(userId, message)
+    return true;
+  } catch (error) {
+    console.error('[anonymize] Error during anonymization:', error.message);
+    insights.error({ 
+      message: '[anonymize] Error during anonymization', 
+      error: error.message, 
+      stack: error.stack,
+      ...logContext
+    });
+    const patientIdCrypt = crypt.encrypt(patientId);
+    let docIdEnc = crypt.encrypt(docId);
+    pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "error anonymize", "filename": filename, "error": error.message, "step": "anonymize", "patientId": patientIdCrypt })
+    return false;
+  }
 }
 
 async function summarySuggestions(patientId, containerName, url) {
@@ -1352,6 +1374,8 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
           eventJson = [];
         }
       } catch (error) {
+        console.warn('[extractEvents] Error parsing events JSON:', error.message);
+        insights.error({ message: '[extractEvents] Error parsing events JSON', error: error.message, textPreview: extractedText?.substring(0, 200) });
         eventJson = [];
       }
 
@@ -1454,17 +1478,23 @@ async function extractInitialEvents(patientId, ogLang) {
         try {
           eventJson = JSON.parse(extractedEvents.content);
         } catch (error) {
-          console.log(error)
+          console.warn('[extractInitialEvents] Direct JSON parse failed, trying cleanup:', error.message);
           // Sometimes the .content begins with ```json and ends with ```, so we need to remove these before parsing
           let content = extractedEvents.content || '';
-          if (content.startsWith("```json") && content.endsWith("```")) {
-            content = content.slice(7, -3).trim();
-            eventJson = JSON.parse(content);
-          } else if (content.startsWith("```") && content.endsWith("```")) {
-            // Handle case where it's just ``` without json tag
-            content = content.slice(3, -3).trim();
-            eventJson = JSON.parse(content);
-          } else {
+          try {
+            if (content.startsWith("```json") && content.endsWith("```")) {
+              content = content.slice(7, -3).trim();
+              eventJson = JSON.parse(content);
+            } else if (content.startsWith("```") && content.endsWith("```")) {
+              // Handle case where it's just ``` without json tag
+              content = content.slice(3, -3).trim();
+              eventJson = JSON.parse(content);
+            } else {
+              throw new Error('Content does not match expected markdown format');
+            }
+          } catch (cleanupError) {
+            console.error('[extractInitialEvents] All JSON parse attempts failed:', cleanupError.message);
+            insights.error({ message: '[extractInitialEvents] Failed to parse initial events JSON', error: cleanupError.message, originalError: error.message, textPreview: content?.substring(0, 300) });
             eventJson = [
               {
                 "insight": null,
@@ -1649,6 +1679,88 @@ async function explainMedicalEvent(eventDescription, patientId) {
 }
 
 
+/**
+ * Genera una infografía visual del paciente usando Gemini 3 Pro Image Preview
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientSummary - Resumen clínico del paciente
+ * @param {string} lang - Idioma del usuario ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, imageData?: string, mimeType?: string, error?: string}>}
+ */
+async function generatePatientInfographic(patientId, patientSummary, lang = 'en') {
+  console.log(`[Infographic] Generating infographic for patient ${patientId}`);
+  
+  try {
+    // Inicializar el SDK de Google GenAI
+    const ai = new GoogleGenAI({ apiKey: config.GOOGLE_API_KEY });
+    
+    // Construir el prompt para la infografía según el idioma preferido
+    const langMap = {
+      'es': 'El texto en la infografía debe estar en español.',
+      'en': 'The text in the infographic should be in English.',
+      'fr': 'Le texte de l\'infographie doit être en français.',
+      'de': 'Der Text in der Infografik muss auf Deutsch sein.',
+      'it': 'Il testo nell\'infografica deve essere in italiano.',
+      'pt': 'O texto no infográfico deve estar em português.'
+    };
+    const langInstructions = langMap[lang] || langMap['en'];
+    
+    const prompt = `Create a professional, clean, and visually appealing medical infographic for a patient health summary. 
+${langInstructions}
+
+The infographic should:
+1. Have a modern, clean healthcare design with soft colors (light blue, green, white tones)
+2. Include clear sections with icons for: diagnoses, medications, symptoms, and key health metrics
+3. Use a timeline or flow representation if there's chronological data
+4. Include visual icons representing medical concepts
+5. Be easy to read and understand for patients
+6. Include the patient's name and relevant personal data (age, gender) if available in the summary
+7. Focus on the medical journey and current health status
+8. Include a header with the infographic generation date
+
+Patient Health Summary to visualize:
+${patientSummary}
+
+Style: Modern healthcare infographic, professional medical illustration style, clean typography, soft color palette, icons and visual elements to represent medical concepts.`;
+
+    console.log(`[Infographic] Calling Gemini 3 Pro Image Preview...`);
+    
+    // Llamar al modelo de generación de imágenes
+    const response = await ai.models.generateContent({
+      model: "gemini-3-pro-image-preview",
+      contents: prompt,
+    });
+
+    // Extraer la imagen de la respuesta
+    if (response.candidates && response.candidates[0] && response.candidates[0].content && response.candidates[0].content.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData) {
+          console.log(`[Infographic] Image generated successfully`);
+          return {
+            success: true,
+            imageData: part.inlineData.data,
+            mimeType: part.inlineData.mimeType || 'image/png'
+          };
+        }
+      }
+    }
+
+    // Si no hay imagen en la respuesta
+    console.warn(`[Infographic] No image in response`);
+    return {
+      success: false,
+      error: 'No image was generated. The model may have returned text instead.'
+    };
+
+  } catch (error) {
+    console.error(`[Infographic] Error generating infographic:`, error.message);
+    insights.error({ message: '[Infographic] Error generating infographic', error: error.message, patientId });
+    return {
+      success: false,
+      error: error.message || 'Error generating infographic'
+    };
+  }
+}
+
 module.exports = {
   processDocument,
   categorizeDocs,
@@ -1662,6 +1774,7 @@ module.exports = {
   getPatientData,
   createModels,
   embeddings,
+  generatePatientInfographic,
   // Para scripts de migración
   timelineServer,
   summarizeServer,

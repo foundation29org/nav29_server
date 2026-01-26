@@ -291,6 +291,7 @@ Generate the consolidated timeline. Remember: PRIORITIZE the RAG-validated data 
       }
     } catch (parseError) {
       console.error('[Timeline] Error parseando respuesta del LLM:', parseError.message);
+      insights.error({ message: '[Timeline] Error parsing LLM response', error: parseError.message, patientId: patientId, textPreview: (result.content || result)?.substring?.(0, 300) });
       // Fallback: devolver eventos agrupados sin consolidación
       return generateFallbackTimeline(rawEvents);
     }
