@@ -1702,7 +1702,7 @@ async function generatePatientInfographic(patientId, patientSummary, lang = 'en'
       'it': 'Il testo nell\'infografica deve essere in italiano.',
       'pt': 'O texto no infográfico deve estar em português.'
     };
-    const langInstructions = langMap[lang] || langMap['en'];
+    const langInstructions = langMap[lang] || `The text in the infographic should be in the language with code "${lang}".`;
     
     const prompt = `Create a professional, clean, and visually appealing medical infographic for a patient health summary. 
 ${langInstructions}
@@ -1761,6 +1761,182 @@ Style: Modern healthcare infographic, professional medical illustration style, c
   }
 }
 
+/**
+ * Genera preguntas sugeridas para la consulta SOAP basándose en los síntomas y el contexto del paciente
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientSymptoms - Síntomas referidos por el paciente
+ * @param {string} patientContext - Contexto clínico del paciente
+ * @param {string} lang - Idioma ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, questions?: string[], error?: string}>}
+ */
+async function generateSoapQuestions(patientId, patientSymptoms, patientContext, lang = 'en') {
+  console.log(`[SOAP] Generating questions for patient ${patientId}`);
+  
+  try {
+    const projectName = `SOAP Questions - ${patientId}`;
+    const { gpt4omini } = createModels(projectName, 'gpt4omini');
+    
+    const langMap = {
+      'es': 'Genera las preguntas en español.',
+      'en': 'Generate the questions in English.',
+      'fr': 'Générez les questions en français.',
+      'de': 'Generieren Sie die Fragen auf Deutsch.',
+      'it': 'Genera le domande in italiano.',
+      'pt': 'Gere as perguntas em português.'
+    };
+    const langInstruction = langMap[lang] || `Generate the questions in the language with code "${lang}".`;
+    
+    const prompt = `You are an experienced physician conducting a patient consultation. Based on the patient's reported symptoms and their medical history, generate 5-7 targeted follow-up questions to gather more information for a comprehensive SOAP assessment.
+
+${langInstruction}
+
+PATIENT'S REPORTED SYMPTOMS:
+${patientSymptoms}
+
+PATIENT'S MEDICAL CONTEXT:
+${patientContext}
+
+Generate specific, clinically relevant questions that will help:
+1. Clarify the nature, duration, and severity of symptoms
+2. Identify potential triggers or aggravating factors
+3. Assess impact on daily activities
+4. Check for related symptoms or red flags
+5. Review relevant medication or treatment effects
+
+Return ONLY a JSON array of strings with the questions. Example format:
+["Question 1?", "Question 2?", "Question 3?"]`;
+
+    const response = await gpt4omini.invoke(prompt);
+    const responseText = response.content.trim();
+    
+    // Parse JSON response
+    let questions;
+    try {
+      // Try to extract JSON array from response
+      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        questions = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON array found');
+      }
+    } catch (parseError) {
+      console.warn('[SOAP] Failed to parse questions JSON, splitting by lines');
+      // Fallback: split by newlines and clean
+      questions = responseText
+        .split('\n')
+        .map(q => q.replace(/^[\d\.\-\*]+\s*/, '').trim())
+        .filter(q => q.length > 10 && q.includes('?'));
+    }
+    
+    console.log(`[SOAP] Generated ${questions.length} questions`);
+    return { success: true, questions };
+    
+  } catch (error) {
+    console.error('[SOAP] Error generating questions:', error.message);
+    insights.error({ message: '[SOAP] Error generating questions', error: error.message, patientId });
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Genera el informe SOAP completo basándose en los síntomas, preguntas/respuestas y contexto del paciente
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientSymptoms - Síntomas referidos por el paciente
+ * @param {Array<{question: string, answer: string}>} questionsAndAnswers - Preguntas y respuestas
+ * @param {string} patientContext - Contexto clínico del paciente
+ * @param {string} lang - Idioma ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, soap?: object, error?: string}>}
+ */
+async function generateSoapReport(patientId, patientSymptoms, questionsAndAnswers, patientContext, lang = 'en') {
+  console.log(`[SOAP] Generating report for patient ${patientId}`);
+  
+  try {
+    const projectName = `SOAP Report - ${patientId}`;
+    const { gpt4omini } = createModels(projectName, 'gpt4omini');
+    
+    const langMap = {
+      'es': 'Genera el informe SOAP en español.',
+      'en': 'Generate the SOAP report in English.',
+      'fr': 'Générez le rapport SOAP en français.',
+      'de': 'Generieren Sie den SOAP-Bericht auf Deutsch.',
+      'it': 'Genera il rapporto SOAP in italiano.',
+      'pt': 'Gere o relatório SOAP em português.'
+    };
+    const langInstruction = langMap[lang] || `Generate the SOAP report in the language with code "${lang}".`;
+    
+    // Format Q&A
+    const qaFormatted = questionsAndAnswers
+      .filter(qa => qa.answer && qa.answer.trim())
+      .map((qa, i) => `Q${i+1}: ${qa.question}\nA${i+1}: ${qa.answer}`)
+      .join('\n\n');
+    
+    const prompt = `You are an experienced physician. Generate a comprehensive SOAP note based on the consultation data provided.
+
+${langInstruction}
+
+PATIENT'S INITIAL COMPLAINTS:
+${patientSymptoms}
+
+CONSULTATION Q&A:
+${qaFormatted}
+
+PATIENT'S MEDICAL HISTORY:
+${patientContext}
+
+Generate a structured SOAP note with the following sections:
+
+1. SUBJECTIVE (S): Patient's chief complaint, history of present illness, symptoms in their own words, relevant medical history.
+
+2. OBJECTIVE (O): Observable/measurable findings, vital signs if mentioned, physical examination findings, relevant test results from medical history.
+
+3. ASSESSMENT (A): Clinical impression, differential diagnoses, analysis integrating subjective and objective findings.
+
+4. PLAN (P): Treatment recommendations, medications, follow-up, referrals, patient education, lifestyle modifications.
+
+Return the response as a JSON object with this exact structure:
+{
+  "subjective": "...",
+  "objective": "...",
+  "assessment": "...",
+  "plan": "..."
+}
+
+Each section should be comprehensive but concise, using proper medical terminology while remaining understandable.`;
+
+    const response = await gpt4omini.invoke(prompt);
+    const responseText = response.content.trim();
+    
+    // Parse JSON response
+    let soap;
+    try {
+      // Try to extract JSON object from response
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        soap = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON object found');
+      }
+    } catch (parseError) {
+      console.warn('[SOAP] Failed to parse SOAP JSON:', parseError.message);
+      // Fallback: create structured response from text
+      soap = {
+        subjective: 'Error parsing response. Please try again.',
+        objective: '',
+        assessment: '',
+        plan: ''
+      };
+    }
+    
+    console.log('[SOAP] Report generated successfully');
+    return { success: true, soap };
+    
+  } catch (error) {
+    console.error('[SOAP] Error generating report:', error.message);
+    insights.error({ message: '[SOAP] Error generating report', error: error.message, patientId });
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   processDocument,
   categorizeDocs,
@@ -1775,6 +1951,8 @@ module.exports = {
   createModels,
   embeddings,
   generatePatientInfographic,
+  generateSoapQuestions,
+  generateSoapReport,
   // Para scripts de migración
   timelineServer,
   summarizeServer,

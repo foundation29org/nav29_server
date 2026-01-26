@@ -24,7 +24,7 @@ const { retrieveChunks, extractStructuredFacts } = require('../../../services/re
 const { curateContext } = require('../../../services/tools');
 
 const { generatePatientUUID } = require('../../../services/uuid');
-const { generatePatientInfographic } = require('../../../services/langchain');
+const { generatePatientInfographic, generateSoapQuestions, generateSoapReport } = require('../../../services/langchain');
 
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
@@ -1304,11 +1304,180 @@ async function handleInfographicRequest(req, res) {
 }
 
 /*--------------------------------------------------------------------
+ * 3.5 SOAP NOTES REQUESTS (Clinical)
+ *------------------------------------------------------------------*/
+
+/**
+ * Genera preguntas sugeridas para la consulta SOAP
+ * @route POST /api/ai/soap/questions/:patientId
+ */
+async function handleSoapQuestionsRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const patientSymptoms = req.body.patientSymptoms;
+  
+  console.log(`[SOAP Questions] Request for patient ${patientId}`);
+  
+  if (!patientSymptoms || patientSymptoms.trim().length < 10) {
+    return res.status(400).json({
+      success: false,
+      error: 'Patient symptoms are required (minimum 10 characters)'
+    });
+  }
+  
+  try {
+    // Obtener contexto del paciente
+    let patientContext = '';
+    
+    // Intentar obtener el resumen existente
+    patientContext = await getPatientSummaryIfExists(patientId);
+    
+    // Si no existe, construir contexto básico
+    if (!patientContext) {
+      try {
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const contextParts = [];
+        
+        if (raw.profile) {
+          if (raw.profile.gender) contextParts.push(`Gender: ${raw.profile.gender}`);
+          if (raw.profile.birthDate) contextParts.push(`Birth Date: ${raw.profile.birthDate}`);
+          if (raw.profile.chronic && raw.profile.chronic.length > 0) {
+            contextParts.push(`Chronic Conditions: ${raw.profile.chronic.join(', ')}`);
+          }
+        }
+        
+        if (raw.events && raw.events.length > 0) {
+          const diagnoses = raw.events.filter(e => e.type === 'diagnosis').slice(0, 5);
+          const medications = raw.events.filter(e => e.type === 'medication').slice(0, 5);
+          
+          if (diagnoses.length > 0) {
+            contextParts.push(`Recent Diagnoses: ${diagnoses.map(d => d.name).join(', ')}`);
+          }
+          if (medications.length > 0) {
+            contextParts.push(`Current Medications: ${medications.map(m => m.name).join(', ')}`);
+          }
+        }
+        
+        patientContext = contextParts.join('\n') || 'No previous medical history available.';
+      } catch (contextError) {
+        console.warn('[SOAP Questions] Error getting patient context:', contextError.message);
+        patientContext = 'No previous medical history available.';
+      }
+    }
+    
+    // Generar preguntas
+    const result = await generateSoapQuestions(patientId, patientSymptoms, patientContext, lang);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        questions: result.questions
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to generate questions'
+      });
+    }
+    
+  } catch (error) {
+    console.error('[SOAP Questions] Error:', error.message);
+    insights.error({ message: '[SOAP Questions] Error', error: error.message, patientId });
+    res.status(500).json({
+      success: false,
+      error: 'Error generating questions',
+      details: error.message
+    });
+  }
+}
+
+/**
+ * Genera el informe SOAP completo
+ * @route POST /api/ai/soap/report/:patientId
+ */
+async function handleSoapReportRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const patientSymptoms = req.body.patientSymptoms;
+  const questionsAndAnswers = req.body.questionsAndAnswers || [];
+  
+  console.log(`[SOAP Report] Request for patient ${patientId}`);
+  
+  if (!patientSymptoms) {
+    return res.status(400).json({
+      success: false,
+      error: 'Patient symptoms are required'
+    });
+  }
+  
+  try {
+    // Obtener contexto del paciente (más completo para el informe)
+    let patientContext = '';
+    
+    // Intentar obtener el resumen existente
+    patientContext = await getPatientSummaryIfExists(patientId);
+    
+    // Si no existe, usar RAG para obtener contexto
+    if (!patientContext) {
+      try {
+        const searchQuery = "Complete medical history, diagnoses, medications, treatments, and recent symptoms";
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND");
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        const curatedResult = await curateContext(
+          [],
+          [],
+          selectedChunks,
+          raw.events || [],
+          structuredFacts,
+          patientId,
+          raw.profile || {}
+        );
+        
+        patientContext = curatedResult.content || 'No previous medical history available.';
+      } catch (contextError) {
+        console.warn('[SOAP Report] Error getting patient context:', contextError.message);
+        patientContext = 'No previous medical history available.';
+      }
+    }
+    
+    // Generar informe SOAP
+    const result = await generateSoapReport(patientId, patientSymptoms, questionsAndAnswers, patientContext, lang);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        soap: result.soap
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to generate SOAP report'
+      });
+    }
+    
+  } catch (error) {
+    console.error('[SOAP Report] Error:', error.message);
+    insights.error({ message: '[SOAP Report] Error', error: error.message, patientId });
+    res.status(500).json({
+      success: false,
+      error: 'Error generating SOAP report',
+      details: error.message
+    });
+  }
+}
+
+/*--------------------------------------------------------------------
  * 4. EXPORTS
  *------------------------------------------------------------------*/
 module.exports = {
   handleRarescopeRequest,
   handleDxGptRequest,
   handleDiseaseInfoRequest,
-  handleInfographicRequest
+  handleInfographicRequest,
+  handleSoapQuestionsRequest,
+  handleSoapReportRequest
 };
