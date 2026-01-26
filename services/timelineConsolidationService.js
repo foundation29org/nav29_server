@@ -186,6 +186,17 @@ async function generateConsolidatedTimeline(patientId, userLang = 'es') {
     // 5. Llamar al LLM para consolidar
     const { gpt4omini } = createModels('default', 'gpt4omini');
     
+    // Generar instrucción de idioma basada en userLang
+    const langMap = {
+      'es': 'Respond in Spanish. All titles, descriptions and text must be in Spanish.',
+      'en': 'Respond in English. All titles, descriptions and text must be in English.',
+      'fr': 'Respond in French. All titles, descriptions and text must be in French.',
+      'de': 'Respond in German. All titles, descriptions and text must be in German.',
+      'it': 'Respond in Italian. All titles, descriptions and text must be in Italian.',
+      'pt': 'Respond in Portuguese. All titles, descriptions and text must be in Portuguese.'
+    };
+    const langInstruction = langMap[userLang] || `Respond in the language with code "${userLang}". All titles, descriptions and text must be in that language.`;
+    
     let consolidationPrompt;
     try {
       consolidationPrompt = await pull('foundation29/timeline_consolidation_v1');
@@ -236,7 +247,7 @@ You will receive TWO types of information:
 
 7. **LIMIT**: Maximum 30 milestones, 10 chronic conditions, 10 current medications
 
-8. **LANGUAGE**: Respond in the same language as the input events.
+8. **LANGUAGE**: {langInstruction}
 
 9. **DATES**: Use numeric month (1-12) for consistent sorting across languages.
 
@@ -275,7 +286,8 @@ Generate the consolidated timeline. Remember: PRIORITIZE the RAG-validated data 
     const result = await chain.invoke({
       ragContext: ragContextText || 'No RAG-validated context available.',
       events: JSON.stringify(eventsForPrompt, null, 2),
-      summaries: documentSummaries.map(s => `[${s.filename}, ${s.date}]: ${s.summary}`).join('\n\n')
+      summaries: documentSummaries.map(s => `[${s.filename}, ${s.date}]: ${s.summary}`).join('\n\n'),
+      langInstruction: langInstruction
     });
 
     // 5. Parsear respuesta
