@@ -1268,6 +1268,11 @@ async function handleInfographicRequest(req, res) {
       const existing = await findExistingInfographic(containerName);
       if (existing) {
         console.log(`[Infographic] Found newly generated infographic after waiting: ${existing.blobPath}`);
+        
+        // Verificar si el paciente tiene resumen completo para determinar isBasic
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        const isBasicWaited = !patientSummary;
+        
         const sasToken = f29azure.generateSasToken(containerName);
         const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${existing.blobPath}${sasToken.sasToken}`;
         
@@ -1277,6 +1282,7 @@ async function handleInfographicRequest(req, res) {
           blobPath: existing.blobPath,
           generatedAt: existing.generatedAt,
           cached: true,
+          isBasic: isBasicWaited,
           message: 'Infographic ready (waited for generation)'
         });
       } else {
@@ -1299,6 +1305,10 @@ async function handleInfographicRequest(req, res) {
       if (existing) {
         console.log(`[Infographic] Found existing infographic: ${existing.blobPath}`);
         
+        // Verificar si el paciente tiene resumen completo para determinar isBasic
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        const isBasicCached = !patientSummary; // Si no hay resumen, es básica
+        
         // Generar URL con SAS token
         const sasToken = f29azure.generateSasToken(containerName);
         const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${existing.blobPath}${sasToken.sasToken}`;
@@ -1309,6 +1319,7 @@ async function handleInfographicRequest(req, res) {
           blobPath: existing.blobPath,
           generatedAt: existing.generatedAt,
           cached: true,
+          isBasic: isBasicCached,
           message: 'Existing infographic found'
         });
       }
