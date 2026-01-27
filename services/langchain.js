@@ -24,18 +24,15 @@ const { SearchIndexClient, SearchClient } = require("@azure/search-documents");
 const { AzureKeyCredential } = require("@azure/core-auth");
 const { createChunksIndex } = require('./vectorStoreService');
 
-const O_A_K = config.O_A_K;
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
-const OPENAI_API_BASE = config.OPENAI_API_BASE;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
 const OPENAI_API_BASE_GPT4O = config.OPENAI_API_BASE_GPT4O;
-const O_A_K_GPT5MINI = config.O_A_K_GPT5MINI;
 
 const embeddings = new OpenAIEmbeddings({
-  azureOpenAIApiKey: config.O_A_K,
+  azureOpenAIApiKey: config.O_A_K_GPT4O,
   azureOpenAIApiVersion: config.OPENAI_API_VERSION,
-  azureOpenAIApiInstanceName: config.OPENAI_API_BASE,
-  azureOpenAIApiDeploymentName: "nav29embeddings-large",
+  azureOpenAIApiInstanceName: config.OPENAI_API_BASE_GPT4O,
+  azureOpenAIApiDeploymentName: "text-embedding-3-large",
   model: "text-embedding-3-large",
   modelName: "text-embedding-3-large",
 });
@@ -92,12 +89,12 @@ function createModels(projectName, modelType = null) {
           break;
           case 'gpt4omini':
             model = new ChatOpenAI({
-              modelName: "gpt-4o-mini-nav29",
+              modelName: "gpt-4o-mini",
               azure: true,
               azureOpenAIApiKey: O_A_K_GPT4O,
               azureOpenAIApiVersion: OPENAI_API_VERSION,
               azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
-              azureOpenAIApiDeploymentName: "gpt-4o-mini-nav29",
+              azureOpenAIApiDeploymentName: "gpt-4o-mini",
               temperature: 0,
               timeout: 140000,
               callbacks: tracer ? [tracer] : undefined
@@ -109,23 +106,10 @@ function createModels(projectName, modelType = null) {
           model = new ChatOpenAI({
             modelName: "gpt-5-mini",
             azure: true,
-            azureOpenAIApiKey: O_A_K_GPT5MINI,
-            azureOpenAIApiVersion: '2024-12-01-preview',
-            // Endpoint completo en región distinta
-            azureOpenAIEndpoint: 'https://foundation29-ai-aiservices.cognitiveservices.azure.com/',
-            azureOpenAIApiDeploymentName: "gpt-5-mini",
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          break;
-        case 'model32k':
-          model = new ChatOpenAI({
-            modelName: "gpt-4-32k-0613",
-            azureOpenAIApiKey: O_A_K,
+            azureOpenAIApiKey: O_A_K_GPT4O,
             azureOpenAIApiVersion: OPENAI_API_VERSION,
-            azureOpenAIApiInstanceName: OPENAI_API_BASE,
-            azureOpenAIApiDeploymentName: "test32k",
-            temperature: 0,
+            azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+            azureOpenAIApiDeploymentName: "gpt-5-mini",
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });
@@ -1618,12 +1602,12 @@ async function divideElements(event, patientId) {
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k } = createModels(projectName, 'model32k');
+    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
     try {
       // Generate a prompt with the question's user
       let divide_elements_prompt = await pull("foundation29/divide_elements_v1");
 
-      const chainDivideElements = divide_elements_prompt.pipe(model32k);
+      const chainDivideElements = divide_elements_prompt.pipe(azuregpt4o);
 
       const dividedElements = await chainDivideElements.invoke({
         event: event.name,
@@ -1724,11 +1708,18 @@ Style: Modern healthcare infographic, professional medical illustration style, c
 
     console.log(`[Infographic] Calling Gemini 3 Pro Image Preview...`);
     
-    // Llamar al modelo de generación de imágenes
-    const response = await ai.models.generateContent({
+    // Llamar al modelo de generación de imágenes con timeout de 2 minutos
+    const timeoutMs = 120000;
+    const generatePromise = ai.models.generateContent({
       model: "gemini-3-pro-image-preview",
       contents: prompt,
     });
+    
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error(`Gemini request timed out after ${timeoutMs/1000}s`)), timeoutMs)
+    );
+    
+    const response = await Promise.race([generatePromise, timeoutPromise]);
 
     // Extraer la imagen de la respuesta
     if (response.candidates && response.candidates[0] && response.candidates[0].content && response.candidates[0].content.parts) {

@@ -7,7 +7,7 @@
  * Funciona en cualquier idioma - la IA decide qué es relevante.
  */
 
-const { createGpt4oMini } = require('./eventModels');
+const { createModels } = require('./langchain');
 const insights = require('./insights');
 
 /**
@@ -35,7 +35,7 @@ async function filterAndAggregateEvents(events, options = {}) {
   }
 
   try {
-    const gpt4omini = createGpt4oMini();
+    const { gpt4omini } = createModels('eventFilter', 'gpt4omini');
 
     const prompt = `You are a medical data curator. Your task is to:
 1. FILTER: Remove noise (negative findings, normal values, incidental findings, meaningless text)

@@ -4,7 +4,11 @@ const crypt = require('../services/crypt')
 const langchain = require('../services/langchain')
 const axios = require('axios');
 
-const azureApiKey = config.O_A_K
+// Usar la misma configuración que langchain.js para GPT-4o
+const azureApiKey = config.O_A_K_GPT4O;
+const azureInstanceName = config.OPENAI_API_BASE_GPT4O;
+const azureApiVersion = config.OPENAI_API_VERSION;
+const azureDeploymentName = 'gpt-4o'; // Mismo deployment que en langchain.js
 
 
 async function detectLang(text) {
@@ -23,8 +27,8 @@ async function detectLang(text) {
             content: `Identify the language of the following text:\n\n${substring}`
           }
         ];
-        const apiKey = azureApiKey; // Reemplaza esto con tu clave API real
-        const endpoint = 'https://nav29.openai.azure.com/openai/deployments/nav29/chat/completions?api-version=2023-06-01-preview';
+        const apiKey = azureApiKey;
+        const endpoint = `https://${azureInstanceName}.openai.azure.com/openai/deployments/${azureDeploymentName}/chat/completions?api-version=${azureApiVersion}`;
 
         const data = {
           messages: messages,
@@ -36,7 +40,7 @@ async function detectLang(text) {
 
         const headers = {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'api-key': apiKey  // Azure OpenAI usa api-key header
         };
           
         try {

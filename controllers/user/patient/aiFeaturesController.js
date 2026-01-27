@@ -26,6 +26,9 @@ const { curateContext } = require('../../../services/tools');
 const { generatePatientUUID } = require('../../../services/uuid');
 const { generatePatientInfographic, generateSoapQuestions, generateSoapReport } = require('../../../services/langchain');
 
+// Mutex para evitar peticiones duplicadas de infografía mientras se está generando
+const infographicInProgress = new Map();
+
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
 
@@ -66,6 +69,109 @@ function cleanHtmlFromText(htmlText) {
   cleaned = cleaned.replace(/^\s+|\s+$/gm, ''); // Trim por línea
   
   return cleaned.trim();
+}
+
+/**
+ * Construye un contexto básico del paciente usando datos estructurados
+ * @param {string} patientId - ID del paciente
+ * @param {Object} raw - Datos agregados del paciente (opcional, se obtiene si no se pasa)
+ * @param {string} existingContext - Contexto existente para complementar (opcional)
+ * @returns {string} - Contexto estructurado del paciente
+ */
+async function buildBasicPatientContext(patientId, raw = null, existingContext = '') {
+  try {
+    if (!raw) {
+      raw = await patientContextService.aggregateClinicalContext(patientId);
+    }
+    
+    const summaryParts = [];
+    
+    // Añadir contexto existente si lo hay
+    if (existingContext && existingContext.length > 50) {
+      summaryParts.push(existingContext);
+    }
+    
+    // Perfil del paciente (campos: name, birthDate, gender, chronic, allergies)
+    if (raw.profile) {
+      const profileParts = [];
+      if (raw.profile.name) profileParts.push(`Name: ${raw.profile.name}`);
+      if (raw.profile.gender) profileParts.push(`Gender: ${raw.profile.gender}`);
+      if (raw.profile.birthDate) {
+        const age = calculateAge(raw.profile.birthDate);
+        profileParts.push(`Age: ${age} years`);
+        profileParts.push(`Birth Date: ${new Date(raw.profile.birthDate).toLocaleDateString()}`);
+      }
+      
+      if (profileParts.length > 0) {
+        summaryParts.push('PATIENT PROFILE:\n' + profileParts.join('\n'));
+      }
+      
+      // Condiciones crónicas
+      if (raw.profile.chronic && raw.profile.chronic.length > 0) {
+        summaryParts.push('CHRONIC CONDITIONS:\n' + raw.profile.chronic.map(c => `- ${c}`).join('\n'));
+      }
+      
+      // Alergias
+      if (raw.profile.allergies && raw.profile.allergies.length > 0) {
+        summaryParts.push('ALLERGIES:\n' + raw.profile.allergies.map(a => `- ${a}`).join('\n'));
+      }
+    }
+    
+    // Eventos médicos (el campo es 'type' según fetchEvents)
+    if (raw.events && raw.events.length > 0) {
+      const diagnoses = raw.events.filter(e => e.type === 'diagnosis').slice(0, 15);
+      const medications = raw.events.filter(e => e.type === 'medication').slice(0, 15);
+      const symptoms = raw.events.filter(e => e.type === 'symptom').slice(0, 10);
+      
+      if (diagnoses.length > 0) {
+        summaryParts.push('DIAGNOSES:\n' + diagnoses.map(d => `- ${d.name}`).join('\n'));
+      }
+      if (medications.length > 0) {
+        summaryParts.push('MEDICATIONS:\n' + medications.map(m => `- ${m.name}`).join('\n'));
+      }
+      if (symptoms.length > 0) {
+        summaryParts.push('SYMPTOMS:\n' + symptoms.map(s => `- ${s.name}`).join('\n'));
+      }
+    }
+    
+    // Documentos médicos (resúmenes)
+    if (raw.documents && raw.documents.length > 0) {
+      const docSummaries = raw.documents
+        .filter(d => d.text && d.text.length > 50)
+        .slice(0, 5)
+        .map(d => d.text.substring(0, 500));
+      
+      if (docSummaries.length > 0) {
+        summaryParts.push('MEDICAL DOCUMENTS SUMMARY:\n' + docSummaries.join('\n---\n'));
+      }
+    }
+    
+    const result = summaryParts.join('\n\n');
+    console.log(`[Infographic] Built basic context (${result.length} chars) - profile: ${!!raw.profile}, events: ${raw.events?.length || 0}, docs: ${raw.documents?.length || 0}`);
+    return result || 'No patient data available.';
+    
+  } catch (error) {
+    console.error('[Infographic] Error building basic context:', error.message);
+    return existingContext || 'No patient data available.';
+  }
+}
+
+/**
+ * Calcula la edad a partir de la fecha de nacimiento
+ */
+function calculateAge(birthDate) {
+  try {
+    const birth = new Date(birthDate);
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const monthDiff = today.getMonth() - birth.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    return age;
+  } catch {
+    return 'Unknown';
+  }
 }
 
 /** (0) Obtiene el resumen del paciente si existe (final_card.txt) */
@@ -282,8 +388,8 @@ async function buildContextString(raw, patientId) {
 async function prioritizeContextWithAI(contextText, patientId) {
   try {
     // Validar configuración
-    const azureInstance = config.OPENAI_API_BASE_GPT4O || config.OPENAI_API_BASE;
-    const azureKey = config.O_A_K_GPT4O || config.O_A_K;
+    const azureInstance = config.OPENAI_API_BASE_GPT4O;
+    const azureKey = config.O_A_K_GPT4O;
     if (!azureInstance || !azureKey) {
       console.warn('⚠️ Azure OpenAI no configurado, devolviendo contexto original');
       return contextText;
@@ -383,8 +489,8 @@ ${contextText}`;
 async function handleRarescopeRequest(req, res) {
   try {
     /* 0 · Validación configuración básica ------------------------------*/
-    const azureInstance = config.OPENAI_API_BASE_GPT4O || config.OPENAI_API_BASE;
-    const azureKey      = config.O_A_K_GPT4O          || config.O_A_K;
+    const azureInstance = config.OPENAI_API_BASE_GPT4O;
+    const azureKey      = config.O_A_K_GPT4O;
     if (!azureInstance || !azureKey) {
       return res.status(500).json({ error: 'Azure OpenAI not configured' });
     }
@@ -1139,6 +1245,51 @@ async function handleInfographicRequest(req, res) {
   
   console.log(`[Infographic] Request for patient ${patientId}, lang: ${lang}, regenerate: ${regenerate}`);
   
+  // Verificar si ya hay una generación en progreso para este paciente
+  if (infographicInProgress.has(patientId)) {
+    const startTime = infographicInProgress.get(patientId);
+    const elapsed = Date.now() - startTime;
+    // Si la generación lleva menos de 5 minutos, esperar a que termine y devolver el resultado
+    if (elapsed < 5 * 60 * 1000) {
+      console.log(`[Infographic] Generation already in progress for ${patientId} (${Math.round(elapsed/1000)}s ago), waiting for completion...`);
+      
+      // Esperar a que termine la generación (polling cada 2 segundos, máximo 3 minutos)
+      const containerName = crypt.getContainerName(patientId);
+      const maxWait = 180000; // 3 minutos
+      const pollInterval = 2000; // 2 segundos
+      let waited = 0;
+      
+      while (infographicInProgress.has(patientId) && waited < maxWait) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        waited += pollInterval;
+      }
+      
+      // Buscar la infografía recién generada
+      const existing = await findExistingInfographic(containerName);
+      if (existing) {
+        console.log(`[Infographic] Found newly generated infographic after waiting: ${existing.blobPath}`);
+        const sasToken = f29azure.generateSasToken(containerName);
+        const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${existing.blobPath}${sasToken.sasToken}`;
+        
+        return res.json({
+          success: true,
+          imageUrl: imageUrl,
+          blobPath: existing.blobPath,
+          generatedAt: existing.generatedAt,
+          cached: true,
+          message: 'Infographic ready (waited for generation)'
+        });
+      } else {
+        // Si aún no hay infografía después de esperar, permitir que continúe
+        console.log(`[Infographic] No infographic found after waiting, proceeding with new generation`);
+      }
+    } else {
+      // Si lleva más de 5 minutos, limpiar el mutex (probablemente quedó colgado)
+      console.log(`[Infographic] Stale mutex for ${patientId}, clearing...`);
+      infographicInProgress.delete(patientId);
+    }
+  }
+  
   try {
     const containerName = crypt.getContainerName(patientId);
     
@@ -1163,8 +1314,13 @@ async function handleInfographicRequest(req, res) {
       }
     }
     
+    // Marcar que la generación está en progreso
+    infographicInProgress.set(patientId, Date.now());
+    console.log(`[Infographic] Starting generation for patient ${patientId}`);
+    
     /* ▸ Obtener el resumen del paciente --------------------------------- */
     let patientSummary = null;
+    let isBasicInfographic = false; // Flag para indicar si es infografía básica (sin resumen completo)
     
     // Primero intentar obtener el resumen existente (final_card.txt)
     patientSummary = await getPatientSummaryIfExists(patientId);
@@ -1172,6 +1328,7 @@ async function handleInfographicRequest(req, res) {
     // Si no existe resumen, construir contexto desde eventos y documentos
     if (!patientSummary) {
       console.log('[Infographic] No existing summary, building context from RAG...');
+      isBasicInfographic = true; // Marcar como infografía básica
       
       try {
         // Usar arquitectura RAG para obtener contexto
@@ -1179,9 +1336,15 @@ async function handleInfographicRequest(req, res) {
         const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND");
         const selectedChunks = retrievalResult.selectedChunks || [];
         
-        // Obtener eventos de la timeline
+        // Obtener eventos de la timeline y documentos
         const raw = await patientContextService.aggregateClinicalContext(patientId);
         const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        // Obtener URLs de documentos del paciente para pasarlos a curateContext
+        const Document = require('../../../models/document');
+        const patientDocs = await Document.find({ createdBy: patientId }).select('url').lean();
+        const docUrls = patientDocs.map(d => d.url).filter(Boolean);
+        console.log(`[Infographic] Found ${docUrls.length} documents for patient`);
         
         // Curar contexto - firma: (context, memories, containerName, docs, question, selectedChunks, structuredFacts)
         const containerName = crypt.getContainerName(patientId);
@@ -1189,7 +1352,7 @@ async function handleInfographicRequest(req, res) {
           [],                    // context
           [],                    // memories
           containerName,         // containerName
-          [],                    // docs
+          docUrls,               // docs (URLs para descargar resúmenes)
           searchQuery,           // question
           selectedChunks,        // selectedChunks
           structuredFacts        // structuredFacts
@@ -1197,40 +1360,17 @@ async function handleInfographicRequest(req, res) {
         
         patientSummary = curatedResult.content;
         console.log(`[Infographic] Context built from RAG (${patientSummary?.length || 0} chars)`);
+        
+        // Si el contexto curado es muy corto, complementar con datos estructurados
+        if (!patientSummary || patientSummary.length < 300) {
+          console.log('[Infographic] RAG context too short, adding structured data...');
+          patientSummary = await buildBasicPatientContext(patientId, raw, patientSummary);
+        }
       } catch (ragError) {
         console.warn('[Infographic] RAG failed, using basic context:', ragError.message);
         
-        // Fallback: usar contexto básico
-        const raw = await patientContextService.aggregateClinicalContext(patientId);
-        
-        // Construir resumen básico
-        const summaryParts = [];
-        
-        if (raw.profile) {
-          if (raw.profile.gender) summaryParts.push(`Gender: ${raw.profile.gender}`);
-          if (raw.profile.birthDate) summaryParts.push(`Birth Date: ${raw.profile.birthDate}`);
-          if (raw.profile.chronic && raw.profile.chronic.length > 0) {
-            summaryParts.push(`Chronic Conditions: ${raw.profile.chronic.join(', ')}`);
-          }
-        }
-        
-        if (raw.events && raw.events.length > 0) {
-          const diagnoses = raw.events.filter(e => e.type === 'diagnosis').slice(0, 10);
-          const medications = raw.events.filter(e => e.type === 'medication').slice(0, 10);
-          const symptoms = raw.events.filter(e => e.type === 'symptom').slice(0, 10);
-          
-          if (diagnoses.length > 0) {
-            summaryParts.push(`Diagnoses: ${diagnoses.map(d => d.name).join(', ')}`);
-          }
-          if (medications.length > 0) {
-            summaryParts.push(`Medications: ${medications.map(m => m.name).join(', ')}`);
-          }
-          if (symptoms.length > 0) {
-            summaryParts.push(`Symptoms: ${symptoms.map(s => s.name).join(', ')}`);
-          }
-        }
-        
-        patientSummary = summaryParts.join('\n\n');
+        // Fallback: usar contexto básico estructurado
+        patientSummary = await buildBasicPatientContext(patientId, null, '');
       }
     }
     
@@ -1255,34 +1395,47 @@ async function handleInfographicRequest(req, res) {
       try {
         // Convertir base64 a buffer y subir
         const imageBuffer = Buffer.from(result.imageData, 'base64');
-        await f29azure.createBlob(containerName, blobPath, imageBuffer);
+        console.log(`[Infographic] Uploading image (${imageBuffer.length} bytes) to ${blobPath}...`);
         
+        await f29azure.createBlob(containerName, blobPath, imageBuffer);
         console.log(`[Infographic] Image saved to ${blobPath}`);
         
         // Generar URL con SAS token para acceder a la imagen
+        console.log(`[Infographic] Generating SAS token for container ${containerName}...`);
         const sasToken = f29azure.generateSasToken(containerName);
         const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${blobPath}${sasToken.sasToken}`;
+        console.log(`[Infographic] SAS URL generated, sending response...`);
         
-        res.json({
+        // Limpiar mutex y enviar respuesta
+        infographicInProgress.delete(patientId);
+        console.log(`[Infographic] Generation complete for patient ${patientId}`);
+        
+        return res.json({
           success: true,
           imageUrl: imageUrl,
           blobPath: blobPath,
           generatedAt: generatedAt.toISOString(),
           cached: false,
+          isBasic: isBasicInfographic, // Indica si es infografía básica (sin resumen completo)
           message: 'Infographic generated successfully'
         });
       } catch (uploadError) {
         console.warn('[Infographic] Failed to save to blob, returning image data:', uploadError.message);
+        // Limpiar mutex
+        infographicInProgress.delete(patientId);
         // Si falla el guardado, devolver la imagen base64 como fallback
-        res.json({
+        return res.json({
           success: true,
           imageData: result.imageData,
           mimeType: result.mimeType,
           cached: false,
+          isBasic: isBasicInfographic,
           message: 'Infographic generated (not saved to storage)'
         });
       }
     } else {
+      // Limpiar mutex en caso de fallo
+      infographicInProgress.delete(patientId);
       res.status(500).json({
         success: false,
         error: result.error || 'Failed to generate infographic'
@@ -1290,6 +1443,8 @@ async function handleInfographicRequest(req, res) {
     }
     
   } catch (error) {
+    // Limpiar mutex en caso de error
+    infographicInProgress.delete(patientId);
     console.error('[Infographic] Error:', error.message);
     insights.error({ 
       message: '[Infographic] Error handling request', 
