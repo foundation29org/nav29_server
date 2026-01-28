@@ -26,6 +26,7 @@ const eventsCtrl = require('../controllers/user/patient/events')
 const appointmentsCtrl = require('../controllers/user/patient/appointments')
 const aiFeaturesCtrl = require('../controllers/user/patient/aiFeaturesController')
 const rarescopeCtrl = require('../controllers/user/patient/rarescope')
+const trackingCtrl = require('../controllers/user/patient/tracking')
 const f29azureserviceCtrl = require('../services/f29azure')
 const openShareCtrl = require('../controllers/all/openshare')
 const feedbackCtrl = require('../services/feedback')
@@ -169,6 +170,15 @@ api.post('/rarescope/save/:patientId', auth.isAuthPatient(roles.All), checkApiKe
 api.get('/rarescope/load/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.loadRarescopeData)
 api.get('/rarescope/history/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.getRarescopeHistory)
 api.delete('/rarescope/delete/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.deleteRarescopeData)
+
+// Patient Tracking routes
+api.get('/tracking/:patientId/data', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.getTrackingData)
+api.post('/tracking/:patientId/import', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.importTrackingData)
+api.post('/tracking/:patientId/entry', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.addEntry)
+api.post('/tracking/:patientId/insights', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.generateInsights)
+api.get('/tracking/:patientId/stats', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.getStatistics)
+api.delete('/tracking/:patientId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteTrackingData)
+api.delete('/tracking/:patientId/entry/:entryId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteEntry)
 
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)
