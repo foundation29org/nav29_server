@@ -69,18 +69,18 @@ function parseSeizureTrackerData(rawData) {
         }).filter(e => e.date && !isNaN(e.date.getTime()));
     }
 
-    // Parse Medications
+    // Parse Medications - SeizureTracker uses fields with spaces
     if (rawData.Medications && Array.isArray(rawData.Medications)) {
         result.medications = rawData.Medications.map(med => ({
-            name: med.name || med.Name || '',
-            dose: med.dose || med.Dose || '',
-            doseValue: parseFloat(med.doseValue) || null,
-            doseUnit: med.doseUnit || 'mg',
-            frequency: med.frequency || '',
-            startDate: med.startDate ? new Date(med.startDate) : null,
-            endDate: med.endDate ? new Date(med.endDate) : null,
-            sideEffects: med.sideEffects || [],
-            notes: med.notes || ''
+            name: med.Medication || med.name || med.Name || '',
+            dose: med['Total Daily Dose'] || med.dose || med.Dose || '',
+            doseValue: parseFloat(med['Total Daily Dose']) || parseFloat(med.doseValue) || null,
+            doseUnit: med.Units || med.doseUnit || 'mg',
+            frequency: med['Number of Doses per day'] || med.frequency || '',
+            startDate: med['Start Date'] ? new Date(med['Start Date']) : (med.startDate ? new Date(med.startDate) : null),
+            endDate: med['End Date'] ? new Date(med['End Date']) : (med.endDate ? new Date(med.endDate) : null),
+            sideEffects: med['Side Effects'] ? med['Side Effects'].split(',').map(s => s.trim()).filter(s => s && s !== 'Not Visited') : (med.sideEffects || []),
+            notes: med.Notes || med.notes || ''
         })).filter(m => m.name);
     }
 
