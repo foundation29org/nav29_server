@@ -11,21 +11,61 @@ const insights = require('../../../services/insights');
 const crypt = require('../../../services/crypt');
 
 /**
- * Get tracking data for a patient
+ * Get all tracking data for a patient (all conditions)
  * GET /api/tracking/:patientId/data
  */
 async function getTrackingData(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid patient ID'
+        });
+    }
+    
+    const conditionType = req.query.conditionType;
     
     try {
-        const tracking = await trackingService.getOrCreateTracking(patientId);
+        let allTracking;
         
+        if (conditionType) {
+            // Get specific condition
+            allTracking = await Tracking.find({ patientId, conditionType }).lean();
+        } else {
+            // Get all conditions for patient (no sort - Cosmos DB doesn't support it without index)
+            allTracking = await Tracking.find({ patientId }).lean();
+        }
+        
+        if (!allTracking || allTracking.length === 0) {
+            return res.status(200).json({
+                success: true,
+                data: null,
+                allConditions: []
+            });
+        }
+        
+        // Sort in memory by updatedAt (descending)
+        allTracking.sort((a, b) => {
+            const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+            const dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+            return dateB - dateA;
+        });
+        
+        // Return the most recently updated condition as primary, plus list of all
         return res.status(200).json({
             success: true,
-            data: tracking
+            data: allTracking[0],
+            allConditions: allTracking.map(t => ({
+                conditionType: t.conditionType,
+                entriesCount: t.entries ? t.entries.length : 0,
+                lastUpdated: t.updatedAt
+            }))
         });
     } catch (error) {
-        console.error('Error getting tracking data:', error);
+        console.error('Error getting tracking data:', error.message);
         insights.error({ message: 'Error getting tracking data', error: error.message, patientId });
         return res.status(500).json({
             success: false,
@@ -206,14 +246,22 @@ async function getStatistics(req, res) {
 /**
  * Delete tracking data for a patient
  * DELETE /api/tracking/:patientId
+ * Query params: conditionType (optional) - if provided, deletes only that condition
  */
 async function deleteTrackingData(req, res) {
     const patientId = crypt.decrypt(req.params.patientId);
+    const { conditionType } = req.query;
     
     try {
-        await Tracking.deleteOne({ patientId });
-        
-        console.log('Tracking data deleted:', { patientId });
+        if (conditionType) {
+            // Delete specific condition
+            await trackingService.deleteTrackingByCondition(patientId, conditionType);
+            console.log('Tracking condition deleted:', { patientId, conditionType });
+        } else {
+            // Delete all conditions for patient
+            await Tracking.deleteMany({ patientId });
+            console.log('All tracking data deleted:', { patientId });
+        }
         
         return res.status(200).json({
             success: true,
@@ -225,6 +273,46 @@ async function deleteTrackingData(req, res) {
         return res.status(500).json({
             success: false,
             message: 'Error deleting tracking data'
+        });
+    }
+}
+
+/**
+ * Delete entries in a date range
+ * DELETE /api/tracking/:patientId/entries-range
+ */
+async function deleteEntriesInRange(req, res) {
+    const patientId = crypt.decrypt(req.params.patientId);
+    const { conditionType, startDate, endDate } = req.body;
+    
+    if (!conditionType || !startDate || !endDate) {
+        return res.status(400).json({
+            success: false,
+            message: 'conditionType, startDate and endDate are required'
+        });
+    }
+    
+    try {
+        const tracking = await trackingService.deleteEntriesInRange(
+            patientId, 
+            conditionType, 
+            new Date(startDate), 
+            new Date(endDate)
+        );
+        
+        console.log('Entries deleted in range:', { patientId, conditionType, startDate, endDate });
+        
+        return res.status(200).json({
+            success: true,
+            data: tracking,
+            message: 'Entries deleted successfully'
+        });
+    } catch (error) {
+        console.error('Error deleting entries in range:', error);
+        insights.error({ message: 'Error deleting entries in range', error: error.message, patientId });
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Error deleting entries'
         });
     }
 }
@@ -272,5 +360,6 @@ module.exports = {
     generateInsights,
     getStatistics,
     deleteTrackingData,
-    deleteEntry
+    deleteEntry,
+    deleteEntriesInRange
 };

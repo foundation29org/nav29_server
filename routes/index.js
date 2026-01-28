@@ -179,6 +179,7 @@ api.post('/tracking/:patientId/insights', auth.isAuthPatient(roles.All), checkAp
 api.get('/tracking/:patientId/stats', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.getStatistics)
 api.delete('/tracking/:patientId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteTrackingData)
 api.delete('/tracking/:patientId/entry/:entryId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteEntry)
+api.post('/tracking/:patientId/delete-range', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteEntriesInRange)
 
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)

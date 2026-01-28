@@ -71,9 +71,8 @@ const TrackingSchema = Schema({
     updatedAt: { type: Date, default: Date.now }
 });
 
-// Index for efficient queries
-TrackingSchema.index({ patientId: 1 });
-TrackingSchema.index({ 'entries.date': -1 });
+// Note: Indexes are managed by Cosmos DB, not Mongoose
+// Cosmos DB automatically indexes all properties by default
 
 // Update timestamp on save
 TrackingSchema.pre('save', function(next) {

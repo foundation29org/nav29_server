@@ -419,17 +419,34 @@ function generateBasicInsights(stats, conditionType, lang) {
 }
 
 /**
- * Get or create tracking data for a patient
+ * Get all tracking conditions for a patient
  * @param {string} patientId - Patient ID
+ * @returns {Promise<Array>} Array of tracking documents
+ */
+async function getAllTrackingForPatient(patientId) {
+    // Note: No .sort() because Cosmos DB requires explicit index for sorting
+    const results = await Tracking.find({ patientId }).lean();
+    // Sort in memory by updatedAt (descending)
+    return results.sort((a, b) => {
+        const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return dateB - dateA;
+    });
+}
+
+/**
+ * Get or create tracking data for a patient and condition
+ * @param {string} patientId - Patient ID
+ * @param {string} conditionType - Condition type (epilepsy, diabetes, migraine, custom)
  * @returns {Promise<Object>} Tracking document
  */
-async function getOrCreateTracking(patientId) {
-    let tracking = await Tracking.findOne({ patientId });
+async function getOrCreateTracking(patientId, conditionType = 'epilepsy') {
+    let tracking = await Tracking.findOne({ patientId, conditionType });
     
     if (!tracking) {
         tracking = new Tracking({
             patientId,
-            conditionType: 'epilepsy',
+            conditionType,
             entries: [],
             medications: [],
             metadata: {
@@ -452,13 +469,13 @@ async function getOrCreateTracking(patientId) {
  */
 async function importTrackingData(patientId, rawData, detectedType) {
     const parsedData = parseTrackingData(rawData, detectedType);
+    const conditionType = parsedData.conditionType;
     
-    let tracking = await Tracking.findOne({ patientId });
+    // Find tracking for this specific condition
+    let tracking = await Tracking.findOne({ patientId, conditionType });
     
     if (tracking) {
-        // Merge with existing data
-        tracking.conditionType = parsedData.conditionType;
-        
+        // Merge with existing data for this condition
         // Add new entries (avoid duplicates by date)
         const existingDates = new Set(tracking.entries.map(e => new Date(e.date).getTime()));
         const newEntries = parsedData.entries.filter(e => !existingDates.has(new Date(e.date).getTime()));
@@ -481,6 +498,7 @@ async function importTrackingData(patientId, rawData, detectedType) {
         
         tracking.updatedAt = new Date();
     } else {
+        // Create new tracking for this condition
         tracking = new Tracking({
             patientId,
             ...parsedData
@@ -498,12 +516,8 @@ async function importTrackingData(patientId, rawData, detectedType) {
  * @returns {Promise<Object>} Updated tracking document
  */
 async function addManualEntry(patientId, entry) {
-    let tracking = await getOrCreateTracking(patientId);
-    
-    // Update condition type if provided
-    if (entry.conditionType) {
-        tracking.conditionType = entry.conditionType;
-    }
+    const conditionType = entry.conditionType || 'epilepsy';
+    let tracking = await getOrCreateTracking(patientId, conditionType);
     
     // Add the new entry
     tracking.entries.unshift({
@@ -526,12 +540,55 @@ async function addManualEntry(patientId, entry) {
     return tracking;
 }
 
+/**
+ * Delete tracking data for a specific condition
+ * @param {string} patientId - Patient ID
+ * @param {string} conditionType - Condition type to delete
+ * @returns {Promise<boolean>} Success status
+ */
+async function deleteTrackingByCondition(patientId, conditionType) {
+    const result = await Tracking.deleteOne({ patientId, conditionType });
+    return result.deletedCount > 0;
+}
+
+/**
+ * Delete entries in a date range for a condition
+ * @param {string} patientId - Patient ID
+ * @param {string} conditionType - Condition type
+ * @param {Date} startDate - Start date
+ * @param {Date} endDate - End date
+ * @returns {Promise<Object>} Updated tracking document
+ */
+async function deleteEntriesInRange(patientId, conditionType, startDate, endDate) {
+    const tracking = await Tracking.findOne({ patientId, conditionType });
+    
+    if (!tracking) {
+        throw new Error('Tracking not found');
+    }
+    
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    
+    tracking.entries = tracking.entries.filter(e => {
+        const entryDate = new Date(e.date);
+        return entryDate < start || entryDate > end;
+    });
+    
+    tracking.updatedAt = new Date();
+    await tracking.save();
+    
+    return tracking;
+}
+
 module.exports = {
     parseSeizureTrackerData,
     parseTrackingData,
     calculateStatistics,
     generateInsights,
+    getAllTrackingForPatient,
     getOrCreateTracking,
     importTrackingData,
-    addManualEntry
+    addManualEntry,
+    deleteTrackingByCondition,
+    deleteEntriesInRange
 };
