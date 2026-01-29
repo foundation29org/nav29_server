@@ -31,6 +31,7 @@ const f29azureserviceCtrl = require('../services/f29azure')
 const openShareCtrl = require('../controllers/all/openshare')
 const feedbackCtrl = require('../services/feedback')
 const gocertiusCtrl = require('../services/gocertius')
+const whatsappCtrl = require('../controllers/whatsappController')
 const auth = require('../middlewares/auth')
 const roles = require('../middlewares/roles')
 const cors = require('cors');
@@ -265,6 +266,19 @@ api.get('/gocertius/getreportpdfurl/:reportId', checkApiKey, gocertiusCtrl.getRe
 api.get('/gocertius/getreportzip/:reportId', checkApiKey, gocertiusCtrl.getReportZip)
 
 api.post('/vote', feedbackCtrl.vote)
+
+// WhatsApp integration routes (from app - user authenticated)
+api.get('/whatsapp/status', auth.isAuth(roles.All), whatsappCtrl.getStatus)
+api.post('/whatsapp/generate-code', auth.isAuth(roles.All), whatsappCtrl.generateCode)
+api.delete('/whatsapp/unlink', auth.isAuth(roles.All), whatsappCtrl.unlink)
+
+// WhatsApp integration routes (from bot - API key authenticated)
+api.get('/whatsapp/session/:phoneNumber', checkApiKey, whatsappCtrl.getSessionByPhone)
+api.post('/whatsapp/verify-code', checkApiKey, whatsappCtrl.verifyCode)
+api.post('/whatsapp/unlink-by-phone', checkApiKey, whatsappCtrl.unlinkByPhone)
+api.get('/whatsapp/patients/:userId', checkApiKey, whatsappCtrl.getPatients)
+api.post('/whatsapp/set-patient', checkApiKey, whatsappCtrl.setActivePatient)
+api.post('/whatsapp/ask', checkApiKey, whatsappCtrl.ask)
 
 /*api.get('/testToken', auth, (req, res) => {
 	res.status(200).send(true)
