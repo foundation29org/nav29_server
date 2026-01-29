@@ -131,63 +131,19 @@ function extractTriggers(seizure) {
 }
 
 /**
- * Parse generic JSON format (with entries array)
- */
-function parseGenericData(rawData) {
-    const result = {
-        conditionType: rawData.conditionType || 'custom',
-        entries: [],
-        medications: [],
-        metadata: {
-            source: 'other',
-            importDate: new Date(),
-            originalFile: ''
-        }
-    };
-
-    if (rawData.entries && Array.isArray(rawData.entries)) {
-        result.entries = rawData.entries.map(entry => ({
-            date: entry.date ? new Date(entry.date) : new Date(),
-            type: entry.type || '',
-            duration: entry.duration || null,
-            severity: entry.severity || null,
-            value: entry.value || null,
-            triggers: entry.triggers || [],
-            notes: entry.notes || '',
-            customFields: entry.customFields || {}
-        })).filter(e => e.date && !isNaN(e.date.getTime()));
-    }
-
-    if (rawData.medications && Array.isArray(rawData.medications)) {
-        result.medications = rawData.medications;
-    }
-
-    return result;
-}
-
-/**
- * Detect and parse tracking data from various formats
+ * Parse and validate seizure tracking data
  * @param {Object} rawData - Raw JSON data
  * @param {string} detectedType - Type detected by frontend
  * @returns {Object} Normalized tracking data
  */
 function parseTrackingData(rawData, detectedType) {
-    // SeizureTracker format detection
+    // SeizureTracker format detection (primary supported format)
     if (rawData.Seizures && Array.isArray(rawData.Seizures)) {
         return parseSeizureTrackerData(rawData);
     }
 
-    // Generic format with entries
-    if (rawData.entries && Array.isArray(rawData.entries)) {
-        return parseGenericData(rawData);
-    }
-
-    // Try to parse as generic with the raw data as entries
-    if (Array.isArray(rawData)) {
-        return parseGenericData({ entries: rawData });
-    }
-
-    throw new Error('Unsupported data format');
+    // Unsupported format - only SeizureTracker is supported
+    throw new Error('Formato no soportado. Por favor usa un archivo exportado desde SeizureTracker.');
 }
 
 /**
@@ -419,34 +375,17 @@ function generateBasicInsights(stats, conditionType, lang) {
 }
 
 /**
- * Get all tracking conditions for a patient
+ * Get or create epilepsy tracking data for a patient
  * @param {string} patientId - Patient ID
- * @returns {Promise<Array>} Array of tracking documents
- */
-async function getAllTrackingForPatient(patientId) {
-    // Note: No .sort() because Cosmos DB requires explicit index for sorting
-    const results = await Tracking.find({ patientId }).lean();
-    // Sort in memory by updatedAt (descending)
-    return results.sort((a, b) => {
-        const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-        const dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-        return dateB - dateA;
-    });
-}
-
-/**
- * Get or create tracking data for a patient and condition
- * @param {string} patientId - Patient ID
- * @param {string} conditionType - Condition type (epilepsy, diabetes, migraine, custom)
  * @returns {Promise<Object>} Tracking document
  */
-async function getOrCreateTracking(patientId, conditionType = 'epilepsy') {
-    let tracking = await Tracking.findOne({ patientId, conditionType });
+async function getOrCreateTracking(patientId) {
+    let tracking = await Tracking.findOne({ patientId });
     
     if (!tracking) {
         tracking = new Tracking({
             patientId,
-            conditionType,
+            conditionType: 'epilepsy',
             entries: [],
             medications: [],
             metadata: {
@@ -461,27 +400,26 @@ async function getOrCreateTracking(patientId, conditionType = 'epilepsy') {
 }
 
 /**
- * Import tracking data for a patient
+ * Import seizure data from SeizureTracker for a patient
  * @param {string} patientId - Patient ID
- * @param {Object} rawData - Raw JSON data
+ * @param {Object} rawData - Raw JSON data from SeizureTracker
  * @param {string} detectedType - Detected format type
  * @returns {Promise<Object>} Updated tracking document
  */
 async function importTrackingData(patientId, rawData, detectedType) {
     const parsedData = parseTrackingData(rawData, detectedType);
-    const conditionType = parsedData.conditionType;
     
-    // Find tracking for this specific condition
-    let tracking = await Tracking.findOne({ patientId, conditionType });
+    // Find existing tracking for this patient
+    let tracking = await Tracking.findOne({ patientId });
     
     if (tracking) {
-        // Merge with existing data for this condition
+        // Merge with existing data
         // Add new entries (avoid duplicates by date)
         const existingDates = new Set(tracking.entries.map(e => new Date(e.date).getTime()));
         const newEntries = parsedData.entries.filter(e => !existingDates.has(new Date(e.date).getTime()));
         tracking.entries = [...tracking.entries, ...newEntries];
         
-        // Sort by date
+        // Sort by date (newest first)
         tracking.entries.sort((a, b) => new Date(b.date) - new Date(a.date));
         
         // Update medications
@@ -498,9 +436,10 @@ async function importTrackingData(patientId, rawData, detectedType) {
         
         tracking.updatedAt = new Date();
     } else {
-        // Create new tracking for this condition
+        // Create new tracking
         tracking = new Tracking({
             patientId,
+            conditionType: 'epilepsy',
             ...parsedData
         });
     }
@@ -510,69 +449,28 @@ async function importTrackingData(patientId, rawData, detectedType) {
 }
 
 /**
- * Add a manual entry to tracking
+ * Add a manual seizure entry
  * @param {string} patientId - Patient ID
- * @param {Object} entry - Entry data
+ * @param {Object} entry - Seizure entry data
  * @returns {Promise<Object>} Updated tracking document
  */
 async function addManualEntry(patientId, entry) {
-    const conditionType = entry.conditionType || 'epilepsy';
-    let tracking = await getOrCreateTracking(patientId, conditionType);
+    let tracking = await getOrCreateTracking(patientId);
     
-    // Add the new entry
+    // Add the new seizure entry
     tracking.entries.unshift({
         date: new Date(entry.date),
         type: entry.type || '',
         duration: entry.duration || null,
         severity: entry.severity || null,
-        value: entry.value || null,
         triggers: entry.triggers || [],
         notes: entry.notes || '',
-        customFields: entry.customFields || {}
+        aura: entry.aura || false,
+        awareness: entry.awareness || ''
     });
     
-    // Sort by date
+    // Sort by date (newest first)
     tracking.entries.sort((a, b) => new Date(b.date) - new Date(a.date));
-    
-    tracking.updatedAt = new Date();
-    await tracking.save();
-    
-    return tracking;
-}
-
-/**
- * Delete tracking data for a specific condition
- * @param {string} patientId - Patient ID
- * @param {string} conditionType - Condition type to delete
- * @returns {Promise<boolean>} Success status
- */
-async function deleteTrackingByCondition(patientId, conditionType) {
-    const result = await Tracking.deleteOne({ patientId, conditionType });
-    return result.deletedCount > 0;
-}
-
-/**
- * Delete entries in a date range for a condition
- * @param {string} patientId - Patient ID
- * @param {string} conditionType - Condition type
- * @param {Date} startDate - Start date
- * @param {Date} endDate - End date
- * @returns {Promise<Object>} Updated tracking document
- */
-async function deleteEntriesInRange(patientId, conditionType, startDate, endDate) {
-    const tracking = await Tracking.findOne({ patientId, conditionType });
-    
-    if (!tracking) {
-        throw new Error('Tracking not found');
-    }
-    
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    
-    tracking.entries = tracking.entries.filter(e => {
-        const entryDate = new Date(e.date);
-        return entryDate < start || entryDate > end;
-    });
     
     tracking.updatedAt = new Date();
     await tracking.save();
@@ -585,10 +483,7 @@ module.exports = {
     parseTrackingData,
     calculateStatistics,
     generateInsights,
-    getAllTrackingForPatient,
     getOrCreateTracking,
     importTrackingData,
-    addManualEntry,
-    deleteTrackingByCondition,
-    deleteEntriesInRange
+    addManualEntry
 };

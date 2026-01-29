@@ -1,4 +1,4 @@
-// tracking schema - Patient condition tracking data
+// Epilepsy Tracking Schema - Seizure tracking data (SeizureTracker integration)
 'use strict'
 
 const mongoose = require('mongoose');
@@ -6,16 +6,14 @@ const Schema = mongoose.Schema;
 
 const { conndbdata } = require('../db_connect');
 
-// Schema for individual tracking entries (seizures, glucose readings, etc.)
-const TrackingEntrySchema = Schema({
+// Schema for individual seizure entries
+const SeizureEntrySchema = Schema({
     date: { type: Date, required: true },
-    type: { type: String, default: '' },
+    type: { type: String, default: '' },  // Tonic Clonic, Absence, Focal, etc.
     duration: { type: Number, default: null }, // in seconds
     severity: { type: Number, min: 1, max: 10, default: null },
-    value: { type: Number, default: null }, // for measurements like glucose
     triggers: [{ type: String }],
     notes: { type: String, default: '' },
-    customFields: { type: Schema.Types.Mixed, default: {} },
     // SeizureTracker specific fields
     timeHour: { type: Number, default: null },
     timeMin: { type: Number, default: null },
@@ -25,8 +23,8 @@ const TrackingEntrySchema = Schema({
     postictal: { type: Schema.Types.Mixed, default: {} }
 }, { _id: true });
 
-// Schema for medications associated with tracking
-const TrackingMedicationSchema = Schema({
+// Schema for anti-epileptic medications
+const MedicationSchema = Schema({
     name: { type: String, required: true },
     dose: { type: String, default: '' },
     doseValue: { type: Number, default: null },
@@ -38,20 +36,20 @@ const TrackingMedicationSchema = Schema({
     notes: { type: String, default: '' }
 }, { _id: true });
 
-// Main tracking data schema
-const TrackingSchema = Schema({
+// Main epilepsy tracking schema
+const EpilepsyTrackingSchema = Schema({
     patientId: { type: Schema.Types.ObjectId, ref: 'Patient', required: true },
     conditionType: { 
         type: String, 
-        enum: ['epilepsy', 'diabetes', 'migraine', 'custom'],
-        default: 'epilepsy'
+        default: 'epilepsy',
+        immutable: true  // Always epilepsy
     },
-    entries: [TrackingEntrySchema],
-    medications: [TrackingMedicationSchema],
+    entries: [SeizureEntrySchema],
+    medications: [MedicationSchema],
     metadata: {
         source: { 
             type: String, 
-            enum: ['seizuretracker', 'manual', 'diabetes_app', 'migraine_app', 'other'],
+            enum: ['seizuretracker', 'manual'],
             default: 'manual'
         },
         importDate: { type: Date, default: Date.now },
@@ -72,12 +70,11 @@ const TrackingSchema = Schema({
 });
 
 // Note: Indexes are managed by Cosmos DB, not Mongoose
-// Cosmos DB automatically indexes all properties by default
 
 // Update timestamp on save
-TrackingSchema.pre('save', function(next) {
+EpilepsyTrackingSchema.pre('save', function(next) {
     this.updatedAt = new Date();
     next();
 });
 
-module.exports = conndbdata.model('Tracking', TrackingSchema);
+module.exports = conndbdata.model('Tracking', EpilepsyTrackingSchema);

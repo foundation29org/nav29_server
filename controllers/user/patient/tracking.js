@@ -1,6 +1,6 @@
 /**
- * Tracking Controller
- * Handles patient tracking data endpoints
+ * Epilepsy Tracking Controller
+ * Handles seizure tracking data endpoints (SeizureTracker integration)
  */
 
 'use strict';
@@ -11,7 +11,7 @@ const insights = require('../../../services/insights');
 const crypt = require('../../../services/crypt');
 
 /**
- * Get all tracking data for a patient (all conditions)
+ * Get epilepsy tracking data for a patient
  * GET /api/tracking/:patientId/data
  */
 async function getTrackingData(req, res) {
@@ -26,43 +26,19 @@ async function getTrackingData(req, res) {
         });
     }
     
-    const conditionType = req.query.conditionType;
-    
     try {
-        let allTracking;
+        const tracking = await Tracking.findOne({ patientId }).lean();
         
-        if (conditionType) {
-            // Get specific condition
-            allTracking = await Tracking.find({ patientId, conditionType }).lean();
-        } else {
-            // Get all conditions for patient (no sort - Cosmos DB doesn't support it without index)
-            allTracking = await Tracking.find({ patientId }).lean();
-        }
-        
-        if (!allTracking || allTracking.length === 0) {
+        if (!tracking) {
             return res.status(200).json({
                 success: true,
-                data: null,
-                allConditions: []
+                data: null
             });
         }
         
-        // Sort in memory by updatedAt (descending)
-        allTracking.sort((a, b) => {
-            const dateA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
-            const dateB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
-            return dateB - dateA;
-        });
-        
-        // Return the most recently updated condition as primary, plus list of all
         return res.status(200).json({
             success: true,
-            data: allTracking[0],
-            allConditions: allTracking.map(t => ({
-                conditionType: t.conditionType,
-                entriesCount: t.entries ? t.entries.length : 0,
-                lastUpdated: t.updatedAt
-            }))
+            data: tracking
         });
     } catch (error) {
         console.error('Error getting tracking data:', error.message);
@@ -75,11 +51,21 @@ async function getTrackingData(req, res) {
 }
 
 /**
- * Import tracking data from JSON file
+ * Import seizure data from SeizureTracker JSON file
  * POST /api/tracking/:patientId/import
  */
 async function importTrackingData(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid patient ID'
+        });
+    }
+    
     const { rawData, detectedType, userId } = req.body;
     
     if (!rawData) {
@@ -92,10 +78,11 @@ async function importTrackingData(req, res) {
     try {
         const tracking = await trackingService.importTrackingData(patientId, rawData, detectedType);
         
-        console.log('Tracking data imported:', { 
+        console.log('Seizure data imported:', { 
             patientId, 
             userId,
-            entriesCount: tracking.entries.length,
+            seizuresCount: tracking.entries.length,
+            medicationsCount: tracking.medications.length,
             source: tracking.metadata.source
         });
         
@@ -115,50 +102,70 @@ async function importTrackingData(req, res) {
 }
 
 /**
- * Add a manual entry to tracking
+ * Add a manual seizure entry
  * POST /api/tracking/:patientId/entry
  */
 async function addEntry(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid patient ID'
+        });
+    }
+    
     const { entry, userId } = req.body;
     
     if (!entry || !entry.date) {
         return res.status(400).json({
             success: false,
-            message: 'Entry date is required'
+            message: 'Seizure date is required'
         });
     }
     
     try {
         const tracking = await trackingService.addManualEntry(patientId, entry);
         
-        console.log('Manual tracking entry added:', { 
+        console.log('Manual seizure entry added:', { 
             patientId, 
             userId,
-            conditionType: tracking.conditionType
+            seizureType: entry.type
         });
         
         return res.status(200).json({
             success: true,
             data: tracking,
-            message: 'Entry saved successfully'
+            message: 'Seizure saved successfully'
         });
     } catch (error) {
-        console.error('Error adding tracking entry:', error);
-        insights.error({ message: 'Error adding tracking entry', error: error.message, patientId });
+        console.error('Error adding seizure entry:', error);
+        insights.error({ message: 'Error adding seizure entry', error: error.message, patientId });
         return res.status(500).json({
             success: false,
-            message: 'Error saving entry'
+            message: 'Error saving seizure'
         });
     }
 }
 
 /**
- * Generate AI insights for tracking data
+ * Generate AI insights for seizure data
  * POST /api/tracking/:patientId/insights
  */
 async function generateInsights(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid patient ID'
+        });
+    }
+    
     const { lang, userId } = req.body;
     
     try {
@@ -167,7 +174,7 @@ async function generateInsights(req, res) {
         if (!tracking || tracking.entries.length === 0) {
             return res.status(400).json({
                 success: false,
-                message: 'No tracking data available'
+                message: 'No seizure data available'
             });
         }
         
@@ -189,7 +196,7 @@ async function generateInsights(req, res) {
         tracking.insightsGeneratedAt = new Date();
         await tracking.save();
         
-        console.log('Tracking insights generated:', { 
+        console.log('Seizure insights generated:', { 
             patientId, 
             userId,
             insightsCount: generatedInsights.length
@@ -201,8 +208,8 @@ async function generateInsights(req, res) {
             cached: false
         });
     } catch (error) {
-        console.error('Error generating tracking insights:', error);
-        insights.error({ message: 'Error generating tracking insights', error: error.message, patientId });
+        console.error('Error generating seizure insights:', error);
+        insights.error({ message: 'Error generating seizure insights', error: error.message, patientId });
         return res.status(500).json({
             success: false,
             message: 'Error generating insights'
@@ -211,11 +218,20 @@ async function generateInsights(req, res) {
 }
 
 /**
- * Get tracking statistics
+ * Get seizure statistics
  * GET /api/tracking/:patientId/stats
  */
 async function getStatistics(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid patient ID'
+        });
+    }
     
     try {
         const tracking = await Tracking.findOne({ patientId });
@@ -234,8 +250,8 @@ async function getStatistics(req, res) {
             stats
         });
     } catch (error) {
-        console.error('Error getting tracking statistics:', error);
-        insights.error({ message: 'Error getting tracking statistics', error: error.message, patientId });
+        console.error('Error getting seizure statistics:', error);
+        insights.error({ message: 'Error getting seizure statistics', error: error.message, patientId });
         return res.status(500).json({
             success: false,
             message: 'Error retrieving statistics'
@@ -244,85 +260,121 @@ async function getStatistics(req, res) {
 }
 
 /**
- * Delete tracking data for a patient
+ * Delete all seizure tracking data for a patient
  * DELETE /api/tracking/:patientId
- * Query params: conditionType (optional) - if provided, deletes only that condition
  */
 async function deleteTrackingData(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
-    const { conditionType } = req.query;
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid patient ID'
+        });
+    }
     
     try {
-        if (conditionType) {
-            // Delete specific condition
-            await trackingService.deleteTrackingByCondition(patientId, conditionType);
-            console.log('Tracking condition deleted:', { patientId, conditionType });
-        } else {
-            // Delete all conditions for patient
-            await Tracking.deleteMany({ patientId });
-            console.log('All tracking data deleted:', { patientId });
-        }
+        await Tracking.deleteOne({ patientId });
+        console.log('Seizure tracking data deleted:', { patientId });
         
         return res.status(200).json({
             success: true,
-            message: 'Tracking data deleted successfully'
+            message: 'Seizure data deleted successfully'
         });
     } catch (error) {
-        console.error('Error deleting tracking data:', error);
-        insights.error({ message: 'Error deleting tracking data', error: error.message, patientId });
+        console.error('Error deleting seizure data:', error);
+        insights.error({ message: 'Error deleting seizure data', error: error.message, patientId });
         return res.status(500).json({
             success: false,
-            message: 'Error deleting tracking data'
+            message: 'Error deleting seizure data'
         });
     }
 }
 
 /**
- * Delete entries in a date range
- * DELETE /api/tracking/:patientId/entries-range
+ * Delete seizures in a date range
+ * POST /api/tracking/:patientId/delete-range
  */
 async function deleteEntriesInRange(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
-    const { conditionType, startDate, endDate } = req.body;
-    
-    if (!conditionType || !startDate || !endDate) {
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
         return res.status(400).json({
             success: false,
-            message: 'conditionType, startDate and endDate are required'
+            message: 'Invalid patient ID'
+        });
+    }
+    
+    const { startDate, endDate } = req.body;
+    
+    if (!startDate || !endDate) {
+        return res.status(400).json({
+            success: false,
+            message: 'startDate and endDate are required'
         });
     }
     
     try {
-        const tracking = await trackingService.deleteEntriesInRange(
-            patientId, 
-            conditionType, 
-            new Date(startDate), 
-            new Date(endDate)
-        );
+        const tracking = await Tracking.findOne({ patientId });
         
-        console.log('Entries deleted in range:', { patientId, conditionType, startDate, endDate });
+        if (!tracking) {
+            return res.status(404).json({
+                success: false,
+                message: 'No seizure data found'
+            });
+        }
+        
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        
+        const originalCount = tracking.entries.length;
+        tracking.entries = tracking.entries.filter(e => {
+            const entryDate = new Date(e.date);
+            return entryDate < start || entryDate > end;
+        });
+        const deletedCount = originalCount - tracking.entries.length;
+        
+        tracking.updatedAt = new Date();
+        await tracking.save();
+        
+        console.log('Seizures deleted in range:', { patientId, startDate, endDate, deletedCount });
         
         return res.status(200).json({
             success: true,
             data: tracking,
-            message: 'Entries deleted successfully'
+            deletedCount,
+            message: `${deletedCount} seizures deleted successfully`
         });
     } catch (error) {
-        console.error('Error deleting entries in range:', error);
-        insights.error({ message: 'Error deleting entries in range', error: error.message, patientId });
+        console.error('Error deleting seizures in range:', error);
+        insights.error({ message: 'Error deleting seizures in range', error: error.message, patientId });
         return res.status(500).json({
             success: false,
-            message: error.message || 'Error deleting entries'
+            message: 'Error deleting seizures'
         });
     }
 }
 
 /**
- * Delete a specific entry from tracking
+ * Delete a specific seizure entry
  * DELETE /api/tracking/:patientId/entry/:entryId
  */
 async function deleteEntry(req, res) {
-    const patientId = crypt.decrypt(req.params.patientId);
+    let patientId;
+    try {
+        patientId = crypt.decrypt(req.params.patientId);
+    } catch (decryptError) {
+        console.error('Error decrypting patientId:', decryptError);
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid patient ID'
+        });
+    }
+    
     const { entryId } = req.params;
     
     try {
@@ -331,24 +383,33 @@ async function deleteEntry(req, res) {
         if (!tracking) {
             return res.status(404).json({
                 success: false,
-                message: 'Tracking data not found'
+                message: 'No seizure data found'
             });
         }
         
+        const originalLength = tracking.entries.length;
         tracking.entries = tracking.entries.filter(e => e._id.toString() !== entryId);
+        
+        if (tracking.entries.length === originalLength) {
+            return res.status(404).json({
+                success: false,
+                message: 'Seizure entry not found'
+            });
+        }
+        
         await tracking.save();
         
         return res.status(200).json({
             success: true,
             data: tracking,
-            message: 'Entry deleted successfully'
+            message: 'Seizure deleted successfully'
         });
     } catch (error) {
-        console.error('Error deleting tracking entry:', error);
-        insights.error({ message: 'Error deleting tracking entry', error: error.message, patientId, entryId });
+        console.error('Error deleting seizure entry:', error);
+        insights.error({ message: 'Error deleting seizure entry', error: error.message, patientId, entryId });
         return res.status(500).json({
             success: false,
-            message: 'Error deleting entry'
+            message: 'Error deleting seizure'
         });
     }
 }
