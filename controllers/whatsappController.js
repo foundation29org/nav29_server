@@ -324,6 +324,16 @@ async function ask(req, res) {
         console.log('[WhatsApp] ask - patientId:', patientId)
         console.log('[WhatsApp] ask - invoking agent synchronously...')
 
+        // Mock pubsub client that does nothing (for sync WhatsApp calls)
+        const mockPubsub = {
+            sendToUser: (userId, message) => {
+                // Log status updates for debugging but don't actually send
+                if (message.status) {
+                    console.log(`[WhatsApp] agent status: ${message.status}`)
+                }
+            }
+        }
+
         // Call the agent directly and wait for response (synchronous for WhatsApp)
         const result = await graph.invoke({
             messages: [
@@ -337,7 +347,7 @@ async function ask(req, res) {
                 patientId: patientId,
                 systemTime: new Date().toISOString(),
                 tracer: null,
-                context: [], // No context for WhatsApp (simplified)
+                context: [], // TODO: Load patient context for full functionality
                 docs: [],
                 indexName: patientId,
                 containerName: containerName,
@@ -347,7 +357,7 @@ async function ask(req, res) {
                 medicalLevel: user.medicalLevel || '1',
                 userRole: user.role || 'User',
                 originalQuestion: question,
-                pubsubClient: null, // No pubsub for sync calls
+                pubsubClient: mockPubsub, // Mock pubsub for sync calls
                 chatMode: 'fast'
             },
             callbacks: []
