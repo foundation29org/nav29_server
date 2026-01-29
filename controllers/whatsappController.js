@@ -324,12 +324,20 @@ async function ask(req, res) {
         console.log('[WhatsApp] ask - patientId:', patientId)
         console.log('[WhatsApp] ask - invoking agent synchronously...')
 
-        // Mock pubsub client that does nothing (for sync WhatsApp calls)
+        // Capture suggestions from agent
+        let capturedSuggestions = []
+
+        // Mock pubsub client that captures suggestions (for sync WhatsApp calls)
         const mockPubsub = {
             sendToUser: (userId, message) => {
-                // Log status updates for debugging but don't actually send
+                // Log status updates for debugging
                 if (message.status) {
                     console.log(`[WhatsApp] agent status: ${message.status}`)
+                }
+                // Capture suggestions when they are generated
+                if (message.suggestions && Array.isArray(message.suggestions)) {
+                    capturedSuggestions = message.suggestions
+                    console.log(`[WhatsApp] captured ${capturedSuggestions.length} suggestions`)
                 }
             }
         }
@@ -358,7 +366,8 @@ async function ask(req, res) {
                 userRole: user.role || 'User',
                 originalQuestion: question,
                 pubsubClient: mockPubsub, // Mock pubsub for sync calls
-                chatMode: 'fast'
+                chatMode: 'fast',
+                isWhatsApp: true // Flag to skip saving to DB
             },
             callbacks: []
         })
@@ -377,7 +386,7 @@ async function ask(req, res) {
 
         return res.status(200).json({
             answer: answer,
-            suggestions: []
+            suggestions: capturedSuggestions.slice(0, 4) // Max 4 suggestions
         })
     } catch (err) {
         console.error('[WhatsApp] ask - Error:', err.message)

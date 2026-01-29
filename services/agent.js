@@ -385,6 +385,12 @@ async function saveContext(state, langGraphConfig) {
     langGraphConfig.configurable.pubsubClient.sendToUser(langGraphConfig.configurable.userId, message)
 
     // Guardar los mensajes y sugerencias en la BD para que estén disponibles cuando el usuario vuelva
+    // Skip saving for WhatsApp calls (userId is not encrypted)
+    if (langGraphConfig.configurable.isWhatsApp) {
+      console.log('[saveContext] Skipping DB save for WhatsApp call');
+      return {vectorStore: state.vectorStore};
+    }
+    
     try {
       const patientId = langGraphConfig.configurable.patientId;
       // Desencriptar userId para mantener consistencia con el formato anterior de la BD
