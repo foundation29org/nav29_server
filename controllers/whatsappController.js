@@ -3,7 +3,8 @@
 const User = require('../models/user')
 const Patient = require('../models/patient')
 const crypto = require('crypto')
-const langchainService = require('../services/langchain')
+const { graph } = require('../services/agent')
+const crypt = require('../services/crypt')
 
 /**
  * WhatsApp Integration Controller
@@ -282,7 +283,7 @@ async function setActivePatient(req, res) {
     }
 }
 
-// Ask Navigator (called by bot)
+// Ask Navigator (called by bot) - Synchronous version for WhatsApp
 async function ask(req, res) {
     try {
         const { phoneNumber, question } = req.body
@@ -308,7 +309,7 @@ async function ask(req, res) {
                 { createdBy: user._id },
                 { sharedWith: user._id }
             ]
-        }).select('_id patientName').limit(1)
+        }).select('_id patientName country').limit(1)
 
         console.log('[WhatsApp] ask - patients count:', patients.length)
 
@@ -316,26 +317,57 @@ async function ask(req, res) {
             return res.status(400).json({ error: true, message: 'No patients found' })
         }
 
-        const patientId = patients[0]._id
+        const patient = patients[0]
+        const patientId = patient._id.toString()
+        const containerName = crypt.encrypt(patientId).substr(0, 30) // Simplified container name
+        
         console.log('[WhatsApp] ask - patientId:', patientId)
-        console.log('[WhatsApp] ask - calling langchainService.callNavigator...')
+        console.log('[WhatsApp] ask - invoking agent synchronously...')
 
-        // Call Navigator service
-        const response = await langchainService.callNavigator(
-            patientId.toString(),
-            user._id.toString(),
-            question,
-            user.lang || 'es',
-            [], // context
-            user.role || 'User',
-            user.medicalLevel || '1'
-        )
+        // Call the agent directly and wait for response (synchronous for WhatsApp)
+        const result = await graph.invoke({
+            messages: [
+                {
+                    role: "user",
+                    content: question,
+                },
+            ],
+        }, {
+            configurable: {
+                patientId: patientId,
+                systemTime: new Date().toISOString(),
+                tracer: null,
+                context: [], // No context for WhatsApp (simplified)
+                docs: [],
+                indexName: patientId,
+                containerName: containerName,
+                userId: user._id.toString(),
+                userLang: user.lang || 'es',
+                patientCountry: patient.country || null,
+                medicalLevel: user.medicalLevel || '1',
+                userRole: user.role || 'User',
+                originalQuestion: question,
+                pubsubClient: null, // No pubsub for sync calls
+                chatMode: 'fast'
+            },
+            callbacks: []
+        })
 
-        console.log('[WhatsApp] ask - Navigator response received')
+        console.log('[WhatsApp] ask - Agent response received')
+
+        // Extract the answer from the agent result
+        let answer = 'No se encontró respuesta.'
+        if (result && result.messages && result.messages.length > 0) {
+            // Get the last AI message
+            const lastMessage = result.messages[result.messages.length - 1]
+            if (lastMessage && lastMessage.content) {
+                answer = lastMessage.content
+            }
+        }
 
         return res.status(200).json({
-            answer: response.response || response.answer || 'No se encontró respuesta.',
-            suggestions: response.suggestions || []
+            answer: answer,
+            suggestions: []
         })
     } catch (err) {
         console.error('[WhatsApp] ask - Error:', err.message)
