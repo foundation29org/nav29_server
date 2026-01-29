@@ -209,13 +209,31 @@ async function verifyCode(req, res) {
 async function getPatients(req, res) {
     try {
         const userId = req.params.userId
+        const mongoose = require('mongoose')
+
+        console.log('[WhatsApp] getPatients - userId:', userId)
+
+        // Convert to ObjectId if valid
+        let userObjectId
+        try {
+            userObjectId = new mongoose.Types.ObjectId(userId)
+        } catch (e) {
+            console.log('[WhatsApp] getPatients - Invalid ObjectId, using string')
+            userObjectId = userId
+        }
+
+        // Log user info for debugging
+        const user = await User.findById(userObjectId).select('email')
+        console.log('[WhatsApp] getPatients - user email:', user ? user.email : 'not found')
 
         const patients = await Patient.find({
             $or: [
-                { createdBy: userId },
-                { sharedWith: userId }
+                { createdBy: userObjectId },
+                { sharedWith: userObjectId }
             ]
         }).select('_id patientName')
+
+        console.log('[WhatsApp] getPatients - found:', patients.length, 'patients')
 
         return res.status(200).json({
             patients: patients.map(p => ({
@@ -224,7 +242,7 @@ async function getPatients(req, res) {
             }))
         })
     } catch (err) {
-        console.error('Error getting patients for WhatsApp:', err)
+        console.error('[WhatsApp] getPatients - Error:', err)
         return res.status(500).json({ message: 'Error getting patients' })
     }
 }
@@ -269,12 +287,17 @@ async function ask(req, res) {
     try {
         const { phoneNumber, question } = req.body
 
+        console.log('[WhatsApp] ask - phoneNumber:', phoneNumber)
+        console.log('[WhatsApp] ask - question:', question)
+
         if (!phoneNumber || !question) {
             return res.status(400).json({ message: 'Phone number and question are required' })
         }
 
         // Find user by phone
         const user = await User.findOne({ whatsappPhone: phoneNumber })
+        console.log('[WhatsApp] ask - user found:', user ? user._id : 'null')
+        
         if (!user) {
             return res.status(404).json({ error: true, message: 'User not linked' })
         }
@@ -287,11 +310,15 @@ async function ask(req, res) {
             ]
         }).select('_id patientName').limit(1)
 
+        console.log('[WhatsApp] ask - patients count:', patients.length)
+
         if (patients.length === 0) {
             return res.status(400).json({ error: true, message: 'No patients found' })
         }
 
         const patientId = patients[0]._id
+        console.log('[WhatsApp] ask - patientId:', patientId)
+        console.log('[WhatsApp] ask - calling langchainService.callNavigator...')
 
         // Call Navigator service
         const response = await langchainService.callNavigator(
@@ -304,12 +331,15 @@ async function ask(req, res) {
             user.medicalLevel || '1'
         )
 
+        console.log('[WhatsApp] ask - Navigator response received')
+
         return res.status(200).json({
             answer: response.response || response.answer || 'No se encontró respuesta.',
             suggestions: response.suggestions || []
         })
     } catch (err) {
-        console.error('Error in WhatsApp ask:', err)
+        console.error('[WhatsApp] ask - Error:', err.message)
+        console.error('[WhatsApp] ask - Stack:', err.stack)
         return res.status(500).json({ error: true, message: 'Error processing question' })
     }
 }
