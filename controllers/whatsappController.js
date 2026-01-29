@@ -163,6 +163,9 @@ async function verifyCode(req, res) {
     try {
         const { phoneNumber, code } = req.body
 
+        console.log('[WhatsApp] verifyCode - phoneNumber:', phoneNumber)
+        console.log('[WhatsApp] verifyCode - code:', code)
+
         if (!phoneNumber || !code) {
             return res.status(400).json({ message: 'Phone number and code are required' })
         }
@@ -171,6 +174,9 @@ async function verifyCode(req, res) {
             whatsappVerificationCode: code.toUpperCase(),
             whatsappVerificationExpires: { $gt: new Date() }
         })
+
+        console.log('[WhatsApp] verifyCode - user found:', user ? user._id : 'null')
+        console.log('[WhatsApp] verifyCode - user email:', user ? user.email : 'null')
 
         if (!user) {
             return res.status(400).json({ 
@@ -185,6 +191,8 @@ async function verifyCode(req, res) {
         user.whatsappVerificationCode = null
         user.whatsappVerificationExpires = null
         await user.save()
+
+        console.log('[WhatsApp] verifyCode - User linked successfully:', user._id, 'phone:', phoneNumber)
 
         return res.status(200).json({
             success: true,
