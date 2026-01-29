@@ -286,10 +286,11 @@ async function setActivePatient(req, res) {
 // Ask Navigator (called by bot) - Synchronous version for WhatsApp
 async function ask(req, res) {
     try {
-        const { phoneNumber, question } = req.body
+        const { phoneNumber, question, patientId: requestedPatientId } = req.body
 
         console.log('[WhatsApp] ask - phoneNumber:', phoneNumber)
         console.log('[WhatsApp] ask - question:', question)
+        console.log('[WhatsApp] ask - requestedPatientId:', requestedPatientId)
 
         if (!phoneNumber || !question) {
             return res.status(400).json({ message: 'Phone number and question are required' })
@@ -303,25 +304,44 @@ async function ask(req, res) {
             return res.status(404).json({ error: true, message: 'User not linked' })
         }
 
-        // Get patients to find active one (for now, use first one)
-        const patients = await Patient.find({
-            $or: [
-                { createdBy: user._id },
-                { sharedWith: user._id }
-            ]
-        }).select('_id patientName country').limit(1)
+        // If patientId is provided, use it; otherwise fall back to first patient
+        let patient
+        if (requestedPatientId) {
+            // Validate that the patient belongs to or is shared with this user
+            patient = await Patient.findOne({
+                _id: requestedPatientId,
+                $or: [
+                    { createdBy: user._id },
+                    { sharedWith: user._id }
+                ]
+            }).select('_id patientName country')
+            
+            if (!patient) {
+                console.log('[WhatsApp] ask - Patient not found or not authorized:', requestedPatientId)
+                return res.status(400).json({ error: true, message: 'Patient not found or not authorized' })
+            }
+        } else {
+            // Fallback: get first patient
+            const patients = await Patient.find({
+                $or: [
+                    { createdBy: user._id },
+                    { sharedWith: user._id }
+                ]
+            }).select('_id patientName country').limit(1)
 
-        console.log('[WhatsApp] ask - patients count:', patients.length)
+            console.log('[WhatsApp] ask - No patientId provided, falling back to first patient')
 
-        if (patients.length === 0) {
-            return res.status(400).json({ error: true, message: 'No patients found' })
+            if (patients.length === 0) {
+                return res.status(400).json({ error: true, message: 'No patients found' })
+            }
+            patient = patients[0]
         }
 
-        const patient = patients[0]
         const patientId = patient._id.toString()
         const containerName = crypt.encrypt(patientId).substr(0, 30) // Simplified container name
         
         console.log('[WhatsApp] ask - patientId:', patientId)
+        console.log('[WhatsApp] ask - patientName:', patient.patientName)
         console.log('[WhatsApp] ask - invoking agent synchronously...')
 
         // Capture suggestions from agent
