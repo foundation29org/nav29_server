@@ -13,6 +13,30 @@ const emailService = require('../services/email')
  * Handles linking/unlinking WhatsApp accounts and generating verification codes
  */
 
+// In-memory cache for infographic tokens (token -> { imageUrl, expiresAt })
+// Tokens expire after 24 hours
+const infographicTokens = new Map()
+
+// Cleanup expired tokens every hour
+setInterval(() => {
+    const now = Date.now()
+    for (const [token, data] of infographicTokens.entries()) {
+        if (data.expiresAt < now) {
+            infographicTokens.delete(token)
+        }
+    }
+}, 60 * 60 * 1000)
+
+/**
+ * Generate a short token for infographic access
+ */
+function generateInfographicToken(imageUrl) {
+    const token = crypto.randomBytes(16).toString('hex')
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000 // 24 hours
+    infographicTokens.set(token, { imageUrl, expiresAt })
+    return token
+}
+
 // Get WhatsApp linking status for current user (from app)
 async function getStatus(req, res) {
     try {
@@ -768,10 +792,22 @@ async function getInfographic(req, res) {
 
         if (infographicResult && infographicResult.success) {
             console.log('[WhatsApp] getInfographic - Success, imageUrl:', infographicResult.imageUrl?.substring(0, 50) + '...')
+            
+            // Generate a proxy token for the image
+            const proxyToken = generateInfographicToken(infographicResult.imageUrl)
+            // Build proxy URL - use request host or fallback to nav29.org
+            const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https'
+            const host = req.headers['x-forwarded-host'] || req.headers.host || 'nav29.org'
+            const baseUrl = `${protocol}://${host}/api`
+            const proxyUrl = `${baseUrl}/whatsapp/infographic/view/${proxyToken}`
+            
+            console.log('[WhatsApp] getInfographic - Proxy URL generated:', proxyUrl)
+            
             return res.status(200).json({
                 success: true,
                 patientName: patient.patientName,
-                imageUrl: infographicResult.imageUrl,
+                imageUrl: proxyUrl, // URL proxy limpia
+                originalUrl: infographicResult.imageUrl, // URL original (para debug)
                 cached: infographicResult.cached,
                 isBasic: infographicResult.isBasic
             })
@@ -782,6 +818,54 @@ async function getInfographic(req, res) {
     } catch (err) {
         console.error('[WhatsApp] getInfographic - Error:', err.message)
         return res.status(500).json({ error: true, message: 'Error generating infographic' })
+    }
+}
+
+// Serve infographic image via proxy (public endpoint, no auth needed)
+async function serveInfographic(req, res) {
+    try {
+        const { token } = req.params
+        
+        if (!token) {
+            return res.status(400).send('Token required')
+        }
+        
+        const tokenData = infographicTokens.get(token)
+        
+        if (!tokenData) {
+            return res.status(404).send('Infographic not found or expired')
+        }
+        
+        if (tokenData.expiresAt < Date.now()) {
+            infographicTokens.delete(token)
+            return res.status(410).send('Infographic expired')
+        }
+        
+        // Fetch the image from Azure and pipe it to the response
+        const https = require('https')
+        const http = require('http')
+        const url = new URL(tokenData.imageUrl)
+        const protocol = url.protocol === 'https:' ? https : http
+        
+        protocol.get(tokenData.imageUrl, (imageResponse) => {
+            if (imageResponse.statusCode !== 200) {
+                console.error('[WhatsApp] serveInfographic - Azure returned:', imageResponse.statusCode)
+                return res.status(502).send('Error fetching image')
+            }
+            
+            // Set content type for PNG image
+            res.setHeader('Content-Type', 'image/png')
+            res.setHeader('Cache-Control', 'public, max-age=86400') // Cache for 24h
+            
+            // Pipe the image directly to the response
+            imageResponse.pipe(res)
+        }).on('error', (err) => {
+            console.error('[WhatsApp] serveInfographic - Error fetching image:', err.message)
+            res.status(500).send('Error fetching image')
+        })
+    } catch (err) {
+        console.error('[WhatsApp] serveInfographic - Error:', err.message)
+        return res.status(500).send('Error serving infographic')
     }
 }
 
@@ -797,5 +881,6 @@ module.exports = {
     ask,
     addEvent,
     getSummary,
-    getInfographic
+    getInfographic,
+    serveInfographic
 }
