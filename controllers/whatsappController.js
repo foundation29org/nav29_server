@@ -451,6 +451,94 @@ async function ask(req, res) {
     }
 }
 
+// Add event for a patient (called by bot)
+async function addEvent(req, res) {
+    try {
+        const { phoneNumber, patientId: encryptedPatientId, event } = req.body
+
+        console.log('[WhatsApp] addEvent - phoneNumber:', phoneNumber)
+        console.log('[WhatsApp] addEvent - event:', JSON.stringify(event))
+
+        if (!phoneNumber || !encryptedPatientId || !event) {
+            return res.status(400).json({ message: 'Phone number, patient ID and event are required' })
+        }
+
+        // Find user by phone
+        const user = await User.findOne({ whatsappPhone: phoneNumber })
+        if (!user) {
+            return res.status(404).json({ error: true, message: 'User not linked' })
+        }
+
+        // Decrypt patientId
+        let patientId
+        try {
+            patientId = crypt.decrypt(encryptedPatientId)
+        } catch (e) {
+            console.error('[WhatsApp] addEvent - Failed to decrypt patientId:', e.message)
+            return res.status(400).json({ error: true, message: 'Invalid patient ID' })
+        }
+
+        // Validate that the patient belongs to this user
+        const patient = await Patient.findOne({
+            _id: patientId,
+            $or: [
+                { createdBy: user._id },
+                { sharedWith: user._id }
+            ]
+        }).select('_id patientName')
+
+        if (!patient) {
+            return res.status(403).json({ error: true, message: 'Patient not authorized' })
+        }
+
+        // Validate required event fields
+        if (!event.name || !event.key || !event.date) {
+            return res.status(400).json({ message: 'Event must have name, key and date' })
+        }
+
+        // Valid event keys
+        const validKeys = ['diagnosis', 'treatment', 'test', 'appointment', 'symptom', 'medication', 'other']
+        if (!validKeys.includes(event.key)) {
+            return res.status(400).json({ message: 'Invalid event key' })
+        }
+
+        // Create the event
+        const Events = require('../models/events')
+        const eventdb = new Events({
+            date: new Date(event.date),
+            dateEnd: event.dateEnd ? new Date(event.dateEnd) : null,
+            name: event.name,
+            notes: event.notes || '',
+            key: event.key,
+            origin: 'whatsapp',
+            createdBy: patientId,
+            addedBy: user._id
+        })
+
+        await eventdb.save()
+
+        console.log('[WhatsApp] addEvent - Event saved successfully:', eventdb._id)
+
+        // Clear summary cache (same as in events controller)
+        try {
+            const f29azureService = require('../services/f29azure')
+            const containerName = crypt.encrypt(patientId).substr(0, 30)
+            await f29azureService.deleteSummaryFilesBlobsInFolder(containerName)
+        } catch (e) {
+            console.log('[WhatsApp] addEvent - Could not clear summary cache:', e.message)
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: 'Event created successfully',
+            eventId: eventdb._id
+        })
+    } catch (err) {
+        console.error('[WhatsApp] addEvent - Error:', err.message)
+        return res.status(500).json({ error: true, message: 'Error creating event' })
+    }
+}
+
 module.exports = {
     getStatus,
     getSessionByPhone,
@@ -460,5 +548,6 @@ module.exports = {
     verifyCode,
     getPatients,
     setActivePatient,
-    ask
+    ask,
+    addEvent
 }

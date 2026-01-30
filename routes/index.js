@@ -279,6 +279,7 @@ api.post('/whatsapp/unlink-by-phone', checkApiKey, whatsappCtrl.unlinkByPhone)
 api.post('/whatsapp/patients/:userId', checkApiKey, whatsappCtrl.getPatients)
 api.post('/whatsapp/set-patient', checkApiKey, whatsappCtrl.setActivePatient)
 api.post('/whatsapp/ask', checkApiKey, whatsappCtrl.ask)
+api.post('/whatsapp/add-event', checkApiKey, whatsappCtrl.addEvent)
 
 /*api.get('/testToken', auth, (req, res) => {
 	res.status(200).send(true)
