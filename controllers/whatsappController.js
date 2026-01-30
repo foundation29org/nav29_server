@@ -584,16 +584,6 @@ async function getSummary(req, res) {
             return res.status(403).json({ error: true, message: 'Patient not authorized' })
         }
 
-        // Check if patient has a generated summary
-        if (patient.summary !== 'true') {
-            console.log('[WhatsApp] getSummary - No summary available for patient')
-            return res.status(200).json({
-                success: false,
-                patientName: patient.patientName,
-                message: 'No hay resumen disponible. Genera primero un resumen desde la app Nav29.'
-            })
-        }
-
         // Get the real summary from Azure Blob Storage (final_card.txt)
         const f29azure = require('../services/f29azure')
         const summaryPath = 'raitofile/summary/final_card.txt'
@@ -611,12 +601,62 @@ async function getSummary(req, res) {
         }
         
         if (!exists) {
-            console.log('[WhatsApp] getSummary - Summary file not found')
-            return res.status(200).json({
-                success: false,
-                patientName: patient.patientName,
-                message: 'El archivo de resumen no existe. Genera primero un resumen desde la app Nav29.'
-            })
+            console.log('[WhatsApp] getSummary - Summary file not found, checking if generation is needed')
+            
+            // Check if patient has any documents or events to generate summary from
+            const eventsCount = await Events.countDocuments({ createdBy: patientId })
+            
+            if (eventsCount === 0) {
+                return res.status(200).json({
+                    success: false,
+                    patientName: patient.patientName,
+                    message: 'El paciente no tiene información suficiente para generar un resumen. Añade eventos o documentos primero.'
+                })
+            }
+            
+            // Check if summary is already being generated
+            if (patient.summary === 'inProcess') {
+                return res.status(200).json({
+                    success: false,
+                    needsGeneration: true,
+                    patientName: patient.patientName,
+                    message: 'El resumen se está generando. Por favor, espera unos minutos e inténtalo de nuevo.'
+                })
+            }
+            
+            // Trigger summary generation asynchronously
+            console.log('[WhatsApp] getSummary - Triggering summary generation for patient:', patientId)
+            try {
+                // Set status to inProcess
+                await Patient.findByIdAndUpdate(patientId, { summary: 'inProcess', summaryDate: new Date() })
+                
+                // Trigger async generation (fire and forget)
+                const langchainService = require('../services/langchain')
+                setImmediate(async () => {
+                    try {
+                        await langchainService.createPatientSummary(patientId, user._id.toString(), null)
+                        console.log('[WhatsApp] getSummary - Summary generation completed for patient:', patientId)
+                    } catch (genError) {
+                        console.error('[WhatsApp] getSummary - Summary generation failed:', genError.message)
+                        // Reset status on failure
+                        await Patient.findByIdAndUpdate(patientId, { summary: 'false' })
+                    }
+                })
+                
+                return res.status(200).json({
+                    success: false,
+                    needsGeneration: true,
+                    patientName: patient.patientName,
+                    message: 'Generando resumen... Este proceso puede tardar 2-3 minutos. Inténtalo de nuevo en unos minutos.'
+                })
+            } catch (triggerError) {
+                console.error('[WhatsApp] getSummary - Failed to trigger generation:', triggerError.message)
+                return res.status(200).json({
+                    success: false,
+                    patientName: patient.patientName,
+                    message: 'No se pudo iniciar la generación del resumen. Inténtalo desde la app Nav29.'
+                })
+            }
         }
         
         // Download the summary
@@ -693,6 +733,16 @@ async function getInfographic(req, res) {
 
         // Call the infographic service
         const aiFeaturesCtrl = require('./user/patient/aiFeaturesController')
+        const f29azure = require('../services/f29azure')
+        
+        // Check if patient now has a summary (to decide if we should regenerate a basic infographic)
+        const summaryPath = 'raitofile/summary/final_card.txt'
+        let containerName = crypt.getContainerName(patientId)
+        let hasSummary = await f29azure.checkBlobExists(containerName, summaryPath)
+        if (!hasSummary) {
+            containerName = crypt.getContainerNameLegacy(patientId)
+            hasSummary = await f29azure.checkBlobExists(containerName, summaryPath)
+        }
         
         // Create a mock request/response to call the existing controller
         const mockReq = {
@@ -707,6 +757,14 @@ async function getInfographic(req, res) {
         }
         
         await aiFeaturesCtrl.handleInfographicRequest(mockReq, mockRes)
+
+        // If we got a basic infographic but now have a summary, regenerate
+        if (infographicResult?.success && infographicResult.isBasic && hasSummary) {
+            console.log('[WhatsApp] getInfographic - Basic infographic found but summary exists, regenerating...')
+            mockReq.body.regenerate = true
+            infographicResult = null
+            await aiFeaturesCtrl.handleInfographicRequest(mockReq, mockRes)
+        }
 
         if (infographicResult && infographicResult.success) {
             console.log('[WhatsApp] getInfographic - Success, imageUrl:', infographicResult.imageUrl?.substring(0, 50) + '...')
