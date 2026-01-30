@@ -520,13 +520,18 @@ async function addEvent(req, res) {
         console.log('[WhatsApp] addEvent - Event saved successfully:', eventdb._id)
 
         // Clear summary cache (same as in events controller)
-        try {
-            const f29azureService = require('../services/f29azure')
-            const containerName = crypt.encrypt(patientId).substr(0, 30)
-            await f29azureService.deleteSummaryFilesBlobsInFolder(containerName)
-        } catch (e) {
-            console.log('[WhatsApp] addEvent - Could not clear summary cache:', e.message)
-        }
+        // This is non-critical, so we wrap it carefully and don't let it fail the request
+        setImmediate(async () => {
+            try {
+                const f29azureService = require('../services/f29azure')
+                const containerName = crypt.encrypt(patientId).substr(0, 30)
+                await f29azureService.deleteSummaryFilesBlobsInFolder(containerName)
+                console.log('[WhatsApp] addEvent - Summary cache cleared')
+            } catch (e) {
+                // Container may not exist if patient never had a summary generated
+                console.log('[WhatsApp] addEvent - Could not clear summary cache (non-critical):', e.message)
+            }
+        })
 
         return res.status(200).json({
             success: true,
