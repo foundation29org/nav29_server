@@ -2,6 +2,8 @@
 
 const User = require('../models/user')
 const Patient = require('../models/patient')
+const Events = require('../models/events')
+const Document = require('../models/document')
 const crypto = require('crypto')
 const { graph } = require('../services/agent')
 const crypt = require('../services/crypt')
@@ -585,7 +587,6 @@ async function getSummary(req, res) {
 
         // Get events for summary
         // Note: Avoid .sort() in MongoDB query as it may fail on CosmosDB without proper index
-        const Events = require('../models/events')
         const eventsRaw = await Events.find({ createdBy: patientId }).lean()
         // Sort in JavaScript instead
         const events = eventsRaw
@@ -630,7 +631,6 @@ async function getSummary(req, res) {
         } : null
 
         // Get documents count
-        const Document = require('../models/document')
         const documentsCount = await Document.countDocuments({ createdBy: patientId })
 
         console.log('[WhatsApp] getSummary - Success for patient:', patient.patientName)
