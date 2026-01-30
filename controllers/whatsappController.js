@@ -3,7 +3,6 @@
 const User = require('../models/user')
 const Patient = require('../models/patient')
 const Events = require('../models/events')
-const Document = require('../models/document')
 const crypto = require('crypto')
 const { graph } = require('../services/agent')
 const crypt = require('../services/crypt')
@@ -546,7 +545,7 @@ async function addEvent(req, res) {
     }
 }
 
-// Get patient summary (quick overview)
+// Get patient summary (real summary from final_card.txt)
 async function getSummary(req, res) {
     try {
         const { phoneNumber, patientId: encryptedPatientId } = req.body
@@ -579,79 +578,73 @@ async function getSummary(req, res) {
                 { createdBy: user._id },
                 { sharedWith: user._id }
             ]
-        }).select('patientName birthDate gender')
+        }).select('patientName birthDate gender summary summaryDate')
 
         if (!patient) {
             return res.status(403).json({ error: true, message: 'Patient not authorized' })
         }
 
-        // Get events for summary
-        // Note: Avoid .sort() in MongoDB query as it may fail on CosmosDB without proper index
-        const eventsRaw = await Events.find({ createdBy: patientId }).lean()
-        // Sort in JavaScript instead
-        const events = eventsRaw
-            .sort((a, b) => new Date(b.date) - new Date(a.date))
-            .slice(0, 50)
+        // Check if patient has a generated summary
+        if (patient.summary !== 'true') {
+            console.log('[WhatsApp] getSummary - No summary available for patient')
+            return res.status(200).json({
+                success: false,
+                patientName: patient.patientName,
+                message: 'No hay resumen disponible. Genera primero un resumen desde la app Nav29.'
+            })
+        }
 
-        // Count events by type
-        const diagnosisCount = events.filter(e => e.key === 'diagnosis').length
-        const medicationCount = events.filter(e => e.key === 'medication').length
-        const appointmentCount = events.filter(e => e.key === 'appointment').length
-        const testCount = events.filter(e => e.key === 'test').length
-        const symptomCount = events.filter(e => e.key === 'symptom').length
-
-        // Get recent diagnoses (last 5)
-        const recentDiagnoses = events
-            .filter(e => e.key === 'diagnosis')
-            .slice(0, 5)
-            .map(e => e.name)
-
-        // Get current medications (last 5)
-        const currentMedications = events
-            .filter(e => e.key === 'medication')
-            .slice(0, 5)
-            .map(e => e.name)
-
-        // Get upcoming appointments
-        const now = new Date()
-        const upcomingAppointments = events
-            .filter(e => e.key === 'appointment' && new Date(e.date) >= now)
-            .sort((a, b) => new Date(a.date) - new Date(b.date))
-            .slice(0, 3)
-            .map(e => ({
-                name: e.name,
-                date: e.date
-            }))
-
-        // Get last event
-        const lastEvent = events[0] ? {
-            name: events[0].name,
-            type: events[0].key,
-            date: events[0].date
-        } : null
-
-        // Get documents count
-        const documentsCount = await Document.countDocuments({ createdBy: patientId })
+        // Get the real summary from Azure Blob Storage (final_card.txt)
+        const f29azure = require('../services/f29azure')
+        const summaryPath = 'raitofile/summary/final_card.txt'
+        
+        // Try SHA256 container name first
+        let containerName = crypt.getContainerName(patientId)
+        console.log('[WhatsApp] getSummary - Trying containerName (SHA256):', containerName)
+        let exists = await f29azure.checkBlobExists(containerName, summaryPath)
+        
+        // If not found, try legacy container name
+        if (!exists) {
+            containerName = crypt.getContainerNameLegacy(patientId)
+            console.log('[WhatsApp] getSummary - Trying containerName (Legacy):', containerName)
+            exists = await f29azure.checkBlobExists(containerName, summaryPath)
+        }
+        
+        if (!exists) {
+            console.log('[WhatsApp] getSummary - Summary file not found')
+            return res.status(200).json({
+                success: false,
+                patientName: patient.patientName,
+                message: 'El archivo de resumen no existe. Genera primero un resumen desde la app Nav29.'
+            })
+        }
+        
+        // Download the summary
+        const summaryContent = await f29azure.downloadBlob(containerName, summaryPath)
+        if (!summaryContent) {
+            return res.status(200).json({
+                success: false,
+                patientName: patient.patientName,
+                message: 'El resumen está vacío.'
+            })
+        }
+        
+        // Parse the summary JSON
+        let summaryData
+        try {
+            const summaryJson = JSON.parse(summaryContent)
+            summaryData = summaryJson.data || summaryContent
+        } catch (parseError) {
+            summaryData = summaryContent
+        }
 
         console.log('[WhatsApp] getSummary - Success for patient:', patient.patientName)
 
         return res.status(200).json({
             success: true,
             patientName: patient.patientName,
-            birthDate: patient.birthDate,
-            gender: patient.gender,
-            stats: {
-                diagnoses: diagnosisCount,
-                medications: medicationCount,
-                appointments: appointmentCount,
-                tests: testCount,
-                symptoms: symptomCount,
-                documents: documentsCount
-            },
-            recentDiagnoses,
-            currentMedications,
-            upcomingAppointments,
-            lastEvent
+            summaryDate: patient.summaryDate,
+            summary: summaryData
         })
     } catch (err) {
         console.error('[WhatsApp] getSummary - Error:', err.message)
