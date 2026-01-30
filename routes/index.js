@@ -276,7 +276,7 @@ api.delete('/whatsapp/unlink', auth.isAuth(roles.All), whatsappCtrl.unlink)
 api.get('/whatsapp/session/:phoneNumber', checkApiKey, whatsappCtrl.getSessionByPhone)
 api.post('/whatsapp/verify-code', checkApiKey, whatsappCtrl.verifyCode)
 api.post('/whatsapp/unlink-by-phone', checkApiKey, whatsappCtrl.unlinkByPhone)
-api.get('/whatsapp/patients/:userId', checkApiKey, whatsappCtrl.getPatients)
+api.post('/whatsapp/patients/:userId', checkApiKey, whatsappCtrl.getPatients)
 api.post('/whatsapp/set-patient', checkApiKey, whatsappCtrl.setActivePatient)
 api.post('/whatsapp/ask', checkApiKey, whatsappCtrl.ask)
 

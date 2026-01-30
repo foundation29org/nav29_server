@@ -209,10 +209,15 @@ async function verifyCode(req, res) {
 // Get patients for a user (called by bot)
 async function getPatients(req, res) {
     try {
+        const { phoneNumber } = req.body
         const encryptedUserId = req.params.userId
-        const mongoose = require('mongoose')
 
+        console.log('[WhatsApp] getPatients - phoneNumber:', phoneNumber)
         console.log('[WhatsApp] getPatients - encryptedUserId received')
+
+        if (!phoneNumber) {
+            return res.status(400).json({ message: 'Phone number is required' })
+        }
 
         // Decrypt the userId
         let userId
@@ -224,23 +229,26 @@ async function getPatients(req, res) {
             return res.status(400).json({ message: 'Invalid user ID' })
         }
 
-        // Convert to ObjectId if valid
-        let userObjectId
-        try {
-            userObjectId = new mongoose.Types.ObjectId(userId)
-        } catch (e) {
-            console.log('[WhatsApp] getPatients - Invalid ObjectId, using string')
-            userObjectId = userId
+        // Find user and verify phone number matches
+        const user = await User.findById(userId).select('email whatsappPhone')
+        
+        if (!user) {
+            console.log('[WhatsApp] getPatients - user not found')
+            return res.status(404).json({ message: 'User not found' })
         }
 
-        // Log user info for debugging
-        const user = await User.findById(userObjectId).select('email')
-        console.log('[WhatsApp] getPatients - user email:', user ? user.email : 'not found')
+        // Security check: verify the phoneNumber matches the user's linked phone
+        if (user.whatsappPhone !== phoneNumber) {
+            console.log('[WhatsApp] getPatients - Phone mismatch! Expected:', user.whatsappPhone, 'Got:', phoneNumber)
+            return res.status(403).json({ message: 'Unauthorized' })
+        }
+
+        console.log('[WhatsApp] getPatients - user email:', user.email)
 
         const patients = await Patient.find({
             $or: [
-                { createdBy: userObjectId },
-                { sharedWith: userObjectId }
+                { createdBy: user._id },
+                { sharedWith: user._id }
             ]
         }).select('_id patientName')
 
