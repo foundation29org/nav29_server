@@ -584,11 +584,13 @@ async function getSummary(req, res) {
         }
 
         // Get events for summary
+        // Note: Avoid .sort() in MongoDB query as it may fail on CosmosDB without proper index
         const Events = require('../models/events')
-        const events = await Events.find({ createdBy: patientId })
-            .sort({ date: -1 })
-            .limit(50)
-            .lean()
+        const eventsRaw = await Events.find({ createdBy: patientId }).lean()
+        // Sort in JavaScript instead
+        const events = eventsRaw
+            .sort((a, b) => new Date(b.date) - new Date(a.date))
+            .slice(0, 50)
 
         // Count events by type
         const diagnosisCount = events.filter(e => e.key === 'diagnosis').length
