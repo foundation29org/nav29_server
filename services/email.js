@@ -9,7 +9,12 @@ var options = {
      viewEngine: {
          extname: '.hbs',
          layoutsDir: 'views/email/',
-         defaultLayout : 'template'
+         defaultLayout : 'template',
+         helpers: {
+             currentYear: function() {
+                 return new Date().getFullYear();
+             }
+         }
      },
      viewPath: 'views/email/',
      extName: '.hbs'
