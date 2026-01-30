@@ -26,11 +26,12 @@ const eventsCtrl = require('../controllers/user/patient/events')
 const appointmentsCtrl = require('../controllers/user/patient/appointments')
 const aiFeaturesCtrl = require('../controllers/user/patient/aiFeaturesController')
 const rarescopeCtrl = require('../controllers/user/patient/rarescope')
-const patientContextService = require('../services/patientContextService')
+const trackingCtrl = require('../controllers/user/patient/tracking')
 const f29azureserviceCtrl = require('../services/f29azure')
 const openShareCtrl = require('../controllers/all/openshare')
 const feedbackCtrl = require('../services/feedback')
 const gocertiusCtrl = require('../services/gocertius')
+const whatsappCtrl = require('../controllers/whatsappController')
 const auth = require('../middlewares/auth')
 const roles = require('../middlewares/roles')
 const cors = require('cors');
@@ -161,13 +162,25 @@ api.post('/getinitialevents/:patientId', auth.isAuthPatient(roles.All), checkApi
 api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleRarescopeRequest)
 api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
 api.post('/ai/disease-info/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDiseaseInfoRequest)
-api.post('/ai/aggregate-context/:patientId', auth.isAuthPatient(roles.All), checkApiKey, patientContextService.aggregateClinicalContext)
+api.post('/ai/infographic/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleInfographicRequest)
+api.post('/ai/soap/questions/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleSoapQuestionsRequest)
+api.post('/ai/soap/report/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleSoapReportRequest)
 
 // Rarescope routes
 api.post('/rarescope/save/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.saveRarescopeData)
 api.get('/rarescope/load/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.loadRarescopeData)
 api.get('/rarescope/history/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.getRarescopeHistory)
 api.delete('/rarescope/delete/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.deleteRarescopeData)
+
+// Patient Tracking routes
+api.get('/tracking/:patientId/data', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.getTrackingData)
+api.post('/tracking/:patientId/import', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.importTrackingData)
+api.post('/tracking/:patientId/entry', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.addEntry)
+api.post('/tracking/:patientId/insights', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.generateInsights)
+api.get('/tracking/:patientId/stats', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.getStatistics)
+api.delete('/tracking/:patientId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteTrackingData)
+api.delete('/tracking/:patientId/entry/:entryId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteEntry)
+api.post('/tracking/:patientId/delete-range', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteEntriesInRange)
 
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)
@@ -191,6 +204,10 @@ api.delete('/events/:patientId/:eventId', auth.isAuthPatient(roles.All), checkAp
 api.post('/deleteevents/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.deleteEvents)
 api.post('/explainmedicalevent/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.explainMedicalEvent)
 
+// Timeline consolidado (genera timeline limpio a partir de eventos crudos)
+api.get('/timeline/consolidated/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.getConsolidatedTimeline)
+api.post('/timeline/regenerate/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.regenerateConsolidatedTimeline)
+
 api.get('/lastappointments/:patientId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.getLastAppointments)
 api.get('/appointments/:patientId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.getAppointments)
 api.post('/appointments/:patientId/:userId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.saveAppointment)
@@ -210,6 +227,9 @@ api.put('/notes/:patientId/:noteId/:userId', auth.isAuthPatient(roles.All), chec
 api.delete('/notes/:patientId/:noteId', auth.isAuthPatient(roles.All), checkApiKey, notesCtrl.deleteNote)
 
 //gettoken
+api.get('/gettoken/', (req, res) => {
+  return res.status(401).json({ message: 'User ID is required' });
+});
 api.get('/gettoken/:userId', auth.isAuth(roles.All), checkApiKey, pubsubCtrl.getToken)
 
 //azureservices
@@ -246,6 +266,19 @@ api.get('/gocertius/getreportpdfurl/:reportId', checkApiKey, gocertiusCtrl.getRe
 api.get('/gocertius/getreportzip/:reportId', checkApiKey, gocertiusCtrl.getReportZip)
 
 api.post('/vote', feedbackCtrl.vote)
+
+// WhatsApp integration routes (from app - user authenticated)
+api.get('/whatsapp/status', auth.isAuth(roles.All), whatsappCtrl.getStatus)
+api.post('/whatsapp/generate-code', auth.isAuth(roles.All), whatsappCtrl.generateCode)
+api.delete('/whatsapp/unlink', auth.isAuth(roles.All), whatsappCtrl.unlink)
+
+// WhatsApp integration routes (from bot - API key authenticated)
+api.get('/whatsapp/session/:phoneNumber', checkApiKey, whatsappCtrl.getSessionByPhone)
+api.post('/whatsapp/verify-code', checkApiKey, whatsappCtrl.verifyCode)
+api.post('/whatsapp/unlink-by-phone', checkApiKey, whatsappCtrl.unlinkByPhone)
+api.post('/whatsapp/patients/:userId', checkApiKey, whatsappCtrl.getPatients)
+api.post('/whatsapp/set-patient', checkApiKey, whatsappCtrl.setActivePatient)
+api.post('/whatsapp/ask', checkApiKey, whatsappCtrl.ask)
 
 /*api.get('/testToken', auth, (req, res) => {
 	res.status(200).send(true)

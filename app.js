@@ -33,6 +33,15 @@ function setCrossDomain(req, res, next) {
     if (isDevelopment || req.method === 'GET' || req.method === 'HEAD') {
       return next();
     }
+    
+    // Permitir rutas del bot de WhatsApp que usan API key (sin origin)
+    // Estas rutas son llamadas desde el servidor del bot, no desde un navegador
+    const isWhatsAppBotRoute = req.url.startsWith('/api/whatsapp/') && 
+                               req.headers['x-api-key'] === config.Server_Key;
+    if (isWhatsAppBotRoute) {
+      return next();
+    }
+    
     // En producción sin origin, rechazar métodos no seguros
     return res.status(403).json({ error: 'Origin header required' });
   }

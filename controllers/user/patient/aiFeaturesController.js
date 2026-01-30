@@ -20,8 +20,14 @@ const pubsub                = require('../../../services/pubsub');
 const insights              = require('../../../services/insights');
 const axios                 = require('axios');
 const f29azure              = require('../../../services/f29azure');
+const { retrieveChunks, extractStructuredFacts } = require('../../../services/retrievalService');
+const { curateContext } = require('../../../services/tools');
 
 const { generatePatientUUID } = require('../../../services/uuid');
+const { generatePatientInfographic, generateSoapQuestions, generateSoapReport } = require('../../../services/langchain');
+
+// Mutex para evitar peticiones duplicadas de infografía mientras se está generando
+const infographicInProgress = new Map();
 
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
@@ -63,6 +69,109 @@ function cleanHtmlFromText(htmlText) {
   cleaned = cleaned.replace(/^\s+|\s+$/gm, ''); // Trim por línea
   
   return cleaned.trim();
+}
+
+/**
+ * Construye un contexto básico del paciente usando datos estructurados
+ * @param {string} patientId - ID del paciente
+ * @param {Object} raw - Datos agregados del paciente (opcional, se obtiene si no se pasa)
+ * @param {string} existingContext - Contexto existente para complementar (opcional)
+ * @returns {string} - Contexto estructurado del paciente
+ */
+async function buildBasicPatientContext(patientId, raw = null, existingContext = '') {
+  try {
+    if (!raw) {
+      raw = await patientContextService.aggregateClinicalContext(patientId);
+    }
+    
+    const summaryParts = [];
+    
+    // Añadir contexto existente si lo hay
+    if (existingContext && existingContext.length > 50) {
+      summaryParts.push(existingContext);
+    }
+    
+    // Perfil del paciente (campos: name, birthDate, gender, chronic, allergies)
+    if (raw.profile) {
+      const profileParts = [];
+      if (raw.profile.name) profileParts.push(`Name: ${raw.profile.name}`);
+      if (raw.profile.gender) profileParts.push(`Gender: ${raw.profile.gender}`);
+      if (raw.profile.birthDate) {
+        const age = calculateAge(raw.profile.birthDate);
+        profileParts.push(`Age: ${age} years`);
+        profileParts.push(`Birth Date: ${new Date(raw.profile.birthDate).toLocaleDateString()}`);
+      }
+      
+      if (profileParts.length > 0) {
+        summaryParts.push('PATIENT PROFILE:\n' + profileParts.join('\n'));
+      }
+      
+      // Condiciones crónicas
+      if (raw.profile.chronic && raw.profile.chronic.length > 0) {
+        summaryParts.push('CHRONIC CONDITIONS:\n' + raw.profile.chronic.map(c => `- ${c}`).join('\n'));
+      }
+      
+      // Alergias
+      if (raw.profile.allergies && raw.profile.allergies.length > 0) {
+        summaryParts.push('ALLERGIES:\n' + raw.profile.allergies.map(a => `- ${a}`).join('\n'));
+      }
+    }
+    
+    // Eventos médicos (el campo es 'type' según fetchEvents)
+    if (raw.events && raw.events.length > 0) {
+      const diagnoses = raw.events.filter(e => e.type === 'diagnosis').slice(0, 15);
+      const medications = raw.events.filter(e => e.type === 'medication').slice(0, 15);
+      const symptoms = raw.events.filter(e => e.type === 'symptom').slice(0, 10);
+      
+      if (diagnoses.length > 0) {
+        summaryParts.push('DIAGNOSES:\n' + diagnoses.map(d => `- ${d.name}`).join('\n'));
+      }
+      if (medications.length > 0) {
+        summaryParts.push('MEDICATIONS:\n' + medications.map(m => `- ${m.name}`).join('\n'));
+      }
+      if (symptoms.length > 0) {
+        summaryParts.push('SYMPTOMS:\n' + symptoms.map(s => `- ${s.name}`).join('\n'));
+      }
+    }
+    
+    // Documentos médicos (resúmenes)
+    if (raw.documents && raw.documents.length > 0) {
+      const docSummaries = raw.documents
+        .filter(d => d.text && d.text.length > 50)
+        .slice(0, 5)
+        .map(d => d.text.substring(0, 500));
+      
+      if (docSummaries.length > 0) {
+        summaryParts.push('MEDICAL DOCUMENTS SUMMARY:\n' + docSummaries.join('\n---\n'));
+      }
+    }
+    
+    const result = summaryParts.join('\n\n');
+    console.log(`[Infographic] Built basic context (${result.length} chars) - profile: ${!!raw.profile}, events: ${raw.events?.length || 0}, docs: ${raw.documents?.length || 0}`);
+    return result || 'No patient data available.';
+    
+  } catch (error) {
+    console.error('[Infographic] Error building basic context:', error.message);
+    return existingContext || 'No patient data available.';
+  }
+}
+
+/**
+ * Calcula la edad a partir de la fecha de nacimiento
+ */
+function calculateAge(birthDate) {
+  try {
+    const birth = new Date(birthDate);
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const monthDiff = today.getMonth() - birth.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    return age;
+  } catch {
+    return 'Unknown';
+  }
 }
 
 /** (0) Obtiene el resumen del paciente si existe (final_card.txt) */
@@ -279,8 +388,8 @@ async function buildContextString(raw, patientId) {
 async function prioritizeContextWithAI(contextText, patientId) {
   try {
     // Validar configuración
-    const azureInstance = config.OPENAI_API_BASE_GPT4O || config.OPENAI_API_BASE;
-    const azureKey = config.O_A_K_GPT4O || config.O_A_K;
+    const azureInstance = config.OPENAI_API_BASE_GPT4O;
+    const azureKey = config.O_A_K_GPT4O;
     if (!azureInstance || !azureKey) {
       console.warn('⚠️ Azure OpenAI no configurado, devolviendo contexto original');
       return contextText;
@@ -380,8 +489,8 @@ ${contextText}`;
 async function handleRarescopeRequest(req, res) {
   try {
     /* 0 · Validación configuración básica ------------------------------*/
-    const azureInstance = config.OPENAI_API_BASE_GPT4O || config.OPENAI_API_BASE;
-    const azureKey      = config.O_A_K_GPT4O          || config.O_A_K;
+    const azureInstance = config.OPENAI_API_BASE_GPT4O;
+    const azureKey      = config.O_A_K_GPT4O;
     if (!azureInstance || !azureKey) {
       return res.status(500).json({ error: 'Azure OpenAI not configured' });
     }
@@ -393,21 +502,57 @@ async function handleRarescopeRequest(req, res) {
     const customDescription = req.body?.customPatientDescription || req.body?.customMedicalDescription;
     let ctxStr = customDescription;
     if (!ctxStr) {
-      const raw = await patientContextService.aggregateClinicalContext(patientId);
-      ctxStr = await buildContextString(raw, patientId);
-      // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
-      // Solo si el contexto es suficientemente largo (>= 2000 chars)
-      if (ctxStr.length >= 2000) {
-        ctxStr = await prioritizeContextWithAI(ctxStr, patientId);
+      console.log('📋 Usando nueva arquitectura RAG para Rarescope');
+      
+      try {
+        const searchQuery = "Complete clinical history, symptoms, medical needs and quality of life indicators for a patient with a rare disease";
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "AMBIGUOUS");
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        const curatedResult = await curateContext(
+          [], 
+          [], 
+          crypt.getContainerName(patientId), 
+          [], 
+          searchQuery,
+          selectedChunks,
+          structuredFacts
+        );
+        
+        ctxStr = curatedResult.content;
+
+        // 🚨 FALLBACK DE SEGURIDAD PARA RARESCOPE: Si el RAG es pobre, reforzar con hechos de la timeline
+        if (ctxStr.length < 800) {
+          console.warn('⚠️ Contexto RAG corto para Rarescope, reforzando con timeline...');
+          const raw = await patientContextService.aggregateClinicalContext(patientId);
+          const legacyCtx = await buildDxGptContextString(raw, patientId);
+          ctxStr = `[CLINICAL SUMMARY]\n${ctxStr}\n\n[DETAILED CLINICAL HISTORY]\n${legacyCtx}`;
+        }
+
+        console.log(`✅ Contexto RAG generado para Rarescope (${ctxStr.length} caracteres)`);
+      } catch (ragError) {
+        console.error('❌ Error en arquitectura RAG para Rarescope, usando fallback legacy:', ragError);
+        // Fallback legacy
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        ctxStr = await buildContextString(raw, patientId);
+        if (ctxStr.length >= 2000) {
+          ctxStr = await prioritizeContextWithAI(ctxStr, patientId);
+        }
       }
     }
 
     /* 3 · Prompt -------------------------------------------------------*/
-    const prompt = `Act as an expert in rare diseases. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of people with rare diseases. Do not add explanations or extra formatting.
+    const prompt = `Act as a medical expert specializing in patient advocacy and clinical needs assessment. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of THIS SPECIFIC PATIENT based on their medical history. Do not add explanations or extra formatting.
 
-These needs should reflect the lack of diagnosis, treatment, knowledge, or real support that patients face, beyond what is usually superficially declared. Valid output example: ["Need 1","Need 2"]
+These needs should reflect challenges such as lack of specific treatment options for their condition, need for specialized follow-up, management of chronic symptoms, psychological support, or information gaps that the patient faces. Valid output example: ["Need 1","Need 2"]
 
-IMPORTANT: Respond in the SAME LANGUAGE as the patient context provided below.
+IMPORTANT: 
+- Tailor the needs to the actual diagnoses, treatments, and symptoms mentioned in the patient context.
+- You may use your medical knowledge to identify if the condition requires specialized care typical of rare or complex diseases, but focus on the patient's specific evidence.
+- Base your analysis on what is explicitly stated in the clinical history, not on assumptions.
+- Respond in the SAME LANGUAGE as the patient context provided below.
 
 ## Patient Context
 ${ctxStr}`.trim();
@@ -420,7 +565,7 @@ ${ctxStr}`.trim();
       url,
       {
         messages: [
-          { role: 'system', content: 'You are an expert in rare diseases. Always respond in the same language as the provided patient context.' },
+          { role: 'system', content: 'You are a medical expert assistant. Always respond in the same language as the provided patient context.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
@@ -486,88 +631,87 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
     
     let description = custom;
     if (!description) {
-      if (!useEventsAndDocuments) {
-        // Usar resumen del paciente
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dxgpt-processing',
+        taskId,
+        patientId: encryptedPatientId,
+        status: 'retrieving-chunks',
+        message: 'Buscando información relevante en tus documentos...',
+        progress: 10
+      });
+
+      try {
+        // 1. Recuperar chunks relevantes (usamos TREND para traer más evidencia)
+        const searchQuery = "Complete clinical history, medical conditions, symptoms, laboratory results, imaging findings and current treatments";
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND");
+        const selectedChunks = retrievalResult.selectedChunks || [];
+
         pubsub.sendToUser(encryptedUserId, {
           type: 'dxgpt-processing',
           taskId,
           patientId: encryptedPatientId,
-          status: 'loading-summary',
-          message: 'Cargando resumen del paciente...',
-          progress: 5
+          status: 'extracting-facts',
+          message: `Analizando ${selectedChunks.length} fragmentos de evidencia médica...`,
+          progress: 40
         });
-        
-        const patientSummary = await getPatientSummaryIfExists(patientId);
-        if (patientSummary) {
-          description = patientSummary;
-          console.log('📋 Usando resumen del paciente (final_card.txt)');
-          
-          pubsub.sendToUser(encryptedUserId, {
-            type: 'dxgpt-processing',
-            taskId,
-            patientId: encryptedPatientId,
-            status: 'summary-loaded',
-            message: 'Resumen cargado, preparando análisis...',
-            progress: 15
-          });
-        } else {
-          useEventsAndDocuments = true;
+
+        // 2. Extraer hechos estructurados
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+
+        pubsub.sendToUser(encryptedUserId, {
+          type: 'dxgpt-processing',
+          taskId,
+          patientId: encryptedPatientId,
+          status: 'curating-context',
+          message: 'Sintetizando historial médico optimizado...',
+          progress: 70
+        });
+
+        // 3. Curar contexto
+        const curatedResult = await curateContext(
+          [], // context
+          [], // memories
+          crypt.getContainerName(patientId),
+          [], // docs
+          searchQuery,
+          selectedChunks,
+          structuredFacts
+        );
+
+        description = curatedResult.content;
+
+        // 4. 🚨 FALLBACK DE SEGURIDAD ASYNC
+        if (description.length < 600) {
+          console.warn('⚠️ [Async] Contexto RAG corto, reforzando con timeline...');
+          const raw = await patientContextService.aggregateClinicalContext(patientId);
+          const legacyCtx = await buildDxGptContextString(raw, patientId);
+          description = `[PATIENT PROFILE & CLINICAL HISTORY]\n${legacyCtx}\n\n[ADDITIONAL FINDINGS FROM DOCUMENTS]\n${description}`;
         }
-      }
-      
-      if (useEventsAndDocuments) {
-        // Obtener datos raw para contar documentos
+
+        // 🚨 LIMITE ESTRICTO DXGPT (2000 caracteres)
+        if (description.length > 2000) {
+          console.log('✂️ Acortando descripción a 2000 caracteres para DxGPT');
+          description = description.substring(0, 2000);
+        }
+        
+        pubsub.sendToUser(encryptedUserId, {
+          type: 'dxgpt-processing',
+          taskId,
+          patientId: encryptedPatientId,
+          status: 'context-ready',
+          message: 'Contexto médico preparado para diagnóstico.',
+          progress: 85
+        });
+      } catch (ragError) {
+        console.error('❌ Error en arquitectura RAG (Async), usando fallback legacy:', ragError);
+        // Fallback legacy
         const raw = await patientContextService.aggregateClinicalContext(patientId);
-        const documentCount = raw.documents?.length || 0;
-        
-        // Enviar actualización de progreso
-        pubsub.sendToUser(encryptedUserId, {
-          type: 'dxgpt-processing',
-          taskId,
-          patientId: encryptedPatientId,
-          status: 'building-context',
-          message: `Construyendo contexto desde ${documentCount} documentos...`,
-          progress: 10
-        });
-        
-        // Construir contexto con actualizaciones de progreso
-        description = await buildContextStringWithProgress(raw, patientId, userId, taskId, documentCount);
-        const originalLength = description.length;
-        
-        // Optimizar contexto con IA
+        description = await buildContextString(raw, patientId);
         if (description.length >= 2000) {
-          pubsub.sendToUser(encryptedUserId, {
-            type: 'dxgpt-processing',
-            taskId,
-            patientId: encryptedPatientId,
-            status: 'optimizing',
-            message: 'Optimizando contexto con IA...',
-            progress: 70
-          });
-          
           description = await prioritizeContextWithAI(description, patientId);
-          
-          if (description.length < 300 && originalLength > 2000) {
-            console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
-            description = await buildContextString(raw, patientId);
-          }
         }
-        
-        // Validación final: Si el contexto excede 2000 caracteres, resumirlo
-        const MAX_DXGPT_CHARS = 2000;
-        if (description && description.length > MAX_DXGPT_CHARS) {
-          console.warn(`⚠️ [Async] Contexto demasiado largo (${description.length} chars), aplicando resumen final...`);
-          pubsub.sendToUser(encryptedUserId, {
-            type: 'dxgpt-processing',
-            taskId,
-            patientId: encryptedPatientId,
-            status: 'summarizing-final',
-            message: 'Resumiendo contexto final para cumplir límite de caracteres...',
-            progress: 75
-          });
-          
+        if (description.length > 2000) {
           description = await summarizeContext(description, patientId);
-          console.log(`✅ [Async] Contexto resumido a ${description.length} caracteres`);
         }
       }
     }
@@ -577,24 +721,6 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
       throw new Error('No se pudo obtener la descripción del paciente');
     }
     
-    // Validación final adicional (por si acaso): Si el contexto excede 2000 caracteres, resumirlo
-    // Esto es una capa de seguridad adicional después de la validación dentro del bloque useEventsAndDocuments
-    const MAX_DXGPT_CHARS_FINAL = 2000;
-    if (description.length > MAX_DXGPT_CHARS_FINAL) {
-      console.warn(`⚠️ [Async] Contexto aún demasiado largo después de optimización (${description.length} chars), aplicando resumen final...`);
-      pubsub.sendToUser(encryptedUserId, {
-        type: 'dxgpt-processing',
-        taskId,
-        patientId: encryptedPatientId,
-        status: 'summarizing-final',
-        message: 'Resumiendo contexto final para cumplir límite de caracteres...',
-        progress: useEventsAndDocuments ? 82 : 77
-      });
-      
-      description = await summarizeContext(description, patientId);
-      console.log(`✅ [Async] Contexto resumido a ${description.length} caracteres`);
-    }
-    
     // Llamar a DxGPT API
     pubsub.sendToUser(encryptedUserId, {
       type: 'dxgpt-processing',
@@ -602,7 +728,7 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
       patientId: encryptedPatientId,
       status: 'calling-api',
       message: 'Consultando DxGPT API...',
-      progress: useEventsAndDocuments ? 85 : 80
+      progress: 90
     });
     
     console.log(`🚀 [Async] Llamando a DxGPT API para paciente ${patientId}...`);
@@ -752,6 +878,32 @@ async function buildContextStringWithProgress(raw, patientId, userId, taskId, do
   return out;
 }
 
+/** (3.3) Versión optimizada de contexto para DxGPT (sin resúmenes de documentos) */
+async function buildDxGptContextString(raw, patientId) {
+  const { profile, events } = raw;
+  
+  let out = `PATIENT DETAILS:
+- Age: ${profile.age || 'N/A'}
+- Gender: ${profile.gender || 'N/A'}
+- Birthdate: ${profile.birthDate ? (typeof profile.birthDate === 'string' ? profile.birthDate.substring(0, 10) : new Date(profile.birthDate).toISOString().substring(0, 10)) : 'N/A'}
+
+CLINICAL HISTORY (SYMPTOMS & DIAGNOSES):\n`;
+
+  if (events && events.length > 0) {
+    // Filtrar por tipos relevantes para diagnóstico y ordenar por fecha (más reciente primero)
+    const sortedEvents = [...events].sort((a, b) => new Date(b.date) - new Date(a.date));
+    
+    for (const ev of sortedEvents) {
+      const dateStr = ev.date ? new Date(ev.date).toLocaleDateString() : 'N/A';
+      out += `- ${ev.name} (${dateStr})\n`;
+    }
+  } else {
+    out += '- No specific events recorded.\n';
+  }
+
+  return out;
+}
+
 async function handleDxGptRequest(req, res) {
   try {
     // console.log('req.body', req.body);
@@ -838,48 +990,54 @@ async function handleDxGptRequest(req, res) {
     /* ▸ Context (solo si no lo trae el caller) ------------------------- */
     let description = custom;
     if (!description) {
-      if (!useEventsAndDocuments) {
-        // Primero intentar obtener el resumen del paciente si existe
-        const patientSummary = await getPatientSummaryIfExists(patientId);
-        if (patientSummary) {
-          // Usar el resumen existente directamente
-          description = patientSummary;
-          console.log('📋 Usando resumen del paciente (final_card.txt)');
-        } else {
-          // Si no hay resumen, construir el contexto desde cero
-          useEventsAndDocuments = true;
-        }
-      }
+      console.log('📋 Usando arquitectura RAG Híbrida para DxGPT');
       
-      if (useEventsAndDocuments) {
-        // Construir el contexto desde eventos y documentos
-        console.log('📋 Construyendo contexto desde eventos y documentos');
-        const raw  = await patientContextService.aggregateClinicalContext(patientId);
-        // console.log(`>> (from f:aggregateClinicalContext) raw data from patient ${patientId}:`);
-        // console.log(raw);
-        description = await buildContextString(raw, patientId);
-        const originalLength = description.length;
+      try {
+        // 1. Recuperar chunks relevantes con un presupuesto más alto para diagnóstico
+        const searchQuery = "Complete clinical history, medical conditions, symptoms, laboratory results, imaging findings and current treatments";
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND"); // Usamos TREND para traer más contexto histórico
+        const selectedChunks = retrievalResult.selectedChunks || [];
         
-        // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
-        // Solo si el contexto es suficientemente largo (>= 2000 chars)
+        // 2. Obtener también eventos de la timeline para reforzar el contexto
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        // 3. Curar contexto (pasamos también los eventos del 'raw')
+        const curatedResult = await curateContext(
+          [], // context
+          [], // memories
+          crypt.getContainerName(patientId), 
+          req.body?.docs || [], 
+          searchQuery,
+          selectedChunks,
+          structuredFacts
+        );
+        
+        description = curatedResult.content;
+
+        // 4. 🚨 FALLBACK DE SEGURIDAD: Si el RAG es demasiado pobre, añadir el contexto de la timeline (SIN resúmenes de documentos)
+        if (description.length < 600) {
+          console.warn('⚠️ Contexto RAG muy corto, reforzando con hechos de la timeline...');
+          // Usamos buildContextString pero SIN incluir los resúmenes de documentos para DxGPT
+          const legacyCtx = await buildDxGptContextString(raw, patientId);
+          description = `[PATIENT PROFILE & CLINICAL HISTORY]\n${legacyCtx}\n\n[ADDITIONAL FINDINGS FROM DOCUMENTS]\n${description}`;
+        }
+
+        // 🚨 LIMITE ESTRICTO DXGPT (2000 caracteres)
+        if (description.length > 2000) {
+          console.log('✂️ Acortando descripción a 2000 caracteres para DxGPT');
+          description = description.substring(0, 2000);
+        }
+
+        console.log(`✅ Contexto Híbrido generado (${description.length} caracteres)`);
+      } catch (ragError) {
+        console.error('❌ Error en arquitectura RAG, usando fallback legacy total:', ragError);
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        description = await buildContextString(raw, patientId);
         if (description.length >= 2000) {
           description = await prioritizeContextWithAI(description, patientId);
-          
-          // Validar que el contexto optimizado no sea demasiado corto
-          if (description.length < 300 && originalLength > 2000) {
-            console.warn('⚠️ Contexto optimizado demasiado corto, usando contexto original');
-            description = await buildContextString(raw, patientId);
-          }
         }
       }
-    }
-
-    // Validación final: Si el contexto excede 2000 caracteres, resumirlo
-    const MAX_DXGPT_CHARS = 2000;
-    if (description && description.length > MAX_DXGPT_CHARS) {
-      console.warn(`⚠️ Contexto demasiado largo (${description.length} chars), aplicando resumen final antes de enviar a DxGPT...`);
-      description = await summarizeContext(description, patientId);
-      console.log(`✅ Contexto resumido a ${description.length} caracteres`);
     }
 
     console.log('📋 Description length:', description?.length || 0);
@@ -977,19 +1135,32 @@ async function handleDiseaseInfoRequest(req, res) {
     /* ▸ Context para 3/4 ---------------------------------------------- */
     let description = medicalDescription;
     if ((questionType === 3 || questionType === 4) && !description) {
-      // Primero intentar obtener el resumen del paciente si existe
-      const patientSummary = await getPatientSummaryIfExists(patientId);
+      console.log(`📋 Usando nueva arquitectura RAG para Disease Info (Type ${questionType})`);
       
-      if (patientSummary) {
-        // Usar el resumen existente directamente
-        description = patientSummary;
-        console.log('📋 Usando resumen del paciente (final_card.txt)');
-      } else {
-        // Si no hay resumen, construir el contexto desde cero
-        const raw       = await patientContextService.aggregateClinicalContext(patientId);
+      try {
+        const searchQuery = `Detailed clinical information for patient with ${disease} for diagnostic and treatment context`;
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "AMBIGUOUS");
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        const curatedResult = await curateContext(
+          [], 
+          [], 
+          crypt.getContainerName(patientId), 
+          [], 
+          searchQuery,
+          selectedChunks,
+          structuredFacts
+        );
+        
+        description = curatedResult.content;
+        console.log(`✅ Contexto RAG generado (${description.length} caracteres)`);
+      } catch (ragError) {
+        console.error('❌ Error en arquitectura RAG para Disease Info, usando fallback legacy:', ragError);
+        // Fallback legacy
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
         description = await buildContextString(raw, patientId);
-        // Optimizar contexto con IA para diferenciar permanente/crónico de puntual
-        // Solo si el contexto es suficientemente largo (>= 2000 chars)
         if (description.length >= 2000) {
           description = await prioritizeContextWithAI(description, patientId);
         }
@@ -1031,10 +1202,451 @@ async function handleDiseaseInfoRequest(req, res) {
 }
 
 /*--------------------------------------------------------------------
+ * 3.4 INFOGRAPHIC REQUEST
+ *------------------------------------------------------------------*/
+
+/** Helper: Buscar infografía existente en blob storage */
+async function findExistingInfographic(containerName) {
+  try {
+    const files = await f29azure.listContainerFiles(containerName);
+    // Buscar archivos de infografía ordenados por fecha (más reciente primero)
+    const infographicFiles = files
+      .filter(f => f.startsWith('raitofile/infographic/patient_infographic_') && f.endsWith('.png'))
+      .sort((a, b) => {
+        // Extraer timestamp del nombre del archivo
+        const tsA = parseInt(a.match(/patient_infographic_(\d+)\.png/)?.[1] || '0');
+        const tsB = parseInt(b.match(/patient_infographic_(\d+)\.png/)?.[1] || '0');
+        return tsB - tsA; // Ordenar descendente (más reciente primero)
+      });
+    
+    if (infographicFiles.length > 0) {
+      const latestFile = infographicFiles[0];
+      // Extraer timestamp del nombre
+      const timestampMatch = latestFile.match(/patient_infographic_(\d+)\.png/);
+      const generatedAt = timestampMatch ? new Date(parseInt(timestampMatch[1])).toISOString() : null;
+      return { blobPath: latestFile, generatedAt };
+    }
+    return null;
+  } catch (error) {
+    console.warn('[Infographic] Error searching for existing infographic:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Genera una infografía visual del paciente usando Gemini 3 Pro Image Preview
+ * @route POST /api/ai/infographic/:patientId
+ */
+async function handleInfographicRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const regenerate = req.body.regenerate || false;
+  const userId = req.body.userId ? crypt.decrypt(req.body.userId) : null;
+  
+  console.log(`[Infographic] Request for patient ${patientId}, lang: ${lang}, regenerate: ${regenerate}`);
+  
+  // Verificar si ya hay una generación en progreso para este paciente
+  if (infographicInProgress.has(patientId)) {
+    const startTime = infographicInProgress.get(patientId);
+    const elapsed = Date.now() - startTime;
+    // Si la generación lleva menos de 5 minutos, esperar a que termine y devolver el resultado
+    if (elapsed < 5 * 60 * 1000) {
+      console.log(`[Infographic] Generation already in progress for ${patientId} (${Math.round(elapsed/1000)}s ago), waiting for completion...`);
+      
+      // Esperar a que termine la generación (polling cada 2 segundos, máximo 3 minutos)
+      const containerName = crypt.getContainerName(patientId);
+      const maxWait = 180000; // 3 minutos
+      const pollInterval = 2000; // 2 segundos
+      let waited = 0;
+      
+      while (infographicInProgress.has(patientId) && waited < maxWait) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        waited += pollInterval;
+      }
+      
+      // Buscar la infografía recién generada
+      const existing = await findExistingInfographic(containerName);
+      if (existing) {
+        console.log(`[Infographic] Found newly generated infographic after waiting: ${existing.blobPath}`);
+        
+        // Verificar si el paciente tiene resumen completo para determinar isBasic
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        const isBasicWaited = !patientSummary;
+        
+        const sasToken = f29azure.generateSasToken(containerName);
+        const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${existing.blobPath}${sasToken.sasToken}`;
+        
+        return res.json({
+          success: true,
+          imageUrl: imageUrl,
+          blobPath: existing.blobPath,
+          generatedAt: existing.generatedAt,
+          cached: true,
+          isBasic: isBasicWaited,
+          message: 'Infographic ready (waited for generation)'
+        });
+      } else {
+        // Si aún no hay infografía después de esperar, permitir que continúe
+        console.log(`[Infographic] No infographic found after waiting, proceeding with new generation`);
+      }
+    } else {
+      // Si lleva más de 5 minutos, limpiar el mutex (probablemente quedó colgado)
+      console.log(`[Infographic] Stale mutex for ${patientId}, clearing...`);
+      infographicInProgress.delete(patientId);
+    }
+  }
+  
+  try {
+    const containerName = crypt.getContainerName(patientId);
+    
+    /* ▸ Verificar si ya existe una infografía (si no se pide regenerar) --- */
+    if (!regenerate) {
+      const existing = await findExistingInfographic(containerName);
+      if (existing) {
+        console.log(`[Infographic] Found existing infographic: ${existing.blobPath}`);
+        
+        // Verificar si el paciente tiene resumen completo para determinar isBasic
+        const patientSummary = await getPatientSummaryIfExists(patientId);
+        const isBasicCached = !patientSummary; // Si no hay resumen, es básica
+        
+        // Generar URL con SAS token
+        const sasToken = f29azure.generateSasToken(containerName);
+        const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${existing.blobPath}${sasToken.sasToken}`;
+        
+        return res.json({
+          success: true,
+          imageUrl: imageUrl,
+          blobPath: existing.blobPath,
+          generatedAt: existing.generatedAt,
+          cached: true,
+          isBasic: isBasicCached,
+          message: 'Existing infographic found'
+        });
+      }
+    }
+    
+    // Marcar que la generación está en progreso
+    infographicInProgress.set(patientId, Date.now());
+    console.log(`[Infographic] Starting generation for patient ${patientId}`);
+    
+    /* ▸ Obtener el resumen del paciente --------------------------------- */
+    let patientSummary = null;
+    let isBasicInfographic = false; // Flag para indicar si es infografía básica (sin resumen completo)
+    
+    // Primero intentar obtener el resumen existente (final_card.txt)
+    patientSummary = await getPatientSummaryIfExists(patientId);
+    
+    // Si no existe resumen, construir contexto desde eventos y documentos
+    if (!patientSummary) {
+      console.log('[Infographic] No existing summary, building context from RAG...');
+      isBasicInfographic = true; // Marcar como infografía básica
+      
+      try {
+        // Usar arquitectura RAG para obtener contexto
+        const searchQuery = "Complete patient health overview: diagnoses, medications, symptoms, treatments, and medical history";
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND");
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        
+        // Obtener eventos de la timeline y documentos
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        // Obtener URLs de documentos del paciente para pasarlos a curateContext
+        const Document = require('../../../models/document');
+        const patientDocs = await Document.find({ createdBy: patientId }).select('url').lean();
+        const docUrls = patientDocs.map(d => d.url).filter(Boolean);
+        console.log(`[Infographic] Found ${docUrls.length} documents for patient`);
+        
+        // Curar contexto - firma: (context, memories, containerName, docs, question, selectedChunks, structuredFacts)
+        const containerName = crypt.getContainerName(patientId);
+        const curatedResult = await curateContext(
+          [],                    // context
+          [],                    // memories
+          containerName,         // containerName
+          docUrls,               // docs (URLs para descargar resúmenes)
+          searchQuery,           // question
+          selectedChunks,        // selectedChunks
+          structuredFacts        // structuredFacts
+        );
+        
+        patientSummary = curatedResult.content;
+        console.log(`[Infographic] Context built from RAG (${patientSummary?.length || 0} chars)`);
+        
+        // Si el contexto curado es muy corto, complementar con datos estructurados
+        if (!patientSummary || patientSummary.length < 300) {
+          console.log('[Infographic] RAG context too short, adding structured data...');
+          patientSummary = await buildBasicPatientContext(patientId, raw, patientSummary);
+        }
+      } catch (ragError) {
+        console.warn('[Infographic] RAG failed, using basic context:', ragError.message);
+        
+        // Fallback: usar contexto básico estructurado
+        patientSummary = await buildBasicPatientContext(patientId, null, '');
+      }
+    }
+    
+    // Verificar que tenemos contenido suficiente
+    if (!patientSummary || patientSummary.trim().length < 50) {
+      return res.status(400).json({
+        success: false,
+        error: 'Not enough patient data to generate an infographic. Please upload more medical documents.'
+      });
+    }
+    
+    /* ▸ Generar la infografía ------------------------------------------- */
+    console.log(`[Infographic] Generating infographic with summary (${patientSummary.length} chars)...`);
+    
+    const result = await generatePatientInfographic(patientId, patientSummary, lang);
+    
+    if (result.success) {
+      // Guardar la imagen en Azure Blob Storage
+      const generatedAt = new Date();
+      const blobPath = `raitofile/infographic/patient_infographic_${generatedAt.getTime()}.png`;
+      
+      try {
+        // Convertir base64 a buffer y subir
+        const imageBuffer = Buffer.from(result.imageData, 'base64');
+        console.log(`[Infographic] Uploading image (${imageBuffer.length} bytes) to ${blobPath}...`);
+        
+        await f29azure.createBlob(containerName, blobPath, imageBuffer);
+        console.log(`[Infographic] Image saved to ${blobPath}`);
+        
+        // Generar URL con SAS token para acceder a la imagen
+        console.log(`[Infographic] Generating SAS token for container ${containerName}...`);
+        const sasToken = f29azure.generateSasToken(containerName);
+        const imageUrl = `${sasToken.blobAccountUrl}${containerName}/${blobPath}${sasToken.sasToken}`;
+        console.log(`[Infographic] SAS URL generated, sending response...`);
+        
+        // Limpiar mutex y enviar respuesta
+        infographicInProgress.delete(patientId);
+        console.log(`[Infographic] Generation complete for patient ${patientId}`);
+        
+        return res.json({
+          success: true,
+          imageUrl: imageUrl,
+          blobPath: blobPath,
+          generatedAt: generatedAt.toISOString(),
+          cached: false,
+          isBasic: isBasicInfographic, // Indica si es infografía básica (sin resumen completo)
+          message: 'Infographic generated successfully'
+        });
+      } catch (uploadError) {
+        console.warn('[Infographic] Failed to save to blob, returning image data:', uploadError.message);
+        // Limpiar mutex
+        infographicInProgress.delete(patientId);
+        // Si falla el guardado, devolver la imagen base64 como fallback
+        return res.json({
+          success: true,
+          imageData: result.imageData,
+          mimeType: result.mimeType,
+          cached: false,
+          isBasic: isBasicInfographic,
+          message: 'Infographic generated (not saved to storage)'
+        });
+      }
+    } else {
+      // Limpiar mutex en caso de fallo
+      infographicInProgress.delete(patientId);
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to generate infographic'
+      });
+    }
+    
+  } catch (error) {
+    // Limpiar mutex en caso de error
+    infographicInProgress.delete(patientId);
+    console.error('[Infographic] Error:', error.message);
+    insights.error({ 
+      message: '[Infographic] Error handling request', 
+      error: error.message, 
+      patientId 
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Error generating infographic',
+      details: error.message
+    });
+  }
+}
+
+/*--------------------------------------------------------------------
+ * 3.5 SOAP NOTES REQUESTS (Clinical)
+ *------------------------------------------------------------------*/
+
+/**
+ * Genera preguntas sugeridas para la consulta SOAP
+ * @route POST /api/ai/soap/questions/:patientId
+ */
+async function handleSoapQuestionsRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const patientSymptoms = req.body.patientSymptoms;
+  
+  console.log(`[SOAP Questions] Request for patient ${patientId}`);
+  
+  if (!patientSymptoms || patientSymptoms.trim().length < 10) {
+    return res.status(400).json({
+      success: false,
+      error: 'Patient symptoms are required (minimum 10 characters)'
+    });
+  }
+  
+  try {
+    // Obtener contexto del paciente
+    let patientContext = '';
+    
+    // Intentar obtener el resumen existente
+    patientContext = await getPatientSummaryIfExists(patientId);
+    
+    // Si no existe, construir contexto básico
+    if (!patientContext) {
+      try {
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const contextParts = [];
+        
+        if (raw.profile) {
+          if (raw.profile.gender) contextParts.push(`Gender: ${raw.profile.gender}`);
+          if (raw.profile.birthDate) contextParts.push(`Birth Date: ${raw.profile.birthDate}`);
+          if (raw.profile.chronic && raw.profile.chronic.length > 0) {
+            contextParts.push(`Chronic Conditions: ${raw.profile.chronic.join(', ')}`);
+          }
+        }
+        
+        if (raw.events && raw.events.length > 0) {
+          const diagnoses = raw.events.filter(e => e.type === 'diagnosis').slice(0, 5);
+          const medications = raw.events.filter(e => e.type === 'medication').slice(0, 5);
+          
+          if (diagnoses.length > 0) {
+            contextParts.push(`Recent Diagnoses: ${diagnoses.map(d => d.name).join(', ')}`);
+          }
+          if (medications.length > 0) {
+            contextParts.push(`Current Medications: ${medications.map(m => m.name).join(', ')}`);
+          }
+        }
+        
+        patientContext = contextParts.join('\n') || 'No previous medical history available.';
+      } catch (contextError) {
+        console.warn('[SOAP Questions] Error getting patient context:', contextError.message);
+        patientContext = 'No previous medical history available.';
+      }
+    }
+    
+    // Generar preguntas
+    const result = await generateSoapQuestions(patientId, patientSymptoms, patientContext, lang);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        questions: result.questions
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to generate questions'
+      });
+    }
+    
+  } catch (error) {
+    console.error('[SOAP Questions] Error:', error.message);
+    insights.error({ message: '[SOAP Questions] Error', error: error.message, patientId });
+    res.status(500).json({
+      success: false,
+      error: 'Error generating questions',
+      details: error.message
+    });
+  }
+}
+
+/**
+ * Genera el informe SOAP completo
+ * @route POST /api/ai/soap/report/:patientId
+ */
+async function handleSoapReportRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const patientSymptoms = req.body.patientSymptoms;
+  const questionsAndAnswers = req.body.questionsAndAnswers || [];
+  
+  console.log(`[SOAP Report] Request for patient ${patientId}`);
+  
+  if (!patientSymptoms) {
+    return res.status(400).json({
+      success: false,
+      error: 'Patient symptoms are required'
+    });
+  }
+  
+  try {
+    // Obtener contexto del paciente (más completo para el informe)
+    let patientContext = '';
+    
+    // Intentar obtener el resumen existente
+    patientContext = await getPatientSummaryIfExists(patientId);
+    
+    // Si no existe, usar RAG para obtener contexto
+    if (!patientContext) {
+      try {
+        const searchQuery = "Complete medical history, diagnoses, medications, treatments, and recent symptoms";
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, "TREND");
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+        
+        // Curar contexto - firma: (context, memories, containerName, docs, question, selectedChunks, structuredFacts)
+        const containerName = crypt.getContainerName(patientId);
+        const curatedResult = await curateContext(
+          [],                    // context
+          [],                    // memories
+          containerName,         // containerName
+          [],                    // docs
+          searchQuery,           // question
+          selectedChunks,        // selectedChunks
+          structuredFacts        // structuredFacts
+        );
+        
+        patientContext = curatedResult.content || 'No previous medical history available.';
+      } catch (contextError) {
+        console.warn('[SOAP Report] Error getting patient context:', contextError.message);
+        patientContext = 'No previous medical history available.';
+      }
+    }
+    
+    // Generar informe SOAP
+    const result = await generateSoapReport(patientId, patientSymptoms, questionsAndAnswers, patientContext, lang);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        soap: result.soap
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to generate SOAP report'
+      });
+    }
+    
+  } catch (error) {
+    console.error('[SOAP Report] Error:', error.message);
+    insights.error({ message: '[SOAP Report] Error', error: error.message, patientId });
+    res.status(500).json({
+      success: false,
+      error: 'Error generating SOAP report',
+      details: error.message
+    });
+  }
+}
+
+/*--------------------------------------------------------------------
  * 4. EXPORTS
  *------------------------------------------------------------------*/
 module.exports = {
   handleRarescopeRequest,
   handleDxGptRequest,
-  handleDiseaseInfoRequest
+  handleDiseaseInfoRequest,
+  handleInfographicRequest,
+  handleSoapQuestionsRequest,
+  handleSoapReportRequest
 };

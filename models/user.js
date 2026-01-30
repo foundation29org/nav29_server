@@ -51,7 +51,12 @@ const UserSchema = Schema({
 			isVerified:false,
 			info: {}
 		}
-	}
+	},
+	// WhatsApp integration fields
+	whatsappPhone: { type: String, sparse: true, unique: true, default: null },
+	whatsappLinkedAt: { type: Date, default: null },
+	whatsappVerificationCode: { type: String, default: null },
+	whatsappVerificationExpires: { type: Date, default: null }
 })
 
 

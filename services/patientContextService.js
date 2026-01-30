@@ -10,6 +10,8 @@ const path        = require('path');
 const Patient     = require('../models/patient');
 const Document    = require('../models/document');
 const Events      = require('../models/events');
+const Appointments = require('../models/appointments');
+const Notes       = require('../models/notes');
 const crypt       = require('./crypt');
 const f29azure    = require('./f29azure');
 
@@ -68,7 +70,8 @@ async function fetchEvents(id, limit = 50) {
       type : e.key,
       name : e.name,
       date : toDateStr(e.date),
-      notes: e.notes ?? ''
+      notes: e.notes ?? '',
+      dateConfidence: e.dateConfidence || 'missing'
     }));
 }
 
@@ -98,17 +101,68 @@ async function fetchDocuments(id, limit = 10) {
   .sort((a, b) => new Date(b.date ?? 0) - new Date(a.date ?? 0));
 }
 
+async function fetchAppointments(id, limit = 20) {
+  const rows = await Appointments
+    .find({ createdBy: id })
+    .limit(limit)
+    .lean();
+
+  // Sort en memoria (evita requerir índice en Cosmos DB)
+  return rows
+    .sort((a, b) => new Date(b.date ?? 0) - new Date(a.date ?? 0))
+    .map(a => ({
+      date: toDateStr(a.date),
+      notes: a.notes ?? ''
+    }));
+}
+
+async function fetchNotes(id, limit = 20) {
+  const rows = await Notes
+    .find({ createdBy: id })
+    .limit(limit)
+    .lean();
+
+  // Sort en memoria (evita requerir índice en Cosmos DB)
+  return rows
+    .sort((a, b) => new Date(b.date ?? 0) - new Date(a.date ?? 0))
+    .map(n => ({
+      date: toDateStr(n.date),
+      content: n.content ?? ''
+    }));
+}
+
 /* ------------------------------------------------------------------ */
 /* 3 · Public API                                                     */
 /* ------------------------------------------------------------------ */
-async function aggregateClinicalContext(patientId) {
+/**
+ * Agrega el contexto clínico relevante para funciones de IA (DxGPT, Rarescope, etc.)
+ * 
+ * @param {string} patientId - ID del paciente
+ * @param {Object} options - Opciones
+ * @param {boolean} options.includeAppointments - Incluir citas (default: false)
+ * @param {boolean} options.includeNotes - Incluir notas personales (default: false)
+ */
+async function aggregateClinicalContext(patientId, options = {}) {
   console.debug(`[CTX] Building raw context for ${patientId}`);
+  
+  // Datos clínicos principales (siempre se cargan)
   const [profile, events, documents] = await Promise.all([
     fetchPatient(patientId),
     fetchEvents(patientId),
     fetchDocuments(patientId)
   ]);
-  return { profile, events, documents };
+  
+  const result = { profile, events, documents };
+  
+  // Datos opcionales (diary) - solo si se solicitan explícitamente
+  if (options.includeAppointments) {
+    result.appointments = await fetchAppointments(patientId);
+  }
+  if (options.includeNotes) {
+    result.notes = await fetchNotes(patientId);
+  }
+  
+  return result;
 }
 
 module.exports = { aggregateClinicalContext };
