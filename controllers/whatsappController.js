@@ -544,6 +544,194 @@ async function addEvent(req, res) {
     }
 }
 
+// Get patient summary (quick overview)
+async function getSummary(req, res) {
+    try {
+        const { phoneNumber, patientId: encryptedPatientId } = req.body
+
+        console.log('[WhatsApp] getSummary - phoneNumber:', phoneNumber)
+
+        if (!phoneNumber || !encryptedPatientId) {
+            return res.status(400).json({ message: 'Phone number and patient ID are required' })
+        }
+
+        // Find user by phone
+        const user = await User.findOne({ whatsappPhone: phoneNumber })
+        if (!user) {
+            return res.status(404).json({ error: true, message: 'User not linked' })
+        }
+
+        // Decrypt patientId
+        let patientId
+        try {
+            patientId = crypt.decrypt(encryptedPatientId)
+        } catch (e) {
+            console.error('[WhatsApp] getSummary - Failed to decrypt patientId:', e.message)
+            return res.status(400).json({ error: true, message: 'Invalid patient ID' })
+        }
+
+        // Validate that the patient belongs to this user
+        const patient = await Patient.findOne({
+            _id: patientId,
+            $or: [
+                { createdBy: user._id },
+                { sharedWith: user._id }
+            ]
+        }).select('patientName birthDate gender')
+
+        if (!patient) {
+            return res.status(403).json({ error: true, message: 'Patient not authorized' })
+        }
+
+        // Get events for summary
+        const Events = require('../models/events')
+        const events = await Events.find({ createdBy: patientId })
+            .sort({ date: -1 })
+            .limit(50)
+            .lean()
+
+        // Count events by type
+        const diagnosisCount = events.filter(e => e.key === 'diagnosis').length
+        const medicationCount = events.filter(e => e.key === 'medication').length
+        const appointmentCount = events.filter(e => e.key === 'appointment').length
+        const testCount = events.filter(e => e.key === 'test').length
+        const symptomCount = events.filter(e => e.key === 'symptom').length
+
+        // Get recent diagnoses (last 5)
+        const recentDiagnoses = events
+            .filter(e => e.key === 'diagnosis')
+            .slice(0, 5)
+            .map(e => e.name)
+
+        // Get current medications (last 5)
+        const currentMedications = events
+            .filter(e => e.key === 'medication')
+            .slice(0, 5)
+            .map(e => e.name)
+
+        // Get upcoming appointments
+        const now = new Date()
+        const upcomingAppointments = events
+            .filter(e => e.key === 'appointment' && new Date(e.date) >= now)
+            .sort((a, b) => new Date(a.date) - new Date(b.date))
+            .slice(0, 3)
+            .map(e => ({
+                name: e.name,
+                date: e.date
+            }))
+
+        // Get last event
+        const lastEvent = events[0] ? {
+            name: events[0].name,
+            type: events[0].key,
+            date: events[0].date
+        } : null
+
+        // Get documents count
+        const Document = require('../models/document')
+        const documentsCount = await Document.countDocuments({ createdBy: patientId })
+
+        console.log('[WhatsApp] getSummary - Success for patient:', patient.patientName)
+
+        return res.status(200).json({
+            success: true,
+            patientName: patient.patientName,
+            birthDate: patient.birthDate,
+            gender: patient.gender,
+            stats: {
+                diagnoses: diagnosisCount,
+                medications: medicationCount,
+                appointments: appointmentCount,
+                tests: testCount,
+                symptoms: symptomCount,
+                documents: documentsCount
+            },
+            recentDiagnoses,
+            currentMedications,
+            upcomingAppointments,
+            lastEvent
+        })
+    } catch (err) {
+        console.error('[WhatsApp] getSummary - Error:', err.message)
+        return res.status(500).json({ error: true, message: 'Error getting summary' })
+    }
+}
+
+// Generate infographic for patient
+async function getInfographic(req, res) {
+    try {
+        const { phoneNumber, patientId: encryptedPatientId, lang = 'es' } = req.body
+
+        console.log('[WhatsApp] getInfographic - phoneNumber:', phoneNumber)
+
+        if (!phoneNumber || !encryptedPatientId) {
+            return res.status(400).json({ message: 'Phone number and patient ID are required' })
+        }
+
+        // Find user by phone
+        const user = await User.findOne({ whatsappPhone: phoneNumber })
+        if (!user) {
+            return res.status(404).json({ error: true, message: 'User not linked' })
+        }
+
+        // Decrypt patientId
+        let patientId
+        try {
+            patientId = crypt.decrypt(encryptedPatientId)
+        } catch (e) {
+            console.error('[WhatsApp] getInfographic - Failed to decrypt patientId:', e.message)
+            return res.status(400).json({ error: true, message: 'Invalid patient ID' })
+        }
+
+        // Validate that the patient belongs to this user
+        const patient = await Patient.findOne({
+            _id: patientId,
+            $or: [
+                { createdBy: user._id },
+                { sharedWith: user._id }
+            ]
+        }).select('patientName')
+
+        if (!patient) {
+            return res.status(403).json({ error: true, message: 'Patient not authorized' })
+        }
+
+        // Call the infographic service
+        const aiFeaturesCtrl = require('./user/patient/aiFeaturesController')
+        
+        // Create a mock request/response to call the existing controller
+        const mockReq = {
+            params: { patientId: encryptedPatientId },
+            body: { lang, regenerate: false }
+        }
+        
+        let infographicResult = null
+        const mockRes = {
+            json: (data) => { infographicResult = data },
+            status: function(code) { this.statusCode = code; return this }
+        }
+        
+        await aiFeaturesCtrl.handleInfographicRequest(mockReq, mockRes)
+
+        if (infographicResult && infographicResult.success) {
+            console.log('[WhatsApp] getInfographic - Success, imageUrl:', infographicResult.imageUrl?.substring(0, 50) + '...')
+            return res.status(200).json({
+                success: true,
+                patientName: patient.patientName,
+                imageUrl: infographicResult.imageUrl,
+                cached: infographicResult.cached,
+                isBasic: infographicResult.isBasic
+            })
+        } else {
+            console.error('[WhatsApp] getInfographic - Failed:', infographicResult)
+            return res.status(500).json({ error: true, message: 'Failed to generate infographic' })
+        }
+    } catch (err) {
+        console.error('[WhatsApp] getInfographic - Error:', err.message)
+        return res.status(500).json({ error: true, message: 'Error generating infographic' })
+    }
+}
+
 module.exports = {
     getStatus,
     getSessionByPhone,
@@ -554,5 +742,7 @@ module.exports = {
     getPatients,
     setActivePatient,
     ask,
-    addEvent
+    addEvent,
+    getSummary,
+    getInfographic
 }

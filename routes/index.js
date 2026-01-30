@@ -280,6 +280,8 @@ api.post('/whatsapp/patients/:userId', checkApiKey, whatsappCtrl.getPatients)
 api.post('/whatsapp/set-patient', checkApiKey, whatsappCtrl.setActivePatient)
 api.post('/whatsapp/ask', checkApiKey, whatsappCtrl.ask)
 api.post('/whatsapp/add-event', checkApiKey, whatsappCtrl.addEvent)
+api.post('/whatsapp/summary', checkApiKey, whatsappCtrl.getSummary)
+api.post('/whatsapp/infographic', checkApiKey, whatsappCtrl.getInfographic)
 
 /*api.get('/testToken', auth, (req, res) => {
 	res.status(200).send(true)
