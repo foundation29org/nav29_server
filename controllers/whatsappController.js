@@ -5,6 +5,7 @@ const Patient = require('../models/patient')
 const crypto = require('crypto')
 const { graph } = require('../services/agent')
 const crypt = require('../services/crypt')
+const emailService = require('../services/email')
 
 /**
  * WhatsApp Integration Controller
@@ -14,7 +15,7 @@ const crypt = require('../services/crypt')
 // Get WhatsApp linking status for current user (from app)
 async function getStatus(req, res) {
     try {
-        const userId = req.user // req.user contains the userId from the decoded token
+        const userId = req.user
         const user = await User.findById(userId).select('whatsappPhone whatsappLinkedAt')
         
         if (!user) {
@@ -50,14 +51,15 @@ async function getSessionByPhone(req, res) {
             return res.status(200).json({ linked: false })
         }
 
-        // TODO: Get active patient from WhatsAppSession model if exists
-        // For now, return basic user info
+        // Encrypt userId before sending to bot
+        const encryptedUserId = crypt.encrypt(user._id.toString())
+
         return res.status(200).json({
             linked: true,
-            userId: user._id,
+            userId: encryptedUserId,
             phone: user.whatsappPhone,
             linkedAt: user.whatsappLinkedAt,
-            activePatientId: null, // TODO: Implement session persistence
+            activePatientId: null, // Bot manages this in its local state/cache
             patientName: null
         })
     } catch (err) {
@@ -69,32 +71,26 @@ async function getSessionByPhone(req, res) {
 // Generate a linking code for WhatsApp (from app)
 async function generateCode(req, res) {
     try {
-        const userId = req.user // req.user contains the userId from the decoded token
+        const userId = req.user
         const user = await User.findById(userId)
         
         if (!user) {
             return res.status(404).json({ message: 'User not found' })
         }
 
-        // Check if already linked
-        if (user.whatsappPhone) {
-            return res.status(400).json({ message: 'WhatsApp already linked' })
-        }
-
-        // Generate a random 4-character alphanumeric code
-        const code = 'NAV-' + crypto.randomBytes(2).toString('hex').toUpperCase()
+        // Generate 6-character code (3 bytes = 16 million combinations)
+        const code = 'NAV-' + crypto.randomBytes(3).toString('hex').toUpperCase()
         
-        // Code expires in 10 minutes
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000)
-
-        // Save code to user
+        // Code expires in 3 minutes
+        const expires = new Date(Date.now() + 3 * 60 * 1000)
+        
         user.whatsappVerificationCode = code
-        user.whatsappVerificationExpires = expiresAt
+        user.whatsappVerificationExpires = expires
         await user.save()
 
         return res.status(200).json({
             code: code,
-            expiresAt: expiresAt
+            expires: expires
         })
     } catch (err) {
         console.error('Error generating WhatsApp code:', err)
@@ -102,18 +98,14 @@ async function generateCode(req, res) {
     }
 }
 
-// Unlink WhatsApp from user account (from app)
+// Unlink WhatsApp from current user (from app)
 async function unlink(req, res) {
     try {
-        const userId = req.user // req.user contains the userId from the decoded token
+        const userId = req.user
         const user = await User.findById(userId)
         
         if (!user) {
             return res.status(404).json({ message: 'User not found' })
-        }
-
-        if (!user.whatsappPhone) {
-            return res.status(400).json({ message: 'WhatsApp not linked' })
         }
 
         // Clear WhatsApp data
@@ -176,13 +168,12 @@ async function verifyCode(req, res) {
             whatsappVerificationExpires: { $gt: new Date() }
         })
 
-        console.log('[WhatsApp] verifyCode - user found:', user ? user._id : 'null')
-        console.log('[WhatsApp] verifyCode - user email:', user ? user.email : 'null')
+        console.log('[WhatsApp] verifyCode - user found:', user ? 'yes' : 'no')
 
         if (!user) {
             return res.status(400).json({ 
                 success: false,
-                message: 'Invalid or expired code' 
+                message: 'Invalid or expired code'
             })
         }
 
@@ -193,11 +184,20 @@ async function verifyCode(req, res) {
         user.whatsappVerificationExpires = null
         await user.save()
 
-        console.log('[WhatsApp] verifyCode - User linked successfully:', user._id, 'phone:', phoneNumber)
+        console.log('[WhatsApp] verifyCode - User linked successfully, phone:', phoneNumber)
 
+        // Send confirmation email (async, don't wait)
+        emailService.sendMailWhatsAppLinked(
+            { email: user.email, lang: user.lang || 'es' },
+            phoneNumber
+        ).catch(err => {
+            console.error('[WhatsApp] Error sending confirmation email:', err)
+        })
+
+        // Return encrypted userId
         return res.status(200).json({
             success: true,
-            userId: user._id,
+            userId: crypt.encrypt(user._id.toString()),
             message: 'WhatsApp linked successfully'
         })
     } catch (err) {
@@ -209,10 +209,20 @@ async function verifyCode(req, res) {
 // Get patients for a user (called by bot)
 async function getPatients(req, res) {
     try {
-        const userId = req.params.userId
+        const encryptedUserId = req.params.userId
         const mongoose = require('mongoose')
 
-        console.log('[WhatsApp] getPatients - userId:', userId)
+        console.log('[WhatsApp] getPatients - encryptedUserId received')
+
+        // Decrypt the userId
+        let userId
+        try {
+            userId = crypt.decrypt(encryptedUserId)
+            console.log('[WhatsApp] getPatients - userId decrypted successfully')
+        } catch (e) {
+            console.error('[WhatsApp] getPatients - Failed to decrypt userId:', e.message)
+            return res.status(400).json({ message: 'Invalid user ID' })
+        }
 
         // Convert to ObjectId if valid
         let userObjectId
@@ -236,9 +246,10 @@ async function getPatients(req, res) {
 
         console.log('[WhatsApp] getPatients - found:', patients.length, 'patients')
 
+        // Encrypt patient IDs before sending to bot
         return res.status(200).json({
             patients: patients.map(p => ({
-                _id: p._id,
+                _id: crypt.encrypt(p._id.toString()),
                 patientName: p.patientName || 'Sin nombre'
             }))
         })
@@ -251,10 +262,19 @@ async function getPatients(req, res) {
 // Set active patient for WhatsApp session (called by bot)
 async function setActivePatient(req, res) {
     try {
-        const { phoneNumber, patientId } = req.body
+        const { phoneNumber, patientId: encryptedPatientId } = req.body
 
-        if (!phoneNumber || !patientId) {
+        if (!phoneNumber || !encryptedPatientId) {
             return res.status(400).json({ message: 'Phone number and patient ID are required' })
+        }
+
+        // Decrypt the patientId
+        let patientId
+        try {
+            patientId = crypt.decrypt(encryptedPatientId)
+        } catch (e) {
+            console.error('[WhatsApp] setActivePatient - Failed to decrypt patientId:', e.message)
+            return res.status(400).json({ message: 'Invalid patient ID' })
         }
 
         const user = await User.findOne({ whatsappPhone: phoneNumber })
@@ -267,13 +287,12 @@ async function setActivePatient(req, res) {
             return res.status(404).json({ message: 'Patient not found' })
         }
 
-        // TODO: Store active patient in WhatsAppSession model
-        // For now, just return the session info
+        // Return encrypted IDs in the session
         return res.status(200).json({
             success: true,
             session: {
-                userId: user._id,
-                activePatientId: patientId,
+                userId: crypt.encrypt(user._id.toString()),
+                activePatientId: encryptedPatientId, // Keep encrypted
                 patientName: patient.patientName || 'Sin nombre'
             }
         })
@@ -286,11 +305,11 @@ async function setActivePatient(req, res) {
 // Ask Navigator (called by bot) - Synchronous version for WhatsApp
 async function ask(req, res) {
     try {
-        const { phoneNumber, question, patientId: requestedPatientId } = req.body
+        const { phoneNumber, question, patientId: encryptedPatientId } = req.body
 
         console.log('[WhatsApp] ask - phoneNumber:', phoneNumber)
         console.log('[WhatsApp] ask - question:', question)
-        console.log('[WhatsApp] ask - requestedPatientId:', requestedPatientId)
+        console.log('[WhatsApp] ask - encryptedPatientId received:', encryptedPatientId ? 'yes' : 'no')
 
         if (!phoneNumber || !question) {
             return res.status(400).json({ message: 'Phone number and question are required' })
@@ -298,18 +317,30 @@ async function ask(req, res) {
 
         // Find user by phone
         const user = await User.findOne({ whatsappPhone: phoneNumber })
-        console.log('[WhatsApp] ask - user found:', user ? user._id : 'null')
+        console.log('[WhatsApp] ask - user found:', user ? 'yes' : 'no')
         
         if (!user) {
             return res.status(404).json({ error: true, message: 'User not linked' })
         }
 
+        // Decrypt patientId if provided
+        let decryptedPatientId = null
+        if (encryptedPatientId) {
+            try {
+                decryptedPatientId = crypt.decrypt(encryptedPatientId)
+                console.log('[WhatsApp] ask - patientId decrypted successfully')
+            } catch (e) {
+                console.error('[WhatsApp] ask - Failed to decrypt patientId:', e.message)
+                return res.status(400).json({ error: true, message: 'Invalid patient ID' })
+            }
+        }
+
         // If patientId is provided, use it; otherwise fall back to first patient
         let patient
-        if (requestedPatientId) {
+        if (decryptedPatientId) {
             // Validate that the patient belongs to or is shared with this user
             patient = await Patient.findOne({
-                _id: requestedPatientId,
+                _id: decryptedPatientId,
                 $or: [
                     { createdBy: user._id },
                     { sharedWith: user._id }
@@ -317,7 +348,7 @@ async function ask(req, res) {
             }).select('_id patientName country')
             
             if (!patient) {
-                console.log('[WhatsApp] ask - Patient not found or not authorized:', requestedPatientId)
+                console.log('[WhatsApp] ask - Patient not found or not authorized')
                 return res.status(400).json({ error: true, message: 'Patient not found or not authorized' })
             }
         } else {
@@ -338,7 +369,7 @@ async function ask(req, res) {
         }
 
         const patientId = patient._id.toString()
-        const containerName = crypt.encrypt(patientId).substr(0, 30) // Simplified container name
+        const containerName = crypt.encrypt(patientId).substr(0, 30)
         
         console.log('[WhatsApp] ask - patientId:', patientId)
         console.log('[WhatsApp] ask - patientName:', patient.patientName)
@@ -350,11 +381,9 @@ async function ask(req, res) {
         // Mock pubsub client that captures suggestions (for sync WhatsApp calls)
         const mockPubsub = {
             sendToUser: (userId, message) => {
-                // Log status updates for debugging
                 if (message.status) {
                     console.log(`[WhatsApp] agent status: ${message.status}`)
                 }
-                // Capture suggestions when they are generated
                 if (message.suggestions && Array.isArray(message.suggestions)) {
                     capturedSuggestions = message.suggestions
                     console.log(`[WhatsApp] captured ${capturedSuggestions.length} suggestions`)
@@ -375,7 +404,7 @@ async function ask(req, res) {
                 patientId: patientId,
                 systemTime: new Date().toISOString(),
                 tracer: null,
-                context: [], // TODO: Load patient context for full functionality
+                context: [],
                 docs: [],
                 indexName: patientId,
                 containerName: containerName,
@@ -385,7 +414,7 @@ async function ask(req, res) {
                 medicalLevel: user.medicalLevel || '1',
                 userRole: user.role || 'User',
                 originalQuestion: question,
-                pubsubClient: mockPubsub, // Mock pubsub for sync calls
+                pubsubClient: mockPubsub,
                 chatMode: 'fast',
                 isWhatsApp: true // Flag to skip saving to DB
             },
@@ -397,7 +426,6 @@ async function ask(req, res) {
         // Extract the answer from the agent result
         let answer = 'No se encontró respuesta.'
         if (result && result.messages && result.messages.length > 0) {
-            // Get the last AI message
             const lastMessage = result.messages[result.messages.length - 1]
             if (lastMessage && lastMessage.content) {
                 answer = lastMessage.content
@@ -406,7 +434,7 @@ async function ask(req, res) {
 
         return res.status(200).json({
             answer: answer,
-            suggestions: capturedSuggestions.slice(0, 4) // Max 4 suggestions
+            suggestions: capturedSuggestions.slice(0, 4)
         })
     } catch (err) {
         console.error('[WhatsApp] ask - Error:', err.message)

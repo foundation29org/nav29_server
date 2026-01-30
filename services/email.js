@@ -200,10 +200,61 @@ function sendMailAccess (userInfo, location, notes){
   return decoded
 }
 
+function sendMailWhatsAppLinked (userInfo, phoneNumber){
+  const decoded = new Promise((resolve, reject) => {
+    var maillistbcc = [
+      TRANSPORTER_OPTIONS.auth.user
+    ];
+    
+    // Mask phone number for privacy (show last 4 digits)
+    const maskedPhone = phoneNumber.length > 4 
+      ? '***' + phoneNumber.slice(-4) 
+      : phoneNumber;
+    
+    const lang = userInfo.lang || 'es';
+    var subjectlang = 'WhatsApp Account Linked - Nav29';
+    if(lang === 'es'){
+      subjectlang = 'Cuenta WhatsApp vinculada - Nav29';
+    }
+    
+    var mailOptions = {
+      to: userInfo.email,
+      from: TRANSPORTER_OPTIONS.auth.user,
+      bcc: maillistbcc,
+      subject: subjectlang,
+      template: 'mail_whatsapp_linked/_' + lang,
+      context: {
+        phone: maskedPhone,
+        date: new Date().toLocaleString(lang === 'es' ? 'es-ES' : 'en-US', { 
+          dateStyle: 'long', 
+          timeStyle: 'short' 
+        })
+      }
+    };
+
+    transporter.sendMail(mailOptions, function(error, info){
+      if (error) {
+        insights.error(error);
+        console.log('[Email] Error sending WhatsApp linked email:', error);
+        reject({
+          status: 401,
+          message: 'Fail sending email'
+        })
+      } else {
+        console.log('[Email] WhatsApp linked email sent to:', userInfo.email);
+        resolve("ok")
+      }
+    });
+
+  });
+  return decoded
+}
+
 module.exports = {
   sendMailSupport,
   sendMailDev,
   sendMailControlCall,
   sendMailError,
-  sendMailAccess
+  sendMailAccess,
+  sendMailWhatsAppLinked
 }
