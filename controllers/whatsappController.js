@@ -270,20 +270,24 @@ async function getPatients(req, res) {
 
         console.log('[WhatsApp] getPatients - user email:', user.email)
 
+        // Get patients where user is owner, in sharedWith, or has accepted customShare
         const patients = await Patient.find({
             $or: [
                 { createdBy: user._id },
-                { sharedWith: user._id }
+                { sharedWith: user._id },
+                { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
             ]
-        }).select('_id patientName')
+        }).select('_id patientName createdBy')
 
         console.log('[WhatsApp] getPatients - found:', patients.length, 'patients')
 
         // Encrypt patient IDs before sending to bot
+        // Include isOwner flag to indicate if user owns the patient
         return res.status(200).json({
             patients: patients.map(p => ({
                 _id: crypt.encrypt(p._id.toString()),
-                patientName: p.patientName || 'Sin nombre'
+                patientName: p.patientName || 'Sin nombre',
+                isOwner: p.createdBy && p.createdBy.toString() === user._id.toString()
             }))
         })
     } catch (err) {
