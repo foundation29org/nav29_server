@@ -374,13 +374,15 @@ async function ask(req, res) {
 
         // If patientId is provided, use it; otherwise fall back to first patient
         let patient
+        const userId = user._id.toString()
         if (decryptedPatientId) {
             // Validate that the patient belongs to or is shared with this user
             patient = await Patient.findOne({
                 _id: decryptedPatientId,
                 $or: [
                     { createdBy: user._id },
-                    { sharedWith: user._id }
+                    { sharedWith: user._id },
+                    { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
                 ]
             }).select('_id patientName country')
             
@@ -393,7 +395,8 @@ async function ask(req, res) {
             const patients = await Patient.find({
                 $or: [
                     { createdBy: user._id },
-                    { sharedWith: user._id }
+                    { sharedWith: user._id },
+                    { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
                 ]
             }).select('_id patientName country').limit(1)
 
@@ -508,11 +511,13 @@ async function addEvent(req, res) {
         }
 
         // Validate that the patient belongs to this user
+        const userId = user._id.toString()
         const patient = await Patient.findOne({
             _id: patientId,
             $or: [
                 { createdBy: user._id },
-                { sharedWith: user._id }
+                { sharedWith: user._id },
+                { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
             ]
         }).select('_id patientName')
 
@@ -600,11 +605,13 @@ async function getSummary(req, res) {
         }
 
         // Validate that the patient belongs to this user
+        const userId = user._id.toString()
         const patient = await Patient.findOne({
             _id: patientId,
             $or: [
                 { createdBy: user._id },
-                { sharedWith: user._id }
+                { sharedWith: user._id },
+                { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
             ]
         }).select('patientName birthDate gender summary summaryDate')
 
@@ -747,11 +754,13 @@ async function getInfographic(req, res) {
         }
 
         // Validate that the patient belongs to this user
+        const userId = user._id.toString()
         const patient = await Patient.findOne({
             _id: patientId,
             $or: [
                 { createdBy: user._id },
-                { sharedWith: user._id }
+                { sharedWith: user._id },
+                { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
             ]
         }).select('patientName')
 
