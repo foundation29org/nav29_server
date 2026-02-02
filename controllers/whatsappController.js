@@ -3,6 +3,7 @@
 const User = require('../models/user')
 const Patient = require('../models/patient')
 const Events = require('../models/events')
+const Appointments = require('../models/appointments')
 const crypto = require('crypto')
 const { graph } = require('../services/agent')
 const crypt = require('../services/crypt')
@@ -35,6 +36,59 @@ function generateInfographicToken(imageUrl) {
     const expiresAt = Date.now() + 24 * 60 * 60 * 1000 // 24 hours
     infographicTokens.set(token, { imageUrl, expiresAt })
     return token
+}
+
+/**
+ * Build patient context (metadata) for the agent
+ * Similar to how the client builds it in home.component.ts
+ * @param {string} patientId - Patient ID
+ * @param {object} patientData - Patient basic data (birthDate, gender)
+ * @returns {Array} - Context array for the agent
+ */
+async function buildPatientContext(patientId, patientData) {
+    const metadata = []
+    
+    try {
+        // Add basic patient data
+        if (patientData.gender) {
+            metadata.push({ name: 'Gender:' + patientData.gender, date: undefined })
+        }
+        if (patientData.birthDate) {
+            metadata.push({ name: 'BirthDate:' + patientData.birthDate, date: undefined })
+        }
+        
+        // Load events
+        const events = await Events.find({ createdBy: patientId })
+            .select('name date dateEnd key')
+            .lean()
+        
+        for (const event of events) {
+            const dateWithoutTime = event.date ? new Date(event.date).toISOString().split('T')[0] : undefined
+            const metadataItem = { name: event.name, date: dateWithoutTime }
+            if (event.dateEnd) {
+                metadataItem.dateEnd = new Date(event.dateEnd).toISOString().split('T')[0]
+            }
+            metadata.push(metadataItem)
+        }
+        
+        // Load appointments
+        const appointments = await Appointments.find({ createdBy: patientId })
+            .select('notes date')
+            .lean()
+        
+        for (const appointment of appointments) {
+            if (appointment.notes) {
+                const dateWithoutTime = appointment.date ? new Date(appointment.date).toISOString().split('T')[0] : undefined
+                metadata.push({ name: appointment.notes, date: dateWithoutTime })
+            }
+        }
+        
+        console.log(`[WhatsApp] buildPatientContext - Built context with ${metadata.length} items`)
+    } catch (err) {
+        console.error('[WhatsApp] buildPatientContext - Error:', err.message)
+    }
+    
+    return metadata
 }
 
 // Get WhatsApp linking status for current user (from app)
@@ -384,7 +438,7 @@ async function ask(req, res) {
                     { sharedWith: user._id },
                     { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
                 ]
-            }).select('_id patientName country')
+            }).select('_id patientName country birthDate gender')
             
             if (!patient) {
                 console.log('[WhatsApp] ask - Patient not found or not authorized')
@@ -398,7 +452,7 @@ async function ask(req, res) {
                     { sharedWith: user._id },
                     { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
                 ]
-            }).select('_id patientName country').limit(1)
+            }).select('_id patientName country birthDate gender').limit(1)
 
             console.log('[WhatsApp] ask - No patientId provided, falling back to first patient')
 
@@ -413,6 +467,18 @@ async function ask(req, res) {
         
         console.log('[WhatsApp] ask - patientId:', patientId)
         console.log('[WhatsApp] ask - patientName:', patient.patientName)
+        
+        // Build patient context (events, appointments, basic data)
+        const patientContext = await buildPatientContext(patientId, {
+            birthDate: patient.birthDate,
+            gender: patient.gender
+        })
+        
+        // Build context array for the agent (same format as client)
+        const context = patientContext.length > 0 
+            ? [{ role: "assistant", content: JSON.stringify(patientContext) }]
+            : []
+        
         console.log('[WhatsApp] ask - invoking agent synchronously...')
 
         // Capture suggestions from agent
@@ -444,7 +510,7 @@ async function ask(req, res) {
                 patientId: patientId,
                 systemTime: new Date().toISOString(),
                 tracer: null,
-                context: [],
+                context: context,
                 docs: [],
                 indexName: patientId,
                 containerName: containerName,
