@@ -225,8 +225,7 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 			// Call the Node server
 			analizeDoc(containerName, url, documentId, filename, patientId, userId, saveTimeline, medicalLevel);
 
-			var response = { "msg": "done", "status": 200 }
-			resolve(response);
+			return { "msg": "done", "status": 200 };
 
 		} catch (error) {
 			console.error('[form_recognizer] Error processing document:', error.message);
@@ -398,7 +397,8 @@ function validateDate(documentDate) {
 
 async function isDonatingData(patientId) {
 	try {
-		const patient = await Patient.findById(patientId, { "_id": false, "createdBy": false, "donation": true });
+		// Only use inclusion projection (except _id which can be excluded)
+		const patient = await Patient.findById(patientId, { donation: 1 });
 		return patient?.donation || false;
 	} catch (error) {
 		console.error('[isDonatingData] Error checking donation status:', error.message);
