@@ -1068,13 +1068,16 @@ async function uploadDocument(req, res) {
         const medicalLevel = user.medicalLevel || '1'
         const preferredResponseLanguage = user.preferredResponseLanguage || user.lang || 'es'
         
+        // userId must be encrypted for form_recognizer (same as client sends)
+        const encryptedUserId = crypt.encrypt(user._id.toString())
+        
         bookService.form_recognizer(
             decryptedPatientId, 
             docId, 
             containerName, 
             documentUrl, 
             safeFilename, 
-            user._id.toString(), 
+            encryptedUserId, 
             true, 
             medicalLevel,
             isTextFile,
