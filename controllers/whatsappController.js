@@ -971,6 +971,41 @@ async function uploadDocument(req, res) {
             return res.status(400).json({ success: false, message: 'No file provided' })
         }
         
+        // Validate file type - same extensions as client
+        const allowedMimeTypes = [
+            'image/jpeg',
+            'image/jpg', 
+            'image/png',
+            'application/pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+            'text/plain'
+        ]
+        const allowedExtensions = ['.jpg', '.jpeg', '.png', '.pdf', '.docx', '.txt']
+        
+        const fileMimeType = mimeType || req.files.file.mimetype
+        const fileExtension = filename ? '.' + filename.split('.').pop().toLowerCase() : ''
+        
+        const isValidMime = allowedMimeTypes.includes(fileMimeType)
+        const isValidExtension = allowedExtensions.includes(fileExtension)
+        
+        if (!isValidMime && !isValidExtension) {
+            console.log('[WhatsApp] uploadDocument - Invalid file type:', { fileMimeType, fileExtension })
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Tipo de archivo no permitido. Formatos válidos: JPG, PNG, PDF, DOCX, TXT',
+                allowedTypes: allowedExtensions 
+            })
+        }
+        
+        // Validate file size (max 100MB, same as Azure blob limit)
+        const maxFileSize = 100 * 1024 * 1024 // 100MB
+        if (req.files.file.size > maxFileSize) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Archivo demasiado grande. Máximo 100MB.' 
+            })
+        }
+        
         // Validate user is linked
         const user = await User.findOne({ 'whatsapp.phoneNumber': phoneNumber, 'whatsapp.isLinked': true })
         if (!user) {
