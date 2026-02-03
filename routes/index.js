@@ -282,6 +282,7 @@ api.post('/whatsapp/ask', checkApiKey, whatsappCtrl.ask)
 api.post('/whatsapp/add-event', checkApiKey, whatsappCtrl.addEvent)
 api.post('/whatsapp/summary', checkApiKey, whatsappCtrl.getSummary)
 api.post('/whatsapp/infographic', checkApiKey, whatsappCtrl.getInfographic)
+api.post('/whatsapp/upload', checkApiKey, whatsappCtrl.uploadDocument)
 // Public endpoint to serve infographic images (no auth - token-based access)
 api.get('/whatsapp/infographic/view/:token', whatsappCtrl.serveInfographic)
 

@@ -4,10 +4,14 @@ const User = require('../models/user')
 const Patient = require('../models/patient')
 const Events = require('../models/events')
 const Appointments = require('../models/appointments')
+const Document = require('../models/document')
 const crypto = require('crypto')
 const { graph } = require('../services/agent')
 const crypt = require('../services/crypt')
 const emailService = require('../services/email')
+const f29azureService = require('../services/f29azure')
+const bookService = require('../services/books')
+const path = require('path')
 
 /**
  * WhatsApp Integration Controller
@@ -948,6 +952,109 @@ async function serveInfographic(req, res) {
     }
 }
 
+/**
+ * Upload a document from WhatsApp
+ * POST /whatsapp/upload
+ * Body: { phoneNumber, patientId, filename, mimeType }
+ * File: multipart/form-data with 'file' field
+ */
+async function uploadDocument(req, res) {
+    try {
+        const { phoneNumber, patientId, filename, mimeType } = req.body
+        
+        console.log('[WhatsApp] uploadDocument - Request:', { phoneNumber, patientId, filename, mimeType })
+        
+        if (!phoneNumber || !patientId) {
+            return res.status(400).json({ success: false, message: 'phoneNumber and patientId required' })
+        }
+        
+        if (!req.files || !req.files.file) {
+            return res.status(400).json({ success: false, message: 'No file provided' })
+        }
+        
+        // Validate user is linked
+        const user = await User.findOne({ 'whatsapp.phoneNumber': phoneNumber, 'whatsapp.isLinked': true })
+        if (!user) {
+            return res.status(401).json({ success: false, message: 'User not linked' })
+        }
+        
+        // Decrypt and validate patientId
+        let decryptedPatientId
+        try {
+            decryptedPatientId = crypt.decrypt(patientId)
+        } catch (err) {
+            return res.status(400).json({ success: false, message: 'Invalid patientId' })
+        }
+        
+        // Verify user has access to this patient
+        const patient = await Patient.findById(decryptedPatientId)
+        if (!patient) {
+            return res.status(404).json({ success: false, message: 'Patient not found' })
+        }
+        
+        const isOwner = patient.createdBy.toString() === user._id.toString()
+        const isShared = user.sharedPatients && user.sharedPatients.some(sp => sp.patientId.toString() === decryptedPatientId)
+        
+        if (!isOwner && !isShared) {
+            return res.status(403).json({ success: false, message: 'Access denied to patient' })
+        }
+        
+        // Generate unique URL for the document
+        const timestamp = Date.now()
+        const safeFilename = (filename || 'document').replace(/[^a-zA-Z0-9.-]/g, '_')
+        const documentUrl = `whatsapp/${timestamp}_${safeFilename}`
+        
+        // Get container name from encrypted patientId
+        const containerName = crypt.getContainerNameFromEncrypted(patientId)
+        
+        // Save file to Azure Blob Storage
+        const uploadResult = await f29azureService.createBlob(containerName, documentUrl, req.files.file.data)
+        if (!uploadResult) {
+            console.error('[WhatsApp] uploadDocument - Error saving to blob storage')
+            return res.status(500).json({ success: false, message: 'Error saving file' })
+        }
+        
+        // Create document record in database
+        const document = new Document({
+            url: documentUrl,
+            createdBy: decryptedPatientId,
+            addedBy: user._id
+        })
+        
+        await document.save()
+        
+        // Start document processing (OCR, etc.)
+        const docId = document._id.toString().toLowerCase()
+        const isTextFile = mimeType === 'text/plain'
+        
+        bookService.form_recognizer(
+            decryptedPatientId, 
+            docId, 
+            containerName, 
+            documentUrl, 
+            safeFilename, 
+            user._id.toString(), 
+            true, 
+            'low', // medicalLevel
+            isTextFile,
+            'es' // preferredResponseLanguage
+        )
+        
+        console.log('[WhatsApp] uploadDocument - Success. DocId:', docId)
+        
+        res.status(200).json({ 
+            success: true, 
+            message: 'Document uploaded successfully',
+            docId: crypt.encrypt(docId),
+            filename: safeFilename
+        })
+        
+    } catch (err) {
+        console.error('[WhatsApp] uploadDocument - Error:', err.message)
+        res.status(500).json({ success: false, message: 'Error processing upload' })
+    }
+}
+
 module.exports = {
     getStatus,
     getSessionByPhone,
@@ -961,5 +1068,6 @@ module.exports = {
     addEvent,
     getSummary,
     getInfographic,
-    serveInfographic
+    serveInfographic,
+    uploadDocument
 }
