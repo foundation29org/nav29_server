@@ -1036,6 +1036,23 @@ async function uploadDocument(req, res) {
             return res.status(403).json({ success: false, message: 'Access denied to patient' })
         }
         
+        // Check for pending documents (max 5 allowed, same as client)
+        const MAX_PENDING_DOCUMENTS = 5
+        const pendingCount = await Document.countDocuments({
+            createdBy: decryptedPatientId,
+            status: 'inProcess'
+        })
+        
+        if (pendingCount >= MAX_PENDING_DOCUMENTS) {
+            console.log('[WhatsApp] uploadDocument - Too many pending documents:', pendingCount)
+            return res.status(429).json({ 
+                success: false, 
+                message: `Hay ${pendingCount} documento(s) en proceso. Espera a que terminen antes de subir más.`,
+                pendingCount: pendingCount,
+                maxAllowed: MAX_PENDING_DOCUMENTS
+            })
+        }
+        
         // Generate unique URL for the document
         const timestamp = Date.now()
         const safeFilename = (filename || 'document').replace(/[^a-zA-Z0-9.-]/g, '_')
