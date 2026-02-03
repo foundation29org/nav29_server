@@ -73,18 +73,10 @@ async function extractEventsNavigator (req, res){
   const question = req.body.question
   const answer = req.body.answer
   const userId = req.body.userId
-  const patientId =  crypt.decrypt(req.body.patientId);
-  const keyEvents = req.body.initialEvents
+  const patientId = crypt.decrypt(req.body.patientId);
 
-  // let key_events = []
-  // if (!initialEvents || initialEvents.length < 3 || initialEvents.some(event => event.insight === null)){
-  //   key_events = await langchain.extractInitialEvents(question, answer, userId, patientId)
-  // }
-  // Solo usar extractEvents - el prompt extract_events_v1 ya maneja:
-  // - appointments (citas futuras/pasadas)
-  // - activity (eventos de vida)
-  // - reminder (recordatorios generales) - añadir al prompt en LangSmith
-  await langchain.extractEvents(question, answer, userId, patientId, keyEvents);
+  // Events are fetched from DB inside extractEvents to ensure freshness
+  await langchain.extractEvents(question, answer, userId, patientId);
 
   res.status(200).send(true)
 }

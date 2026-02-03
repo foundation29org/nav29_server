@@ -399,7 +399,7 @@ async function setActivePatient(req, res) {
 // Ask Navigator (called by bot) - Synchronous version for WhatsApp
 async function ask(req, res) {
     try {
-        const { phoneNumber, question, patientId: encryptedPatientId } = req.body
+        const { phoneNumber, question, patientId: encryptedPatientId, chatMode = 'fast' } = req.body
 
         console.log('[WhatsApp] ask - phoneNumber:', phoneNumber)
         console.log('[WhatsApp] ask - question:', question)
@@ -524,7 +524,7 @@ async function ask(req, res) {
                 userRole: user.role || 'User',
                 originalQuestion: question,
                 pubsubClient: mockPubsub,
-                chatMode: 'fast',
+                chatMode: chatMode === 'advanced' ? 'advanced' : 'fast', // Validate mode
                 isWhatsApp: true // Flag to skip saving to DB
             },
             callbacks: []

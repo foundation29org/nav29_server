@@ -242,8 +242,19 @@ ${medicalLevelGuidance[medicalLevel] || medicalLevelGuidance['1']}
 ${roleGuidance[userRole] || roleGuidance['User']}
 `;
 
+  // Formatear la fecha de forma más legible para el modelo
+  const systemDate = new Date(config.configurable.systemTime);
+  const formattedDate = systemDate.toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+  const isoDate = systemDate.toISOString().split('T')[0];
+  const systemTimeFormatted = `${formattedDate} (${isoDate}). Use this date to correctly interpret time-relative questions.`;
+
   const prompt = await systemPromptTemplate.format({ 
-    systemTime: config.configurable.systemTime, 
+    systemTime: systemTimeFormatted, 
     curatedContext: curatedContext.content,
     countryGuidance: countryGuidance + userProfileGuidance
   });

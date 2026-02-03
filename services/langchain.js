@@ -1145,10 +1145,16 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
       const birthDate = patientData.birthDate;
       const patientName = patientData.patientName;
 
-      // Generate the event summary with updated event structure considering new keys
-      let event_summary = eventsMinusDeleted.reduce((summary, event) => {
+      // Filter only manual events (not extracted from documents)
+      const manualEvents = eventsMinusDeleted.filter(event => 
+        event.origin === 'manual' || !event.origin
+      );
+
+      // Generate the event summary with only manual events
+      let event_summary = manualEvents.reduce((summary, event) => {
         const formattedDate = event.date ? new Date(event.date).toISOString().split('T')[0] : "unknown";
-        return summary + `Event: ${event.name}, Date: ${formattedDate}\n`;
+        const eventType = event.type || event.key || "other";
+        return summary + `- [${eventType}] ${event.name} (Date: ${formattedDate})\n`;
       }, "");
 
       // Extract the date of birth from the 'name' field of the event with key 'dob', parse it, and calculate the patient's current age
@@ -1209,6 +1215,7 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
 
       const finalCardSummary = await chainFinalCardSummary.invoke({
         summaries: clean_patient_info,
+        manual_events: event_summary,
         todayDate: todayDate,
         patientName: patientName,
         age: age,
@@ -1295,11 +1302,12 @@ const formatToday = () => {
   return { dayOfWeek, isoDate };
 };
 
-async function extractEvents(question, answer, userId, patientId, keyEvents) {
+async function extractEvents(question, answer, userId, patientId) {
   /*
-  This functions analyses a pair of question and answer and compares it to the patient's verified events.
-  It searchs for new events that are not in the verified events and adds them to the verified events.
+  This function analyses a pair of question and answer and compares it to the patient's verified events.
+  It searches for new events that are not in the verified events and adds them to the verified events.
   It also checks if the answer contains a date and if it does, it adds it to the date of the event if not use the current date.
+  Events are always fetched from DB to ensure freshness.
   */
   return new Promise(async (resolve, reject) => {
     const patientIdCrypt = crypt.encrypt(patientId);
@@ -1309,21 +1317,25 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
     let { gpt4omini } = createModels(projectName, 'gpt4omini');
     try {
 
-      // Get all the verified events for this patient
-      const events = await getAllEvents(patientId);
+      // Get all the verified events for this patient (excluding deleted ones)
+      const allEvents = await getAllEvents(patientId);
+      const events = allEvents.filter(event => event.status !== "deleted");
       const patientData = await getPatientData(patientId);
       const gender = patientData.gender;
       const birthDate = patientData.birthDate;
       const patientName = patientData.patientName;
 
       // Generate the event summary with updated event structure considering new keys
+      // Solución 2: Incluir más información (tipo de evento) para mejor comparación y evitar duplicados
       let event_summary = events.reduce((summary, event) => {
         const formattedDate = event.date ? new Date(event.date).toISOString().split('T')[0] : "unknown";
-        return summary + `Event: ${event.name}, Date: ${formattedDate}\n`;
+        const eventType = event.type || event.key || "other";
+        return summary + `- [${eventType}] ${event.name} (Date: ${formattedDate})\n`;
       }, "");
-      event_summary += `Gender: ${gender}\n`;
-      event_summary += `BirthDate: ${birthDate}\n`;
-      event_summary += `Name: ${patientName}\n`;
+      event_summary += `\nPatient Info:\n`;
+      event_summary += `- Gender: ${gender}\n`;
+      event_summary += `- BirthDate: ${birthDate}\n`;
+      event_summary += `- Name: ${patientName}\n`;
 
       // Use the function to get today's date and day
       const { dayOfWeek, isoDate } = formatToday();
@@ -1383,6 +1395,30 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
         }
         return eventDate <= currentDate;
       });
+
+      // Filtrar eventos duplicados: misma fecha + mismo tipo (key)
+      // Esto evita proponer eventos que ya existen (ej: appointment en 2026-02-04)
+      if (Array.isArray(eventJson) && eventJson.length > 0 && events.length > 0) {
+        const originalCount = eventJson.length;
+        eventJson = eventJson.filter(newEvent => {
+          const newDate = newEvent.date ? newEvent.date.split('T')[0] : null;
+          const newKey = newEvent.key || 'other';
+          
+          const isDuplicate = events.some(existingEvent => {
+            const existingDate = existingEvent.date ? new Date(existingEvent.date).toISOString().split('T')[0] : null;
+            const existingKey = existingEvent.type || existingEvent.key || 'other';
+            
+            // Duplicado si tiene misma fecha Y mismo tipo de evento
+            return newDate && existingDate && newDate === existingDate && newKey === existingKey;
+          });
+          
+          return !isDuplicate;
+        });
+        
+        if (originalCount !== eventJson.length) {
+          console.log(`[extractEvents] Filtered ${originalCount - eventJson.length} duplicate events (${originalCount} -> ${eventJson.length})`);
+        }
+      }
 
       pubsub.sendToUser(userId, {
         time: new Date().toISOString(),
