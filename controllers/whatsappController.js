@@ -1006,11 +1006,14 @@ async function uploadDocument(req, res) {
             })
         }
         
-        // Validate user is linked
-        const user = await User.findOne({ 'whatsapp.phoneNumber': phoneNumber, 'whatsapp.isLinked': true })
+        // Validate user is linked (use whatsappPhone like other functions)
+        const user = await User.findOne({ whatsappPhone: phoneNumber })
         if (!user) {
+            console.log('[WhatsApp] uploadDocument - User not found for phone:', phoneNumber)
             return res.status(401).json({ success: false, message: 'User not linked' })
         }
+        
+        console.log('[WhatsApp] uploadDocument - User found:', user.email)
         
         // Decrypt and validate patientId
         let decryptedPatientId
