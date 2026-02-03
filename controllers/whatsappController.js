@@ -1027,6 +1027,10 @@ async function uploadDocument(req, res) {
         const docId = document._id.toString().toLowerCase()
         const isTextFile = mimeType === 'text/plain'
         
+        // Obtener configuración del usuario
+        const medicalLevel = user.medicalLevel || '1'
+        const preferredResponseLanguage = user.preferredResponseLanguage || user.lang || 'es'
+        
         bookService.form_recognizer(
             decryptedPatientId, 
             docId, 
@@ -1035,9 +1039,9 @@ async function uploadDocument(req, res) {
             safeFilename, 
             user._id.toString(), 
             true, 
-            'low', // medicalLevel
+            medicalLevel,
             isTextFile,
-            'es' // preferredResponseLanguage
+            preferredResponseLanguage
         )
         
         console.log('[WhatsApp] uploadDocument - Success. DocId:', docId)
