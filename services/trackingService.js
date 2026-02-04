@@ -249,13 +249,7 @@ async function generateInsights(trackingData, lang = 'en') {
     }
 
     try {
-        const models = createModels('tracking-insights', 'gpt4omini');
-        const model = models.gpt4omini;
-        
-        if (!model) {
-            console.warn('Model not available, using fallback insights');
-            return generateBasicInsights(stats, trackingData.conditionType, lang);
-        }
+        const model = createModels('tracking-insights', 'gpt-4.1-mini')['gpt-4.1-mini'];
         
         const conditionLabel = {
             epilepsy: 'epilepsy/seizures',

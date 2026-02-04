@@ -406,11 +406,11 @@ async function summarizeServer(patientId, medicalLevel, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
 
   const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-  let { gpt5mini } = createModels(projectName, 'gpt5mini');
+  let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const summarize_prompt = await pull("foundation29/summarize-single_prompt_v1");
 
-  const chatPrompt = summarize_prompt.pipe(gpt5mini);
+  const chatPrompt = summarize_prompt.pipe(model);
   
   const summary = await chatPrompt.invoke({
     referenceDocs: docs,
@@ -443,7 +443,7 @@ async function extractAndParse(summaryText) {
 async function timelineServer(patientId, docs, reportDate) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt5mini } = createModels(projectName, 'gpt5mini');
+    let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const reportDateStr = reportDate instanceof Date ? reportDate.toISOString().split('T')[0] : reportDate;
 
@@ -476,7 +476,7 @@ TASK: Extract all events into a JSON array inside <output> tags.`]
       ]);
     }
 
-    const chatPrompt = timeline_prompt.pipe(gpt5mini);
+    const chatPrompt = timeline_prompt.pipe(model);
     
     // Unimos el contenido de los documentos en un solo string para que el LLM lo vea todo claro
     const fullText = docs.map(d => d.pageContent).join("\n\n");
@@ -503,11 +503,11 @@ async function anomaliesServer(patientId, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt5mini } = createModels(projectName, 'gpt5mini');
+    let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const anomalies_prompt = await pull("foundation29/anomalies-single_prompt_v1");
 
-  const chatPrompt = anomalies_prompt.pipe(gpt5mini);
+  const chatPrompt = anomalies_prompt.pipe(model);
   
   const anomalies = await chatPrompt.invoke({
     referenceDocs: docs
@@ -884,16 +884,14 @@ async function categorizeDocs(userId, content, patientId, containerName, url, do
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+      let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       // Format and call the prompt to categorize each document
       clean_doc = content.replace(/{/g, '{{').replace(/}/g, '}}');
 
-      let selectedModel = azuregpt4o;
-
       chatPrompt = await pull("foundation29/categorize_docs_base_v1");
 
-      const categoryChain = chatPrompt.pipe(selectedModel);
+      const categoryChain = chatPrompt.pipe(model);
       const category = await categoryChain.invoke({
         doc: clean_doc,
       });
@@ -1016,7 +1014,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { gpt5mini} = createModels(projectName, 'gpt5mini');
+      let { model} = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 15000 });
       const docs = await textSplitter.createDocuments([text]);
@@ -1024,7 +1022,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
       let anonymize_prompt = await pull("foundation29/anonymize_doc_base_v1");
 
       // This function creates a document chain prompted to anonymize a set of documents.
-      const chain = anonymize_prompt.pipe(gpt5mini);
+      const chain = anonymize_prompt.pipe(model);
 
       const patientIdCrypt = crypt.encrypt(patientId);
       let docIdEnc = crypt.encrypt(docId);
@@ -1096,12 +1094,12 @@ async function summarySuggestions(patientId, containerName, url) {
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+      let { model } = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
 
       // Create a langchain prompt with all the summaries to generate a summary
       let summary_suggestions_prompt = await pull("foundation29/summary_suggestions_base_v1");
 
-      const chainSummarySuggestions = summary_suggestions_prompt.pipe(azuregpt4o);
+      const chainSummarySuggestions = summary_suggestions_prompt.pipe(model);
       console.log("Calling summary suggestions chain...");
 
       const suggestions = await chainSummarySuggestions.invoke({
@@ -1387,7 +1385,7 @@ async function extractEvents(question, answer, userId, patientId) {
     pubsub.sendToUser(userId, { "time": new Date().toISOString(), "status": "analizando respuesta", "step": "extract events", "patientId": patientIdCrypt })
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt4omini } = createModels(projectName, 'gpt4omini');
+    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
     try {
 
       // Get all the verified events for this patient (excluding deleted ones)
@@ -1416,7 +1414,7 @@ async function extractEvents(question, answer, userId, patientId) {
       // Generate a prompt with the question's user, answer from Navigator and the events and ask the model to extract new events
       let extract_events_prompt = await pull("foundation29/extract_events_v1");
 
-      const chainExtractEvents = extract_events_prompt.pipe(gpt4omini);
+      const chainExtractEvents = extract_events_prompt.pipe(model);
 
       const extractedEvents = await chainExtractEvents.invoke({
         questionText: question,
@@ -1524,7 +1522,7 @@ async function extractInitialEvents(patientId, ogLang) {
     // pubsub.sendToUser(userId, {"status": "analizando inicio", "step": "extract events"})
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o} = createModels(projectName, 'azuregpt4o');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Get all the documents for this patient
       // Obtener nombre del contenedor Azure para este paciente
@@ -1560,7 +1558,7 @@ async function extractInitialEvents(patientId, ogLang) {
         ).join("\n");
       }
   
-      const chainExtractEvents = initial_events_prompt.pipe(azuregpt4o);
+      const chainExtractEvents = initial_events_prompt.pipe(model);
   
       const extractedEvents = await chainExtractEvents.invoke({
         documents: summaries,
@@ -1711,12 +1709,12 @@ async function divideElements(event, patientId) {
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
     try {
       // Generate a prompt with the question's user
       let divide_elements_prompt = await pull("foundation29/divide_elements_v1");
 
-      const chainDivideElements = divide_elements_prompt.pipe(azuregpt4o);
+      const chainDivideElements = divide_elements_prompt.pipe(model);
 
       const dividedElements = await chainDivideElements.invoke({
         event: event.name,
@@ -1742,12 +1740,12 @@ async function explainMedicalEvent(eventDescription, patientId) {
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt5mini} = createModels(projectName, 'gpt5mini');
+    let { model} = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Generate a prompt with the medical event
       let explain_event_prompt = await pull("foundation29/explain_medical_event_v1");
 
-      const chainExplainEvent = explain_event_prompt.pipe(gpt5mini);
+      const chainExplainEvent = explain_event_prompt.pipe(model);
 
       const explanation = await chainExplainEvent.invoke({
         eventDescription: eventDescription,
@@ -1874,7 +1872,7 @@ async function generateSoapQuestions(patientId, patientSymptoms, patientContext,
   
   try {
     const projectName = `SOAP Questions - ${patientId}`;
-    const { gpt4omini } = createModels(projectName, 'gpt4omini');
+    const model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const langMap = {
       'es': 'Genera las preguntas en español.',
@@ -1906,7 +1904,7 @@ Generate specific, clinically relevant questions that will help:
 Return ONLY a JSON array of strings with the questions. Example format:
 ["Question 1?", "Question 2?", "Question 3?"]`;
 
-    const response = await gpt4omini.invoke(prompt);
+    const response = await model.invoke(prompt);
     const responseText = response.content.trim();
     
     // Parse JSON response
@@ -1952,7 +1950,7 @@ async function generateSoapReport(patientId, patientSymptoms, questionsAndAnswer
   
   try {
     const projectName = `SOAP Report - ${patientId}`;
-    const { gpt4omini } = createModels(projectName, 'gpt4omini');
+    const model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const langMap = {
       'es': 'Genera el informe SOAP en español.',
@@ -2003,7 +2001,7 @@ Return the response as a JSON object with this exact structure:
 
 Each section should be comprehensive but concise, using proper medical terminology while remaining understandable.`;
 
-    const response = await gpt4omini.invoke(prompt);
+    const response = await model.invoke(prompt);
     const responseText = response.content.trim();
     
     // Parse JSON response

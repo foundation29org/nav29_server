@@ -98,7 +98,6 @@ TODAY'S DATE: {systemTime}
     const { gpt5mini } = createModels('default', 'gpt5mini');
     baseModel = gpt5mini;
   } else {
-    // Usar gpt-4.1-nano en lugar de gpt4omini para mejor balance rapidez/calidad
     baseModel = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
   }
 
@@ -229,9 +228,15 @@ Contextualize your responses accordingly:
 
   // Mapeo de role a enfoque de respuesta
   const roleGuidance = {
-    'User': `Focus on: Personal health understanding, what this means for daily life, self-care recommendations.`,
-    'Caregiver': `Focus on: Warning signs to watch for (red flags), medication administration, care logistics, when to seek emergency help, support resources.`,
-    'Clinical': `Focus on: Clinical data accuracy, differential considerations, treatment protocols, evidence-based recommendations.`
+    'User': `Focus on: Personal health understanding, what this means for daily life, self-care recommendations.
+- The person writing is THE PATIENT themselves.`,
+    'Caregiver': `Focus on: Warning signs to watch for (red flags), medication administration, care logistics, when to seek emergency help, support resources.
+- CRITICAL: The person writing is a CAREGIVER, NOT the patient.
+- When they say "he fell", "she is having seizures", "he has a fever", etc., they are referring to THE PATIENT they care for, not themselves.
+- Always interpret health events and symptoms as happening to the PATIENT, unless they explicitly say "I" or "me" referring to their own health.
+- Address the caregiver as someone managing the patient's care, not as the patient.`,
+    'Clinical': `Focus on: Clinical data accuracy, differential considerations, treatment protocols, evidence-based recommendations.
+- The person writing is a CLINICAL PROFESSIONAL reviewing this patient's case.`
   };
 
   let userProfileGuidance = `
@@ -453,7 +458,7 @@ async function prettify(state, config) {
   This function is used to clean up the output of the LLM.
   It removes the ```html ``` tags and the ``` ``` tags.
   */
-  const { azuregpt4o } = createModels('default', 'azuregpt4o');
+  const model = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
   output = state.messages[state.messages.length - 1];
   
   // Check if this is a TrialGPT response - if so, use it directly without reformatting
@@ -481,7 +486,7 @@ async function prettify(state, config) {
   };
   
   const htmlFormatter = await pull("foundation29/html_formatter_v1");
-  const runnable = htmlFormatter.pipe(azuregpt4o);
+  const runnable = htmlFormatter.pipe(model);
   const formattedOutput = await runnable.invoke({ 
     content: output.content,
     medicalLevel: medicalLevel,

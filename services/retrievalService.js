@@ -61,7 +61,6 @@ const RETRIEVAL_PLANS = {
 async function detectIntent(question, patientId) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Intent`;
-    // gpt-4.1-nano: más rápido que gpt5mini, suficiente para clasificación de intent
     let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
     
     // Attempt to pull from Hub
@@ -200,7 +199,7 @@ function deterministicRerank(chunks, plan) {
 
 /**
  * Extracts structured facts from chunks using an LLM
- * @param {string} chatMode - 'fast' uses gpt4omini, 'advanced' uses gpt5mini
+ * @param {string} chatMode - 'fast' uses gpt-4.1-nano, 'advanced' uses gpt-4.1-mini
  */
 async function extractStructuredFacts(chunks, question, patientId, chatMode = 'fast') {
   try {

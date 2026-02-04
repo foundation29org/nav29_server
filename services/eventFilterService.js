@@ -35,7 +35,7 @@ async function filterAndAggregateEvents(events, options = {}) {
   }
 
   try {
-    const { gpt4omini } = createModels('eventFilter', 'gpt4omini');
+    const model = createModels('eventFilter', 'gpt-4.1-nano')['gpt-4.1-nano'];
 
     const prompt = `You are a medical data curator. Your task is to:
 1. FILTER: Remove noise (negative findings, normal values, incidental findings, meaningless text)
@@ -57,7 +57,7 @@ OUTPUT FORMAT - Respond ONLY with a JSON array of the filtered/merged events:
   ...
 ]`;
 
-    const response = await gpt4omini.invoke(prompt);
+    const response = await model.invoke(prompt);
     
     let filteredEvents;
     try {

@@ -184,7 +184,7 @@ async function generateConsolidatedTimeline(patientId, userLang = 'es') {
     }));
 
     // 5. Llamar al LLM para consolidar
-    const { gpt4omini } = createModels('default', 'gpt4omini');
+    const model = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
     
     // Generar instrucción de idioma basada en userLang
     const langMap = {
@@ -281,7 +281,7 @@ Generate the consolidated timeline. Remember: PRIORITIZE the RAG-validated data 
       ]);
     }
 
-    const chain = consolidationPrompt.pipe(gpt4omini);
+    const chain = consolidationPrompt.pipe(model);
     
     const result = await chain.invoke({
       ragContext: ragContextText || 'No RAG-validated context available.',

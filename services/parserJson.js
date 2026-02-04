@@ -169,9 +169,9 @@ ${instructions}
 Return ONLY the fixed JSON, no explanations, no markdown code blocks:`;
 
   try {
-    const { gpt4omini } = createModels('default', 'gpt4omini');
+    const model = createModels('default', 'gpt-4.1-mini')['gpt-4.1-mini'];
     
-    const response = await gpt4omini.invoke([
+    const response = await model.invoke([
       { role: 'user', content: repairPrompt }
     ]);
     
