@@ -205,15 +205,10 @@ function deterministicRerank(chunks, plan) {
 async function extractStructuredFacts(chunks, question, patientId, chatMode = 'fast') {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Extraction`;
-    // Seleccionar modelo según chatMode
-    // fast: gpt-4.1-nano (más rápido, buena calidad para extracción)
-    // advanced: gpt-4.1-mini (mejor balance calidad/velocidad que gpt5mini)
-    let model;
-    if (chatMode === 'advanced') {
-      model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
-    } else {
-      model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
-    }
+    // Usar gpt-4.1-nano para extracción en ambos modos
+    // Pruebas muestran que extrae más facts en menos tiempo que gpt-4.1-mini
+    // y la calidad de respuesta final es comparable
+    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
     
     let extractionPrompt;
     try {
