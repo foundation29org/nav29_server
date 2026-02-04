@@ -320,15 +320,11 @@ async function processDocs(docs, containerName) {
 
 async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = [], appointments = [], notes = [], chatMode = 'fast') {
   try {
-  // Seleccionar modelo según chatMode: 'fast' = gpt4omini, 'advanced' = gemini25pro
-  let model;
-  if (chatMode === 'advanced') {
-    const { gemini25pro } = createModels('default', 'gemini25pro');
-    model = gemini25pro;
-  } else {
-    const { gpt4omini } = createModels('default', 'gpt4omini');
-    model = gpt4omini;
-  }
+  // Seleccionar modelo según chatMode: 
+  // Usamos gpt-4.1-nano para ambos modos en curateContext
+  // La calidad final la aporta el modelo principal (gpt-5-mini en advanced)
+  // Esto ahorra ~5s en modo advanced sin pérdida de calidad significativa
+  let model = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
   
   let contextTemplate;
   try {

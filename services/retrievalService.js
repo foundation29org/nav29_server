@@ -55,12 +55,14 @@ const RETRIEVAL_PLANS = {
 };
 
 /**
- * Detects intent using an LLM (GPT-4o-Mini) to support any language
+ * Detects intent using an LLM to support any language
+ * Uses gpt-4.1-nano for fast mode (quick intent classification)
  */
 async function detectIntent(question, patientId) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Intent`;
-    let { gpt5mini } = createModels(projectName, 'gpt5mini');
+    // gpt-4.1-nano: más rápido que gpt5mini, suficiente para clasificación de intent
+    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
     
     // Attempt to pull from Hub
     let intentPrompt;
@@ -90,7 +92,7 @@ async function detectIntent(question, patientId) {
       ]);
     }
 
-    const chain = intentPrompt.pipe(gpt5mini);
+    const chain = intentPrompt.pipe(model);
     const response = await chain.invoke({ question });
     const detectedId = response.content.trim().toUpperCase();
     
@@ -204,13 +206,13 @@ async function extractStructuredFacts(chunks, question, patientId, chatMode = 'f
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Extraction`;
     // Seleccionar modelo según chatMode
+    // fast: gpt-4.1-nano (más rápido, buena calidad para extracción)
+    // advanced: gpt-4.1-mini (mejor balance calidad/velocidad que gpt5mini)
     let model;
     if (chatMode === 'advanced') {
-      const { gpt5mini } = createModels(projectName, 'gpt5mini');
-      model = gpt5mini;
+      model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     } else {
-      const { gpt4omini } = createModels(projectName, 'gpt4omini');
-      model = gpt4omini;
+      model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
     }
     
     let extractionPrompt;

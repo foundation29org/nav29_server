@@ -89,15 +89,17 @@ TODAY'S DATE: {systemTime}
     ]);
   }
 
-  // Seleccionar modelo según chatMode: 'fast' = gpt4omini (~11s), 'advanced' = gpt5mini (~25s)
+  // Seleccionar modelo según chatMode: 
+  // 'fast' = gpt-4.1-nano (más rápido, buena calidad)
+  // 'advanced' = gpt5mini (mayor capacidad de razonamiento)
   const chatMode = config.configurable.chatMode || 'fast';
   let baseModel;
   if (chatMode === 'advanced') {
     const { gpt5mini } = createModels('default', 'gpt5mini');
     baseModel = gpt5mini;
   } else {
-    const { gpt4omini } = createModels('default', 'gpt4omini');
-    baseModel = gpt4omini;
+    // Usar gpt-4.1-nano en lugar de gpt4omini para mejor balance rapidez/calidad
+    baseModel = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
   }
 
   const question = state.messages[state.messages.length - 1].content;

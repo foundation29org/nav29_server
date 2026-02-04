@@ -27,6 +27,8 @@ const { createChunksIndex } = require('./vectorStoreService');
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
 const OPENAI_API_BASE_GPT4O = config.OPENAI_API_BASE_GPT4O;
+const OPENAI_API_BASE_FALLBACK = config.OPENAI_API_BASE_FALLBACK;
+const O_A_K_FALLBACK = config.O_A_K_FALLBACK;
 
 const embeddings = new OpenAIEmbeddings({
   azureOpenAIApiKey: config.O_A_K_GPT4O,
@@ -102,6 +104,51 @@ function createModels(projectName, modelType = null) {
             //poner  azureOpenAIEndpoint  undefined
             model.azureOpenAIEndpoint = undefined;
             break;
+          case 'gpt-4.1-nano':
+            model = new ChatOpenAI({
+              modelName: "gpt-4.1-nano",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_GPT4O,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+              azureOpenAIApiDeploymentName: "gpt-4.1-nano",
+              temperature: 0,
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            //poner  azureOpenAIEndpoint  undefined
+            model.azureOpenAIEndpoint = undefined;
+            break;
+            case 'gpt-4.1-mini':
+              model = new ChatOpenAI({
+                modelName: "gpt-4.1-mini",
+                azure: true,
+                azureOpenAIApiKey: O_A_K_GPT4O,
+                azureOpenAIApiVersion: OPENAI_API_VERSION,
+                azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+                azureOpenAIApiDeploymentName: "gpt-4.1-mini",
+                temperature: 0,
+                timeout: 140000,
+                callbacks: tracer ? [tracer] : undefined
+              });
+              //poner  azureOpenAIEndpoint  undefined
+              model.azureOpenAIEndpoint = undefined;
+              break;
+          case 'gpt-4.1':
+            model = new ChatOpenAI({
+              modelName: "gpt-4.1",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_GPT4O,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+              azureOpenAIApiDeploymentName: "gpt-4.1",
+              temperature: 0,
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            //poner  azureOpenAIEndpoint  undefined
+            model.azureOpenAIEndpoint = undefined;
+            break;
         case 'gpt5mini':
           model = new ChatOpenAI({
             modelName: "gpt-5-mini",
@@ -115,6 +162,32 @@ function createModels(projectName, modelType = null) {
           });
           model.azureOpenAIEndpoint = undefined;
           break;
+        case 'gpt-5-nano':
+          model = new ChatOpenAI({
+            modelName: "gpt-5-nano",
+            azure: true,
+            azureOpenAIApiKey: O_A_K_GPT4O,
+            azureOpenAIApiVersion: OPENAI_API_VERSION,
+            azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+            azureOpenAIApiDeploymentName: "gpt-5-nano",
+            timeout: 140000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          model.azureOpenAIEndpoint = undefined;
+          break;
+          case 'gpt-5.2':
+            model = new ChatOpenAI({
+              modelName: "gpt-5.2",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_FALLBACK,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_FALLBACK,
+              azureOpenAIApiDeploymentName: "gpt-5.2",
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            model.azureOpenAIEndpoint = undefined;
+            break;
         case 'claude3sonnet':
           model = new ChatBedrockConverse({
             model: "anthropic.claude-3-sonnet-20240229-v1:0",
