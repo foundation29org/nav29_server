@@ -1143,6 +1143,70 @@ async function uploadDocument(req, res) {
     }
 }
 
+// Extract events from a question/answer pair (called by bot after ask)
+async function extractEvents(req, res) {
+    try {
+        const { phoneNumber, patientId: encryptedPatientId, question, answer } = req.body
+
+        console.log('[WhatsApp] extractEvents - phoneNumber:', phoneNumber)
+        console.log('[WhatsApp] extractEvents - question:', question?.substring(0, 50))
+
+        if (!phoneNumber || !encryptedPatientId || !question) {
+            return res.status(400).json({ message: 'Phone number, patient ID and question are required' })
+        }
+
+        // Find user by phone
+        const user = await User.findOne({ whatsappPhone: phoneNumber })
+        if (!user) {
+            return res.status(404).json({ error: true, message: 'User not linked' })
+        }
+
+        // Decrypt patientId
+        let patientId
+        try {
+            patientId = crypt.decrypt(encryptedPatientId)
+        } catch (e) {
+            console.error('[WhatsApp] extractEvents - Failed to decrypt patientId:', e.message)
+            return res.status(400).json({ error: true, message: 'Invalid patient ID' })
+        }
+
+        // Validate that the patient belongs to this user
+        const userId = user._id.toString()
+        const patient = await Patient.findOne({
+            _id: patientId,
+            $or: [
+                { createdBy: user._id },
+                { sharedWith: user._id },
+                { 'customShare.locations': { $elemMatch: { userId: userId, status: 'accepted' } } }
+            ]
+        }).select('_id')
+
+        if (!patient) {
+            return res.status(403).json({ error: true, message: 'Patient not authorized' })
+        }
+
+        // Call langchain extractEvents
+        const langchainService = require('../services/langchain')
+        
+        // Create a mock userId for the function (it uses pubsub which we don't need here)
+        const mockUserId = `whatsapp_${phoneNumber}`
+        
+        const events = await langchainService.extractEvents(question, answer || '', mockUserId, patientId)
+
+        console.log('[WhatsApp] extractEvents - Found', events?.length || 0, 'events')
+
+        return res.status(200).json({
+            success: true,
+            events: events || []
+        })
+
+    } catch (err) {
+        console.error('[WhatsApp] extractEvents - Error:', err.message)
+        console.error('[WhatsApp] extractEvents - Stack:', err.stack)
+        return res.status(500).json({ error: true, message: 'Error extracting events' })
+    }
+}
+
 module.exports = {
     getStatus,
     getSessionByPhone,
@@ -1154,6 +1218,7 @@ module.exports = {
     setActivePatient,
     ask,
     addEvent,
+    extractEvents,
     getSummary,
     getInfographic,
     serveInfographic,

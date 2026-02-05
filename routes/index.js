@@ -328,6 +328,7 @@ api.post('/whatsapp/unlink-by-phone', checkBotSignature, whatsappCtrl.unlinkByPh
 api.post('/whatsapp/patients/:userId', checkBotSignature, whatsappCtrl.getPatients)
 api.post('/whatsapp/set-patient', checkBotSignature, whatsappCtrl.setActivePatient)
 api.post('/whatsapp/ask', checkBotSignature, whatsappCtrl.ask)
+api.post('/whatsapp/extract-events', checkBotSignature, whatsappCtrl.extractEvents)
 api.post('/whatsapp/add-event', checkBotSignature, whatsappCtrl.addEvent)
 api.post('/whatsapp/summary', checkBotSignature, whatsappCtrl.getSummary)
 api.post('/whatsapp/infographic', checkBotSignature, whatsappCtrl.getInfographic)
