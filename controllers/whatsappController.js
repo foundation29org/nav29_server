@@ -1194,6 +1194,9 @@ async function extractEvents(req, res) {
         const events = await langchainService.extractEvents(question, answer || '', mockUserId, patientId)
 
         console.log('[WhatsApp] extractEvents - Found', events?.length || 0, 'events')
+        if (events && events.length > 0) {
+            console.log('[WhatsApp] extractEvents - Event structure:', JSON.stringify(events[0]))
+        }
 
         return res.status(200).json({
             success: true,
