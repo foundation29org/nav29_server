@@ -66,8 +66,22 @@ async function buildPatientContext(patientId, patientData) {
             .lean()
         
         for (const event of events) {
-            const dateWithoutTime = event.date ? new Date(event.date).toISOString().split('T')[0] : undefined
-            const metadataItem = { name: event.name, date: dateWithoutTime }
+            let eventDateStr = undefined
+            if (event.date) {
+                const eventDate = new Date(event.date)
+                const dateWithoutTime = eventDate.toISOString().split('T')[0]
+                const hours = eventDate.getUTCHours()
+                const minutes = eventDate.getUTCMinutes()
+                // For appointments and reminders, include time if not midnight
+                const isTimeSensitive = event.key === 'appointment' || event.key === 'reminder'
+                if (isTimeSensitive && (hours !== 0 || minutes !== 0)) {
+                    const timeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
+                    eventDateStr = `${dateWithoutTime} ${timeStr}`
+                } else {
+                    eventDateStr = dateWithoutTime
+                }
+            }
+            const metadataItem = { name: event.name, date: eventDateStr }
             if (event.dateEnd) {
                 metadataItem.dateEnd = new Date(event.dateEnd).toISOString().split('T')[0]
             }
@@ -81,8 +95,21 @@ async function buildPatientContext(patientId, patientData) {
         
         for (const appointment of appointments) {
             if (appointment.notes) {
-                const dateWithoutTime = appointment.date ? new Date(appointment.date).toISOString().split('T')[0] : undefined
-                metadata.push({ name: appointment.notes, date: dateWithoutTime })
+                let appointmentDateStr = undefined
+                if (appointment.date) {
+                    const appointmentDate = new Date(appointment.date)
+                    const dateWithoutTime = appointmentDate.toISOString().split('T')[0]
+                    const hours = appointmentDate.getUTCHours()
+                    const minutes = appointmentDate.getUTCMinutes()
+                    // Include time if not midnight
+                    if (hours !== 0 || minutes !== 0) {
+                        const timeStr = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`
+                        appointmentDateStr = `${dateWithoutTime} ${timeStr}`
+                    } else {
+                        appointmentDateStr = dateWithoutTime
+                    }
+                }
+                metadata.push({ name: appointment.notes, date: appointmentDateStr })
             }
         }
         

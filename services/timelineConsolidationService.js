@@ -184,7 +184,8 @@ async function generateConsolidatedTimeline(patientId, userLang = 'es') {
     }));
 
     // 5. Llamar al LLM para consolidar
-    const model = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
+    // gpt-4.1-mini: mejor precisión en consolidación de eventos del timeline
+    const model = createModels('default', 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     // Generar instrucción de idioma basada en userLang
     const langMap = {

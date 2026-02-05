@@ -320,11 +320,9 @@ async function processDocs(docs, containerName) {
 
 async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = [], appointments = [], notes = [], chatMode = 'fast') {
   try {
-  // Seleccionar modelo según chatMode: 
-  // Usamos gpt-4.1-nano para ambos modos en curateContext
-  // La calidad final la aporta el modelo principal (gpt-5-mini en advanced)
-  // Esto ahorra ~5s en modo advanced sin pérdida de calidad significativa
-  let model = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
+  // gpt-4.1-mini: mejor precisión en síntesis de contexto clínico
+  // Importante para no perder detalles como horas de citas, dosis exactas, etc.
+  let model = createModels('default', 'gpt-4.1-mini')['gpt-4.1-mini'];
   
   let contextTemplate;
   try {

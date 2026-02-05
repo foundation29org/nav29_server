@@ -734,7 +734,7 @@ async function callNavigator(req, res) {
 				userRole: userRole, // User, Caregiver, Clinical
 				originalQuestion: originalQuestion,
 				pubsubClient: pubsub,
-				chatMode: req.body.chatMode || 'fast' // 'fast' = gpt-4.1-nano, 'advanced' = gpt5mini
+				chatMode: req.body.chatMode || 'fast' // 'fast' = gpt-4.1-mini, 'advanced' = gpt5mini
 			},
 			callbacks: tracer ? [tracer] : [] 
 		}).catch(error => {

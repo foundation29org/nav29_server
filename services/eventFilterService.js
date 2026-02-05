@@ -35,7 +35,8 @@ async function filterAndAggregateEvents(events, options = {}) {
   }
 
   try {
-    const model = createModels('eventFilter', 'gpt-4.1-nano')['gpt-4.1-nano'];
+    // gpt-4.1-mini: mejor precisión en filtrado/comparación de eventos
+    const model = createModels('eventFilter', 'gpt-4.1-mini')['gpt-4.1-mini'];
 
     const prompt = `You are a medical data curator. Your task is to:
 1. FILTER: Remove noise (negative findings, normal values, incidental findings, meaningless text)

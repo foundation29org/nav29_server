@@ -56,12 +56,13 @@ const RETRIEVAL_PLANS = {
 
 /**
  * Detects intent using an LLM to support any language
- * Uses gpt-4.1-nano for fast mode (quick intent classification)
+ * Uses gpt-4.1-mini for reliable intent classification
  */
 async function detectIntent(question, patientId) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Intent`;
-    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
+    // gpt-4.1-mini: buen balance velocidad/precisión para app de salud
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     // Attempt to pull from Hub
     let intentPrompt;
@@ -199,15 +200,13 @@ function deterministicRerank(chunks, plan) {
 
 /**
  * Extracts structured facts from chunks using an LLM
- * @param {string} chatMode - 'fast' uses gpt-4.1-nano, 'advanced' uses gpt-4.1-mini
+ * Uses gpt-4.1-mini for reliable extraction of clinical data
  */
 async function extractStructuredFacts(chunks, question, patientId, chatMode = 'fast') {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId} - Extraction`;
-    // Usar gpt-4.1-nano para extracción en ambos modos
-    // Pruebas muestran que extrae más facts en menos tiempo que gpt-4.1-mini
-    // y la calidad de respuesta final es comparable
-    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
+    // gpt-4.1-mini: mejor precisión en extracción de datos clínicos (ej: horas de citas)
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     let extractionPrompt;
     try {

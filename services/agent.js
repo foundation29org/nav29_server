@@ -90,7 +90,8 @@ TODAY'S DATE: {systemTime}
   }
 
   // Seleccionar modelo según chatMode: 
-  // 'fast' = gpt-4.1-nano (más rápido, buena calidad)
+  // 'fast' = gpt-4.1-mini (buen balance velocidad/calidad para app de salud)
+  // 'fast' = gpt-4.1-mini (buen balance velocidad/calidad para app de salud)
   // 'advanced' = gpt5mini (mayor capacidad de razonamiento)
   const chatMode = config.configurable.chatMode || 'fast';
   let baseModel;
@@ -98,7 +99,7 @@ TODAY'S DATE: {systemTime}
     const { gpt5mini } = createModels('default', 'gpt5mini');
     baseModel = gpt5mini;
   } else {
-    baseModel = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
+    baseModel = createModels('default', 'gpt-4.1-mini')['gpt-4.1-mini'];
   }
 
   const question = state.messages[state.messages.length - 1].content;
@@ -458,7 +459,7 @@ async function prettify(state, config) {
   This function is used to clean up the output of the LLM.
   It removes the ```html ``` tags and the ``` ``` tags.
   */
-  const model = createModels('default', 'gpt-4.1-nano')['gpt-4.1-nano'];
+  const model = createModels('default', 'gpt-4.1-mini')['gpt-4.1-mini'];
   output = state.messages[state.messages.length - 1];
   
   // Check if this is a TrialGPT response - if so, use it directly without reformatting

@@ -1094,7 +1094,8 @@ async function summarySuggestions(patientId, containerName, url) {
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { model } = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
+      // gpt-4.1-mini: mejor calidad en generación de sugerencias
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       // Create a langchain prompt with all the summaries to generate a summary
       let summary_suggestions_prompt = await pull("foundation29/summary_suggestions_base_v1");
@@ -1385,7 +1386,7 @@ async function extractEvents(question, answer, userId, patientId) {
     pubsub.sendToUser(userId, { "time": new Date().toISOString(), "status": "analizando respuesta", "step": "extract events", "patientId": patientIdCrypt })
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
 
       // Get all the verified events for this patient (excluding deleted ones)
@@ -1415,7 +1416,6 @@ async function extractEvents(question, answer, userId, patientId) {
       let extract_events_prompt = await pull("foundation29/extract_events_v1");
 
       const chainExtractEvents = extract_events_prompt.pipe(model);
-
       const extractedEvents = await chainExtractEvents.invoke({
         questionText: question,
         events: event_summary,
@@ -1454,7 +1454,6 @@ async function extractEvents(question, answer, userId, patientId) {
           }
         });
       }
-
       // Remove events with future dates, except for appointments and reminders
       const allowedFutureTypes = ['appointment', 'reminder'];
       eventJson = eventJson.filter(event => {
@@ -1709,7 +1708,8 @@ async function divideElements(event, patientId) {
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let model = createModels(projectName, 'gpt-4.1-nano')['gpt-4.1-nano'];
+    // gpt-4.1-mini: mejor precisión en división de elementos
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Generate a prompt with the question's user
       let divide_elements_prompt = await pull("foundation29/divide_elements_v1");
