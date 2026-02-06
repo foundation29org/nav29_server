@@ -406,7 +406,7 @@ async function summarizeServer(patientId, medicalLevel, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
 
   const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-  let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+  let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const summarize_prompt = await pull("foundation29/summarize-single_prompt_v1");
 
@@ -443,7 +443,7 @@ async function extractAndParse(summaryText) {
 async function timelineServer(patientId, docs, reportDate) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const reportDateStr = reportDate instanceof Date ? reportDate.toISOString().split('T')[0] : reportDate;
 
@@ -503,7 +503,7 @@ async function anomaliesServer(patientId, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const anomalies_prompt = await pull("foundation29/anomalies-single_prompt_v1");
 
@@ -884,7 +884,7 @@ async function categorizeDocs(userId, content, patientId, containerName, url, do
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { model } = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       // Format and call the prompt to categorize each document
       clean_doc = content.replace(/{/g, '{{').replace(/}/g, '}}');
