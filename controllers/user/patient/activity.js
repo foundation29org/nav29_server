@@ -14,6 +14,25 @@ const Appointments = require('../../../models/appointments')
 
 const MAX_TOKENS = 900000; // Dejamos margen para el prompt y la respuesta
 
+// Helper function to format dates based on language
+function formatDate(date, lang = 'en') {
+    const d = new Date(date);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    
+    // Spanish and similar languages: DD/MM/YYYY
+    // English and others: YYYY-MM-DD (ISO format, universally understood)
+    const spanishLocales = ['es', 'es-ES', 'es-MX', 'es-AR', 'pt', 'pt-BR', 'fr', 'it', 'de'];
+    
+    if (spanishLocales.some(locale => lang?.toLowerCase().startsWith(locale.toLowerCase()))) {
+        return `${day}/${month}/${year} ${hours}:${minutes}`;
+    }
+    return `${month}/${day}/${year} ${hours}:${minutes}`;
+}
+
 async function getRecentActivity(req, res) {
   try {
     let patientId = crypt.decrypt(req.params.patientId);
@@ -26,7 +45,7 @@ async function getRecentActivity(req, res) {
     ]);
 
     if (!patient) {
-      return res.status(404).send({ message: 'Paciente no encontrado' });
+      return res.status(404).send({ message: 'Patient not found' });
     }
 
     // Determinar la fecha desde la cual obtener actividad
@@ -100,7 +119,8 @@ async function getRecentActivity(req, res) {
     const formattedEvents = recentEvents.map(event => ({
       type: 'event',
       name: event.name,
-      date: event.dateInput,
+      date: event.dateInput,      // When the event was added
+      eventDate: event.date,       // When the event will occur (e.g., appointment date)
       addedBy: {
         userName: userMap.get(event.addedBy.toString())?.userName || 'Unknown',
         email: userMap.get(event.addedBy.toString())?.email || 'Unknown'
@@ -135,26 +155,26 @@ async function getRecentActivity(req, res) {
     if(allActivity.length == 0){
         return res.status(200).send({
             activity: allActivity,
-            summary: 'No hay actividad reciente'
+            summary: 'No recent activity'
         })
     }else{
         // Obtener el rol del usuario y generar el resumen
         let rolePrompt = '';
         switch(user.role) {
             case 'Clinical':
-              rolePrompt = 'Genera un resumen técnico y detallado orientado a profesionales clínicos, incluyendo términos médicos relevantes y destacando hallazgos importantes de los documentos.';
+              rolePrompt = 'Generate a technical and detailed summary aimed at clinical professionals, including relevant medical terms and highlighting important findings from the documents.';
               break;
             case 'User':
-              rolePrompt = 'Genera un resumen simple y fácil de entender para pacientes, evitando jerga médica compleja y explicando los conceptos de manera clara.';
+              rolePrompt = 'Generate a simple and easy-to-understand summary for patients, avoiding complex medical jargon and explaining concepts clearly.';
               break;
             default:
-              rolePrompt = `Genera un resumen orientado a cuidadores que:
-              1. Se centre en información práctica y relevante para el cuidado diario
-              2. Explique los términos médicos de forma simple y comprensible
-              3. Destaque aspectos importantes que requieran atención o seguimiento
-              4. Evite detalles técnicos innecesarios
-              5. Incluya recomendaciones prácticas si las hay
-              6. Resuma los documentos médicos de manera muy simplificada, enfocándose en "qué significa esto para el cuidado del paciente"`;
+              rolePrompt = `Generate a caregiver-oriented summary that:
+              1. Focuses on practical and relevant information for daily care
+              2. Explains medical terms in a simple and understandable way
+              3. Highlights important aspects that require attention or follow-up
+              4. Avoids unnecessary technical details
+              5. Includes practical recommendations if available
+              6. Summarizes medical documents in a very simplified way, focusing on "what this means for patient care"`;
           }
 
         // Obtener el idioma preferido del usuario
@@ -206,42 +226,53 @@ async function getRecentActivity(req, res) {
           timePeriod = 'fromDate';
         }
 
-        const activityChunks = chunkActivities(allActivity, MAX_TOKENS);
+        const activityChunks = chunkActivities(allActivity, MAX_TOKENS, responseLanguage);
         let summaries = [];
 
         for (const chunk of activityChunks) {
             const activityText = chunk.map(item => {
-                const date = new Date(item.date).toLocaleString();
+                const createdDate = formatDate(item.date, responseLanguage);
                 switch(item.type) {
                     case 'event':
-                        return `[${date}] ${item.addedBy.userName} añadió un evento: ${item.name}`;
+                        const eventDateStr = item.eventDate ? formatDate(item.eventDate, responseLanguage) : null;
+                        if (eventDateStr) {
+                            return `[Added on ${createdDate}] ${item.addedBy.userName} scheduled an event for ${eventDateStr}: ${item.name}`;
+                        }
+                        return `[Added on ${createdDate}] ${item.addedBy.userName} added an event: ${item.name}`;
                     case 'document':
-                        return `[${date}] ${item.addedBy.userName} subió un documento: ${item.name}${item.summary ? `\nResumen del documento: ${item.summary}` : ''}`;
+                        return `[Added on ${createdDate}] ${item.addedBy.userName} uploaded a document: ${item.name}${item.summary ? `\nDocument summary: ${item.summary}` : ''}`;
                     case 'note':
-                        return `[${date}] ${item.addedBy.userName} añadió una nota: ${item.content}`;
+                        return `[Added on ${createdDate}] ${item.addedBy.userName} added a note: ${item.content}`;
                 }
             }).join('\n\n');
 
             const promptText = `
-            Basándote en la siguiente lista de actividades recientes:
+            Based on the following list of recent activities:
 
             ${activityText}
             
             ${rolePrompt}
             
-            Genera un resumen estructurado en HTML usando las siguientes reglas:
-            1. Usa <h4> para los títulos principales
-            2. Usa <h5> para subtítulos
-            3. Usa <p> para párrafos de texto
-            4. Usa <ul> y <li> para listas de elementos
-            5. Usa <strong> para enfatizar información importante
-            6. Usa <div class="section"> para separar secciones diferentes
-            7. El resumen debe ser conciso y mantener una estructura cronológica clara
-            8. Incluye una sección de "Actividades Destacadas" al inicio
-            9. Si hay documentos médicos, incluye una sección de "Resúmenes Médicos"
-            10. Si hay notas, incluye una sección de "Notas Importantes"
+            IMPORTANT: Each activity shows two dates:
+            - "Added on [date]" = when the activity was registered in the system
+            - "scheduled for [date]" = when the event/appointment will actually occur (this is the important date for the patient)
+            
+            When summarizing events/appointments, always emphasize the SCHEDULED DATE (when it will occur), not the creation date.
+            
+            Generate a structured summary in HTML using the following rules:
+            1. Use <h4> for main titles
+            2. Use <h5> for subtitles
+            3. Use <p> for text paragraphs
+            4. Use <ul> and <li> for item lists
+            5. Use <strong> to emphasize important information, especially scheduled dates
+            6. Use <div class="section"> to separate different sections
+            7. The summary should be concise and maintain a clear chronological structure
+            8. Include a "Highlighted Activities" section at the beginning
+            9. If there are medical documents, include a "Medical Summaries" section
+            10. If there are notes, include an "Important Notes" section
+            11. For appointments/events, clearly state when they will occur using the scheduled date
 
-            Devuelve solo el HTML en ${responseLanguage}, sin markdown ni otros formatos.`;
+            Return only the HTML in ${responseLanguage}, without markdown or other formats.`;
 
             const messages = [new HumanMessage({ content: promptText })];
             const summary = await gemini3propreview.invoke(messages);
@@ -269,22 +300,32 @@ async function getRecentActivity(req, res) {
 
   } catch (err) {
     insights.error(err);
-    return res.status(500).send({ message: `Error obteniendo la actividad reciente: ${err}` });
+    return res.status(500).send({ message: `Error getting recent activity: ${err}` });
   }
 }
 
-// Función auxiliar para dividir el array de actividades en chunks
-function chunkActivities(activities, maxTokens) {
+// Helper function to split activity array into chunks
+function chunkActivities(activities, maxTokens, lang = 'en') {
     const chunks = [];
     let currentChunk = [];
     let currentTokens = 0;
 
     for (const activity of activities) {
-        const activityText = `[${new Date(activity.date).toLocaleString()}] ${activity.addedBy.userName} ${
-            activity.type === 'event' ? `añadió un evento: ${activity.name}` :
-            activity.type === 'document' ? `subió un documento: ${activity.name}${activity.summary ? `\nResumen del documento: ${activity.summary}` : ''}` :
-            `añadió una nota: ${activity.content}`
-        }`;
+        let activityDescription;
+        const createdDate = formatDate(activity.date, lang);
+        
+        if (activity.type === 'event') {
+            const eventDateStr = activity.eventDate ? formatDate(activity.eventDate, lang) : null;
+            activityDescription = eventDateStr 
+                ? `scheduled an event for ${eventDateStr}: ${activity.name}`
+                : `added an event: ${activity.name}`;
+        } else if (activity.type === 'document') {
+            activityDescription = `uploaded a document: ${activity.name}${activity.summary ? `\nDocument summary: ${activity.summary}` : ''}`;
+        } else {
+            activityDescription = `added a note: ${activity.content}`;
+        }
+        
+        const activityText = `[Added on ${createdDate}] ${activity.addedBy.userName} ${activityDescription}`;
 
         const tokens = countTokens.countTokens(activityText);
         
@@ -316,7 +357,7 @@ async function getRecentAppointments(req, res) {
     ]);
 
     if (!patient) {
-      return res.status(404).send({ message: 'Paciente no encontrado' });
+      return res.status(404).send({ message: 'Patient not found' });
     }
 
     // Determinar la fecha desde la cual obtener actividad
@@ -374,7 +415,7 @@ async function getRecentAppointments(req, res) {
 
   } catch (err) {
     insights.error(err);
-    return res.status(500).send({ message: `Error obteniendo las citas recientes: ${err}` });
+    return res.status(500).send({ message: `Error getting recent appointments: ${err}` });
   }
 }
 

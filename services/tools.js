@@ -320,15 +320,9 @@ async function processDocs(docs, containerName) {
 
 async function curateContext(context, memories, containerName, docs, question, selectedChunks = [], structuredFacts = [], appointments = [], notes = [], chatMode = 'fast') {
   try {
-  // Seleccionar modelo según chatMode: 'fast' = gpt4omini, 'advanced' = gemini25pro
-  let model;
-  if (chatMode === 'advanced') {
-    const { gemini25pro } = createModels('default', 'gemini25pro');
-    model = gemini25pro;
-  } else {
-    const { gpt4omini } = createModels('default', 'gpt4omini');
-    model = gpt4omini;
-  }
+  // gpt-4.1-mini: mejor precisión en síntesis de contexto clínico
+  // Importante para no perder detalles como horas de citas, dosis exactas, etc.
+  let model = createModels('default', 'gpt-4.1-mini')['gpt-4.1-mini'];
   
   let contextTemplate;
   try {

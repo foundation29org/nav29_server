@@ -87,6 +87,55 @@ const checkApiKey = (req, res, next) => {
     }
   };
 
+// Middleware para verificar firma HMAC del bot de WhatsApp
+const crypto = require('crypto');
+const BOT_SECRET = config.WHATSAPP_BOT_SECRET;
+
+const checkBotSignature = (req, res, next) => {
+    if (req.method === 'OPTIONS') {
+        return next();
+    }
+    
+    const signature = req.get('x-bot-signature');
+    const timestamp = req.get('x-bot-timestamp');
+    const apiKey = req.get('x-api-key');
+    
+    // Verificar API key básica
+    if (!apiKey || apiKey !== myApiKey) {
+        return res.status(401).json({ error: 'API Key no válida o ausente' });
+    }
+    
+    // Verificar firma HMAC
+    if (!signature || !timestamp) {
+        console.warn('[Auth] Missing bot signature or timestamp');
+        return res.status(401).json({ error: 'Firma del bot requerida' });
+    }
+    
+    // Verificar que el timestamp no sea muy antiguo (5 minutos máximo)
+    const requestTime = parseInt(timestamp, 10);
+    const now = Date.now();
+    if (isNaN(requestTime) || Math.abs(now - requestTime) > 5 * 60 * 1000) {
+        console.warn('[Auth] Bot timestamp expired or invalid:', timestamp);
+        return res.status(401).json({ error: 'Timestamp expirado' });
+    }
+    
+    // Obtener phoneNumber del body o query
+    const phoneNumber = req.body?.phoneNumber || req.query?.phoneNumber || req.params?.phoneNumber || '';
+    
+    // Calcular firma esperada: HMAC-SHA256(phoneNumber + timestamp, secret)
+    const expectedSignature = crypto
+        .createHmac('sha256', BOT_SECRET)
+        .update(phoneNumber + timestamp)
+        .digest('hex');
+    
+    if (signature !== expectedSignature) {
+        console.warn('[Auth] Invalid bot signature for phone:', phoneNumber?.slice(-4));
+        return res.status(401).json({ error: 'Firma inválida' });
+    }
+    
+    next();
+};
+
 // user routes, using the controller user, this controller has methods
 //routes for login-logout
 api.post('/login', deleteAccountCtrl.verifyToken, userCtrl.login)
@@ -272,13 +321,19 @@ api.get('/whatsapp/status', auth.isAuth(roles.All), whatsappCtrl.getStatus)
 api.post('/whatsapp/generate-code', auth.isAuth(roles.All), whatsappCtrl.generateCode)
 api.delete('/whatsapp/unlink', auth.isAuth(roles.All), whatsappCtrl.unlink)
 
-// WhatsApp integration routes (from bot - API key authenticated)
-api.get('/whatsapp/session/:phoneNumber', checkApiKey, whatsappCtrl.getSessionByPhone)
-api.post('/whatsapp/verify-code', checkApiKey, whatsappCtrl.verifyCode)
-api.post('/whatsapp/unlink-by-phone', checkApiKey, whatsappCtrl.unlinkByPhone)
-api.post('/whatsapp/patients/:userId', checkApiKey, whatsappCtrl.getPatients)
-api.post('/whatsapp/set-patient', checkApiKey, whatsappCtrl.setActivePatient)
-api.post('/whatsapp/ask', checkApiKey, whatsappCtrl.ask)
+// WhatsApp integration routes (from bot - HMAC signature authenticated)
+api.get('/whatsapp/session/:phoneNumber', checkBotSignature, whatsappCtrl.getSessionByPhone)
+api.post('/whatsapp/verify-code', checkBotSignature, whatsappCtrl.verifyCode)
+api.post('/whatsapp/unlink-by-phone', checkBotSignature, whatsappCtrl.unlinkByPhone)
+api.post('/whatsapp/patients/:userId', checkBotSignature, whatsappCtrl.getPatients)
+api.post('/whatsapp/set-patient', checkBotSignature, whatsappCtrl.setActivePatient)
+api.post('/whatsapp/ask', checkBotSignature, whatsappCtrl.ask)
+api.post('/whatsapp/add-event', checkBotSignature, whatsappCtrl.addEvent)
+api.post('/whatsapp/summary', checkBotSignature, whatsappCtrl.getSummary)
+api.post('/whatsapp/infographic', checkBotSignature, whatsappCtrl.getInfographic)
+api.post('/whatsapp/upload', checkBotSignature, whatsappCtrl.uploadDocument)
+// Public endpoint to serve infographic images (no auth - token-based access)
+api.get('/whatsapp/infographic/view/:token', whatsappCtrl.serveInfographic)
 
 /*api.get('/testToken', auth, (req, res) => {
 	res.status(200).send(true)

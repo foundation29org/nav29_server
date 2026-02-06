@@ -27,6 +27,8 @@ const { createChunksIndex } = require('./vectorStoreService');
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
 const OPENAI_API_BASE_GPT4O = config.OPENAI_API_BASE_GPT4O;
+const OPENAI_API_BASE_FALLBACK = config.OPENAI_API_BASE_FALLBACK;
+const O_A_K_FALLBACK = config.O_A_K_FALLBACK;
 
 const embeddings = new OpenAIEmbeddings({
   azureOpenAIApiKey: config.O_A_K_GPT4O,
@@ -102,6 +104,51 @@ function createModels(projectName, modelType = null) {
             //poner  azureOpenAIEndpoint  undefined
             model.azureOpenAIEndpoint = undefined;
             break;
+          case 'gpt-4.1-nano':
+            model = new ChatOpenAI({
+              modelName: "gpt-4.1-nano",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_GPT4O,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+              azureOpenAIApiDeploymentName: "gpt-4.1-nano",
+              temperature: 0,
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            //poner  azureOpenAIEndpoint  undefined
+            model.azureOpenAIEndpoint = undefined;
+            break;
+            case 'gpt-4.1-mini':
+              model = new ChatOpenAI({
+                modelName: "gpt-4.1-mini",
+                azure: true,
+                azureOpenAIApiKey: O_A_K_GPT4O,
+                azureOpenAIApiVersion: OPENAI_API_VERSION,
+                azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+                azureOpenAIApiDeploymentName: "gpt-4.1-mini",
+                temperature: 0,
+                timeout: 140000,
+                callbacks: tracer ? [tracer] : undefined
+              });
+              //poner  azureOpenAIEndpoint  undefined
+              model.azureOpenAIEndpoint = undefined;
+              break;
+          case 'gpt-4.1':
+            model = new ChatOpenAI({
+              modelName: "gpt-4.1",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_GPT4O,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+              azureOpenAIApiDeploymentName: "gpt-4.1",
+              temperature: 0,
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            //poner  azureOpenAIEndpoint  undefined
+            model.azureOpenAIEndpoint = undefined;
+            break;
         case 'gpt5mini':
           model = new ChatOpenAI({
             modelName: "gpt-5-mini",
@@ -115,6 +162,32 @@ function createModels(projectName, modelType = null) {
           });
           model.azureOpenAIEndpoint = undefined;
           break;
+        case 'gpt-5-nano':
+          model = new ChatOpenAI({
+            modelName: "gpt-5-nano",
+            azure: true,
+            azureOpenAIApiKey: O_A_K_GPT4O,
+            azureOpenAIApiVersion: OPENAI_API_VERSION,
+            azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+            azureOpenAIApiDeploymentName: "gpt-5-nano",
+            timeout: 140000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          model.azureOpenAIEndpoint = undefined;
+          break;
+          case 'gpt-5.2':
+            model = new ChatOpenAI({
+              modelName: "gpt-5.2",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_FALLBACK,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_FALLBACK,
+              azureOpenAIApiDeploymentName: "gpt-5.2",
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            model.azureOpenAIEndpoint = undefined;
+            break;
         case 'claude3sonnet':
           model = new ChatBedrockConverse({
             model: "anthropic.claude-3-sonnet-20240229-v1:0",
@@ -333,11 +406,11 @@ async function summarizeServer(patientId, medicalLevel, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
 
   const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-  let { gpt5mini } = createModels(projectName, 'gpt5mini');
+  let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const summarize_prompt = await pull("foundation29/summarize-single_prompt_v1");
 
-  const chatPrompt = summarize_prompt.pipe(gpt5mini);
+  const chatPrompt = summarize_prompt.pipe(model);
   
   const summary = await chatPrompt.invoke({
     referenceDocs: docs,
@@ -370,7 +443,7 @@ async function extractAndParse(summaryText) {
 async function timelineServer(patientId, docs, reportDate) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt5mini } = createModels(projectName, 'gpt5mini');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const reportDateStr = reportDate instanceof Date ? reportDate.toISOString().split('T')[0] : reportDate;
 
@@ -403,7 +476,7 @@ TASK: Extract all events into a JSON array inside <output> tags.`]
       ]);
     }
 
-    const chatPrompt = timeline_prompt.pipe(gpt5mini);
+    const chatPrompt = timeline_prompt.pipe(model);
     
     // Unimos el contenido de los documentos en un solo string para que el LLM lo vea todo claro
     const fullText = docs.map(d => d.pageContent).join("\n\n");
@@ -430,11 +503,11 @@ async function anomaliesServer(patientId, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt5mini } = createModels(projectName, 'gpt5mini');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const anomalies_prompt = await pull("foundation29/anomalies-single_prompt_v1");
 
-  const chatPrompt = anomalies_prompt.pipe(gpt5mini);
+  const chatPrompt = anomalies_prompt.pipe(model);
   
   const anomalies = await chatPrompt.invoke({
     referenceDocs: docs
@@ -811,16 +884,14 @@ async function categorizeDocs(userId, content, patientId, containerName, url, do
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       // Format and call the prompt to categorize each document
       clean_doc = content.replace(/{/g, '{{').replace(/}/g, '}}');
 
-      let selectedModel = azuregpt4o;
-
       chatPrompt = await pull("foundation29/categorize_docs_base_v1");
 
-      const categoryChain = chatPrompt.pipe(selectedModel);
+      const categoryChain = chatPrompt.pipe(model);
       const category = await categoryChain.invoke({
         doc: clean_doc,
       });
@@ -943,7 +1014,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { gpt5mini} = createModels(projectName, 'gpt5mini');
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 15000 });
       const docs = await textSplitter.createDocuments([text]);
@@ -951,7 +1022,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
       let anonymize_prompt = await pull("foundation29/anonymize_doc_base_v1");
 
       // This function creates a document chain prompted to anonymize a set of documents.
-      const chain = anonymize_prompt.pipe(gpt5mini);
+      const chain = anonymize_prompt.pipe(model);
 
       const patientIdCrypt = crypt.encrypt(patientId);
       let docIdEnc = crypt.encrypt(docId);
@@ -1023,12 +1094,13 @@ async function summarySuggestions(patientId, containerName, url) {
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+      // gpt-4.1-mini: mejor calidad en generación de sugerencias
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       // Create a langchain prompt with all the summaries to generate a summary
       let summary_suggestions_prompt = await pull("foundation29/summary_suggestions_base_v1");
 
-      const chainSummarySuggestions = summary_suggestions_prompt.pipe(azuregpt4o);
+      const chainSummarySuggestions = summary_suggestions_prompt.pipe(model);
       console.log("Calling summary suggestions chain...");
 
       const suggestions = await chainSummarySuggestions.invoke({
@@ -1145,10 +1217,16 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
       const birthDate = patientData.birthDate;
       const patientName = patientData.patientName;
 
-      // Generate the event summary with updated event structure considering new keys
-      let event_summary = eventsMinusDeleted.reduce((summary, event) => {
+      // Filter only manual events (not extracted from documents)
+      const manualEvents = eventsMinusDeleted.filter(event => 
+        event.origin === 'manual' || !event.origin
+      );
+
+      // Generate the event summary with only manual events
+      let event_summary = manualEvents.reduce((summary, event) => {
         const formattedDate = event.date ? new Date(event.date).toISOString().split('T')[0] : "unknown";
-        return summary + `Event: ${event.name}, Date: ${formattedDate}\n`;
+        const eventType = event.type || event.key || "other";
+        return summary + `- [${eventType}] ${event.name} (Date: ${formattedDate})\n`;
       }, "");
 
       // Extract the date of birth from the 'name' field of the event with key 'dob', parse it, and calculate the patient's current age
@@ -1209,6 +1287,7 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
 
       const finalCardSummary = await chainFinalCardSummary.invoke({
         summaries: clean_patient_info,
+        manual_events: event_summary,
         todayDate: todayDate,
         patientName: patientName,
         age: age,
@@ -1295,35 +1374,40 @@ const formatToday = () => {
   return { dayOfWeek, isoDate };
 };
 
-async function extractEvents(question, answer, userId, patientId, keyEvents) {
+async function extractEvents(question, answer, userId, patientId) {
   /*
-  This functions analyses a pair of question and answer and compares it to the patient's verified events.
-  It searchs for new events that are not in the verified events and adds them to the verified events.
+  This function analyses a pair of question and answer and compares it to the patient's verified events.
+  It searches for new events that are not in the verified events and adds them to the verified events.
   It also checks if the answer contains a date and if it does, it adds it to the date of the event if not use the current date.
+  Events are always fetched from DB to ensure freshness.
   */
   return new Promise(async (resolve, reject) => {
     const patientIdCrypt = crypt.encrypt(patientId);
     pubsub.sendToUser(userId, { "time": new Date().toISOString(), "status": "analizando respuesta", "step": "extract events", "patientId": patientIdCrypt })
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt4omini } = createModels(projectName, 'gpt4omini');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
 
-      // Get all the verified events for this patient
-      const events = await getAllEvents(patientId);
+      // Get all the verified events for this patient (excluding deleted ones)
+      const allEvents = await getAllEvents(patientId);
+      const events = allEvents.filter(event => event.status !== "deleted");
       const patientData = await getPatientData(patientId);
       const gender = patientData.gender;
       const birthDate = patientData.birthDate;
       const patientName = patientData.patientName;
 
       // Generate the event summary with updated event structure considering new keys
+      // Solución 2: Incluir más información (tipo de evento) para mejor comparación y evitar duplicados
       let event_summary = events.reduce((summary, event) => {
         const formattedDate = event.date ? new Date(event.date).toISOString().split('T')[0] : "unknown";
-        return summary + `Event: ${event.name}, Date: ${formattedDate}\n`;
+        const eventType = event.type || event.key || "other";
+        return summary + `- [${eventType}] ${event.name} (Date: ${formattedDate})\n`;
       }, "");
-      event_summary += `Gender: ${gender}\n`;
-      event_summary += `BirthDate: ${birthDate}\n`;
-      event_summary += `Name: ${patientName}\n`;
+      event_summary += `\nPatient Info:\n`;
+      event_summary += `- Gender: ${gender}\n`;
+      event_summary += `- BirthDate: ${birthDate}\n`;
+      event_summary += `- Name: ${patientName}\n`;
 
       // Use the function to get today's date and day
       const { dayOfWeek, isoDate } = formatToday();
@@ -1331,8 +1415,7 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
       // Generate a prompt with the question's user, answer from Navigator and the events and ask the model to extract new events
       let extract_events_prompt = await pull("foundation29/extract_events_v1");
 
-      const chainExtractEvents = extract_events_prompt.pipe(gpt4omini);
-
+      const chainExtractEvents = extract_events_prompt.pipe(model);
       const extractedEvents = await chainExtractEvents.invoke({
         questionText: question,
         events: event_summary,
@@ -1371,7 +1454,6 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
           }
         });
       }
-
       // Remove events with future dates, except for appointments and reminders
       const allowedFutureTypes = ['appointment', 'reminder'];
       eventJson = eventJson.filter(event => {
@@ -1383,6 +1465,30 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
         }
         return eventDate <= currentDate;
       });
+
+      // Filtrar eventos duplicados: misma fecha + mismo tipo (key)
+      // Esto evita proponer eventos que ya existen (ej: appointment en 2026-02-04)
+      if (Array.isArray(eventJson) && eventJson.length > 0 && events.length > 0) {
+        const originalCount = eventJson.length;
+        eventJson = eventJson.filter(newEvent => {
+          const newDate = newEvent.date ? newEvent.date.split('T')[0] : null;
+          const newKey = newEvent.key || 'other';
+          
+          const isDuplicate = events.some(existingEvent => {
+            const existingDate = existingEvent.date ? new Date(existingEvent.date).toISOString().split('T')[0] : null;
+            const existingKey = existingEvent.type || existingEvent.key || 'other';
+            
+            // Duplicado si tiene misma fecha Y mismo tipo de evento
+            return newDate && existingDate && newDate === existingDate && newKey === existingKey;
+          });
+          
+          return !isDuplicate;
+        });
+        
+        if (originalCount !== eventJson.length) {
+          console.log(`[extractEvents] Filtered ${originalCount - eventJson.length} duplicate events (${originalCount} -> ${eventJson.length})`);
+        }
+      }
 
       pubsub.sendToUser(userId, {
         time: new Date().toISOString(),
@@ -1415,7 +1521,7 @@ async function extractInitialEvents(patientId, ogLang) {
     // pubsub.sendToUser(userId, {"status": "analizando inicio", "step": "extract events"})
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o} = createModels(projectName, 'azuregpt4o');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Get all the documents for this patient
       // Obtener nombre del contenedor Azure para este paciente
@@ -1451,7 +1557,7 @@ async function extractInitialEvents(patientId, ogLang) {
         ).join("\n");
       }
   
-      const chainExtractEvents = initial_events_prompt.pipe(azuregpt4o);
+      const chainExtractEvents = initial_events_prompt.pipe(model);
   
       const extractedEvents = await chainExtractEvents.invoke({
         documents: summaries,
@@ -1602,12 +1708,13 @@ async function divideElements(event, patientId) {
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+    // gpt-4.1-mini: mejor precisión en división de elementos
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Generate a prompt with the question's user
       let divide_elements_prompt = await pull("foundation29/divide_elements_v1");
 
-      const chainDivideElements = divide_elements_prompt.pipe(azuregpt4o);
+      const chainDivideElements = divide_elements_prompt.pipe(model);
 
       const dividedElements = await chainDivideElements.invoke({
         event: event.name,
@@ -1633,12 +1740,12 @@ async function explainMedicalEvent(eventDescription, patientId) {
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { gpt5mini} = createModels(projectName, 'gpt5mini');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Generate a prompt with the medical event
       let explain_event_prompt = await pull("foundation29/explain_medical_event_v1");
 
-      const chainExplainEvent = explain_event_prompt.pipe(gpt5mini);
+      const chainExplainEvent = explain_event_prompt.pipe(model);
 
       const explanation = await chainExplainEvent.invoke({
         eventDescription: eventDescription,
@@ -1765,7 +1872,7 @@ async function generateSoapQuestions(patientId, patientSymptoms, patientContext,
   
   try {
     const projectName = `SOAP Questions - ${patientId}`;
-    const { gpt4omini } = createModels(projectName, 'gpt4omini');
+    const model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const langMap = {
       'es': 'Genera las preguntas en español.',
@@ -1797,7 +1904,7 @@ Generate specific, clinically relevant questions that will help:
 Return ONLY a JSON array of strings with the questions. Example format:
 ["Question 1?", "Question 2?", "Question 3?"]`;
 
-    const response = await gpt4omini.invoke(prompt);
+    const response = await model.invoke(prompt);
     const responseText = response.content.trim();
     
     // Parse JSON response
@@ -1843,7 +1950,7 @@ async function generateSoapReport(patientId, patientSymptoms, questionsAndAnswer
   
   try {
     const projectName = `SOAP Report - ${patientId}`;
-    const { gpt4omini } = createModels(projectName, 'gpt4omini');
+    const model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const langMap = {
       'es': 'Genera el informe SOAP en español.',
@@ -1894,7 +2001,7 @@ Return the response as a JSON object with this exact structure:
 
 Each section should be comprehensive but concise, using proper medical terminology while remaining understandable.`;
 
-    const response = await gpt4omini.invoke(prompt);
+    const response = await model.invoke(prompt);
     const responseText = response.content.trim();
     
     // Parse JSON response
@@ -1928,6 +2035,68 @@ Each section should be comprehensive but concise, using proper medical terminolo
   }
 }
 
+/**
+ * Diariza una transcripción de consulta médica, separando los hablantes (médico/paciente)
+ * @param {string} text - Transcripción cruda de la consulta
+ * @param {string} patientId - ID del paciente
+ * @param {string} userId - ID del usuario
+ * @returns {Promise<{success: boolean, diarizedText?: string, error?: string}>}
+ */
+async function diarizeConversation(text, patientId, userId) {
+  try {
+    console.log('[Diarization] Starting conversation diarization...');
+    
+    const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    
+    const prompt = `You are an expert in medical consultation transcription. Your task is to analyze this transcription of a conversation between a doctor and a patient, and separate it by speakers.
+
+INSTRUCTIONS:
+1. Identify who is the DOCTOR and who is the PATIENT based on:
+   - The doctor asks questions about symptoms, medical history, examinations
+   - The doctor uses technical medical vocabulary
+   - The doctor gives instructions, prescriptions, diagnoses
+   - The patient describes symptoms, sensations, concerns
+   - The patient answers questions about their condition
+
+2. STRICT output format:
+   DOCTOR: [doctor's text]
+   PATIENT: [patient's text]
+   DOCTOR: [next doctor intervention]
+   ...
+
+3. If there are ambiguous parts, use your best judgment based on context.
+
+4. Maintain the chronological order of the conversation.
+
+5. If there is text that does not correspond to any speaker (noise, unintelligible text), omit it.
+
+TRANSCRIPTION TO DIARIZE:
+${text}
+
+DIARIZED TRANSCRIPTION:`;
+
+    const chatPrompt = ChatPromptTemplate.fromMessages([
+      ["system", "You are an expert in medical transcription specialized in diarization of clinical conversations."],
+      ["human", prompt]
+    ]);
+    
+    const chain = chatPrompt.pipe(model);
+    const response = await chain.invoke({});
+    
+    const diarizedText = response.content;
+    
+    console.log('[Diarization] Conversation diarized successfully');
+    
+    return { success: true, diarizedText };
+    
+  } catch (error) {
+    console.error('[Diarization] Error diarizing conversation:', error.message);
+    insights.error({ message: '[Diarization] Error diarizing conversation', error: error.message, patientId });
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   processDocument,
   categorizeDocs,
@@ -1944,6 +2113,7 @@ module.exports = {
   generatePatientInfographic,
   generateSoapQuestions,
   generateSoapReport,
+  diarizeConversation,
   // Para scripts de migración
   timelineServer,
   summarizeServer,
