@@ -1014,7 +1014,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { model} = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 15000 });
       const docs = await textSplitter.createDocuments([text]);
@@ -1740,7 +1740,7 @@ async function explainMedicalEvent(eventDescription, patientId) {
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model} = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Generate a prompt with the medical event
       let explain_event_prompt = await pull("foundation29/explain_medical_event_v1");
