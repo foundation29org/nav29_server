@@ -165,6 +165,42 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 				}
 			}else{
 				content = await azure_blobs.downloadBlob(containerName, url);
+				
+				// Detectar si es una transcripción de consulta médica
+				const isConsultation = content.startsWith('[CONSULTATION_TRANSCRIPTION]');
+				if (isConsultation) {
+					console.log('[form_recognizer] Detected consultation transcription, applying diarization...');
+					// Remover el marcador
+					const rawTranscription = content.replace('[CONSULTATION_TRANSCRIPTION]\n', '').replace('[CONSULTATION_TRANSCRIPTION]', '');
+					
+					// Aplicar diarización con IA
+					try {
+						const diarizationResult = await langchain.diarizeConversation(rawTranscription, patientId, userId);
+						if (diarizationResult.success && diarizationResult.diarizedText) {
+							// Guardar la transcripción diarizada
+							await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/conversation_diarized.txt'), diarizationResult.diarizedText);
+							console.log('[form_recognizer] Diarization saved successfully');
+							
+							// Usar el texto diarizado como contenido principal
+							content = diarizationResult.diarizedText;
+						} else {
+							console.warn('[form_recognizer] Diarization failed, using raw transcription');
+							content = rawTranscription;
+						}
+					} catch (diarizationError) {
+						console.error('[form_recognizer] Error in diarization:', diarizationError.message);
+						insights.error({ message: '[form_recognizer] Error in diarization', error: diarizationError.message, ...logContext });
+						// Continuar con la transcripción cruda
+						content = rawTranscription;
+					}
+					
+					// Marcar el documento como tipo consulta
+					Document.findByIdAndUpdate(documentId, { documentType: 'consultation' }, { new: true }, (err) => {
+						if (err) {
+							console.error('[form_recognizer] Error updating document type:', err.message);
+						}
+					});
+				}
 			}
 			// // 4. Traducir el contenido del documento
 			let doc_lang;

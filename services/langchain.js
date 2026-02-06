@@ -2035,6 +2035,68 @@ Each section should be comprehensive but concise, using proper medical terminolo
   }
 }
 
+/**
+ * Diariza una transcripción de consulta médica, separando los hablantes (médico/paciente)
+ * @param {string} text - Transcripción cruda de la consulta
+ * @param {string} patientId - ID del paciente
+ * @param {string} userId - ID del usuario
+ * @returns {Promise<{success: boolean, diarizedText?: string, error?: string}>}
+ */
+async function diarizeConversation(text, patientId, userId) {
+  try {
+    console.log('[Diarization] Starting conversation diarization...');
+    
+    const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    
+    const prompt = `You are an expert in medical consultation transcription. Your task is to analyze this transcription of a conversation between a doctor and a patient, and separate it by speakers.
+
+INSTRUCTIONS:
+1. Identify who is the DOCTOR and who is the PATIENT based on:
+   - The doctor asks questions about symptoms, medical history, examinations
+   - The doctor uses technical medical vocabulary
+   - The doctor gives instructions, prescriptions, diagnoses
+   - The patient describes symptoms, sensations, concerns
+   - The patient answers questions about their condition
+
+2. STRICT output format:
+   DOCTOR: [doctor's text]
+   PATIENT: [patient's text]
+   DOCTOR: [next doctor intervention]
+   ...
+
+3. If there are ambiguous parts, use your best judgment based on context.
+
+4. Maintain the chronological order of the conversation.
+
+5. If there is text that does not correspond to any speaker (noise, unintelligible text), omit it.
+
+TRANSCRIPTION TO DIARIZE:
+${text}
+
+DIARIZED TRANSCRIPTION:`;
+
+    const chatPrompt = ChatPromptTemplate.fromMessages([
+      ["system", "You are an expert in medical transcription specialized in diarization of clinical conversations."],
+      ["human", prompt]
+    ]);
+    
+    const chain = chatPrompt.pipe(model);
+    const response = await chain.invoke({});
+    
+    const diarizedText = response.content;
+    
+    console.log('[Diarization] Conversation diarized successfully');
+    
+    return { success: true, diarizedText };
+    
+  } catch (error) {
+    console.error('[Diarization] Error diarizing conversation:', error.message);
+    insights.error({ message: '[Diarization] Error diarizing conversation', error: error.message, patientId });
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   processDocument,
   categorizeDocs,
@@ -2051,6 +2113,7 @@ module.exports = {
   generatePatientInfographic,
   generateSoapQuestions,
   generateSoapReport,
+  diarizeConversation,
   // Para scripts de migración
   timelineServer,
   summarizeServer,

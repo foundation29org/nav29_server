@@ -15,6 +15,7 @@ const DocumentSchema = Schema({
 	cured: {type: Boolean, default: false},
 	anonymized: {type: String, default: 'false'},
 	categoryTag: {type: String, default: ''},
+	documentType: {type: String, enum: ['document', 'consultation'], default: 'document'},
 	langsmithRunId: {type: String, default: ''},
 	createdBy: { type: Schema.Types.ObjectId, ref: "Patient"},
 	addedBy: { type: Schema.Types.ObjectId, ref: "User"}
