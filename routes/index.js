@@ -2,6 +2,7 @@
 'use strict'
 
 const express = require('express')
+const insights = require('../services/insights')
 
 const userCtrl = require('../controllers/all/user')
 const patientCtrl = require('../controllers/user/patient')
@@ -25,11 +26,12 @@ const eventsCtrl = require('../controllers/user/patient/events')
 const appointmentsCtrl = require('../controllers/user/patient/appointments')
 const aiFeaturesCtrl = require('../controllers/user/patient/aiFeaturesController')
 const rarescopeCtrl = require('../controllers/user/patient/rarescope')
-const patientContextService = require('../services/patientContextService')
+const trackingCtrl = require('../controllers/user/patient/tracking')
 const f29azureserviceCtrl = require('../services/f29azure')
 const openShareCtrl = require('../controllers/all/openshare')
 const feedbackCtrl = require('../services/feedback')
 const gocertiusCtrl = require('../services/gocertius')
+const whatsappCtrl = require('../controllers/whatsappController')
 const auth = require('../middlewares/auth')
 const roles = require('../middlewares/roles')
 const cors = require('cors');
@@ -61,6 +63,7 @@ function corsWithOptions(req, res, next) {
             serviceEmail.sendMailControlCall(requestInfo)
           } catch (emailError) {
             console.log('Fail sending email');
+            insights.error({ message: 'Failed to send control email in CORS check', error: emailError });
           }
           callback(new Error('Not allowed by CORS'));
       }
@@ -84,9 +87,61 @@ const checkApiKey = (req, res, next) => {
     }
   };
 
+// Middleware para verificar firma HMAC del bot de WhatsApp
+const crypto = require('crypto');
+const BOT_SECRET = config.WHATSAPP_BOT_SECRET;
+
+const checkBotSignature = (req, res, next) => {
+    if (req.method === 'OPTIONS') {
+        return next();
+    }
+    
+    const signature = req.get('x-bot-signature');
+    const timestamp = req.get('x-bot-timestamp');
+    const apiKey = req.get('x-api-key');
+    
+    // Verificar API key básica
+    if (!apiKey || apiKey !== myApiKey) {
+        return res.status(401).json({ error: 'API Key no válida o ausente' });
+    }
+    
+    // Verificar firma HMAC
+    if (!signature || !timestamp) {
+        console.warn('[Auth] Missing bot signature or timestamp');
+        return res.status(401).json({ error: 'Firma del bot requerida' });
+    }
+    
+    // Verificar que el timestamp no sea muy antiguo (5 minutos máximo)
+    const requestTime = parseInt(timestamp, 10);
+    const now = Date.now();
+    if (isNaN(requestTime) || Math.abs(now - requestTime) > 5 * 60 * 1000) {
+        console.warn('[Auth] Bot timestamp expired or invalid:', timestamp);
+        return res.status(401).json({ error: 'Timestamp expirado' });
+    }
+    
+    // Obtener phoneNumber del body o query
+    const phoneNumber = req.body?.phoneNumber || req.query?.phoneNumber || req.params?.phoneNumber || '';
+    
+    // Calcular firma esperada: HMAC-SHA256(phoneNumber + timestamp, secret)
+    const expectedSignature = crypto
+        .createHmac('sha256', BOT_SECRET)
+        .update(phoneNumber + timestamp)
+        .digest('hex');
+    
+    if (signature !== expectedSignature) {
+        console.warn('[Auth] Invalid bot signature for phone:', phoneNumber?.slice(-4));
+        return res.status(401).json({ error: 'Firma inválida' });
+    }
+    
+    next();
+};
+
 // user routes, using the controller user, this controller has methods
 //routes for login-logout
 api.post('/login', deleteAccountCtrl.verifyToken, userCtrl.login)
+api.post('/refresh', userCtrl.refreshToken)
+api.get('/session', auth.isAuth(roles.All), checkApiKey, userCtrl.getSession)
+api.post('/logout', userCtrl.logout)
 
 api.get('/users/lang/:userId', auth.isAuth(roles.All), checkApiKey, userCtrl.getUserLang)
 api.put('/users/lang/:userId', auth.isAuth(roles.All), checkApiKey, userCtrl.changeLang)
@@ -156,7 +211,9 @@ api.post('/getinitialevents/:patientId', auth.isAuthPatient(roles.All), checkApi
 api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleRarescopeRequest)
 api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
 api.post('/ai/disease-info/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDiseaseInfoRequest)
-api.post('/ai/aggregate-context/:patientId', auth.isAuthPatient(roles.All), checkApiKey, patientContextService.aggregateClinicalContext)
+api.post('/ai/infographic/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleInfographicRequest)
+api.post('/ai/soap/questions/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleSoapQuestionsRequest)
+api.post('/ai/soap/report/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleSoapReportRequest)
 
 // Rarescope routes
 api.post('/rarescope/save/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.saveRarescopeData)
@@ -164,16 +221,23 @@ api.get('/rarescope/load/:patientId', auth.isAuthPatient(roles.All), checkApiKey
 api.get('/rarescope/history/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.getRarescopeHistory)
 api.delete('/rarescope/delete/:patientId', auth.isAuthPatient(roles.All), checkApiKey, rarescopeCtrl.deleteRarescopeData)
 
+// Patient Tracking routes
+api.get('/tracking/:patientId/data', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.getTrackingData)
+api.post('/tracking/:patientId/import', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.importTrackingData)
+api.post('/tracking/:patientId/entry', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.addEntry)
+api.post('/tracking/:patientId/insights', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.generateInsights)
+api.get('/tracking/:patientId/stats', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.getStatistics)
+api.delete('/tracking/:patientId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteTrackingData)
+api.delete('/tracking/:patientId/entry/:entryId', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteEntry)
+api.post('/tracking/:patientId/delete-range', auth.isAuthPatient(roles.All), checkApiKey, trackingCtrl.deleteEntriesInRange)
+
 //services OPENAI
 api.post('/eventsnavigator', auth.isAuth(roles.All), checkApiKey, openAIserviceCtrl.extractEventsNavigator)
 
 //translations
-api.post('/getDetectLanguage', auth.isAuth(roles.All), checkApiKey, translationCtrl.getDetectLanguage)
-api.post('/translation', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationDictionary)
 api.post('/translationinvert', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationDictionaryInvert)
 api.post('/translationtimeline', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationTimeline)
 api.post('/deepltranslationinvert', auth.isAuth(roles.All), checkApiKey, translationCtrl.getdeeplTranslationDictionaryInvert)
-api.post('/translation/segments', auth.isAuth(roles.All), checkApiKey, translationCtrl.getTranslationSegments)
 
 //events
 api.post('/events/dates/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.getEventsDate)
@@ -188,6 +252,10 @@ api.put('/events/:patientId/:eventId/:userId', auth.isAuthPatient(roles.All), ch
 api.delete('/events/:patientId/:eventId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.deleteEvent)
 api.post('/deleteevents/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.deleteEvents)
 api.post('/explainmedicalevent/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.explainMedicalEvent)
+
+// Timeline consolidado (genera timeline limpio a partir de eventos crudos)
+api.get('/timeline/consolidated/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.getConsolidatedTimeline)
+api.post('/timeline/regenerate/:patientId', auth.isAuthPatient(roles.All), checkApiKey, eventsCtrl.regenerateConsolidatedTimeline)
 
 api.get('/lastappointments/:patientId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.getLastAppointments)
 api.get('/appointments/:patientId', auth.isAuthPatient(roles.All), checkApiKey, appointmentsCtrl.getAppointments)
@@ -208,11 +276,18 @@ api.put('/notes/:patientId/:noteId/:userId', auth.isAuthPatient(roles.All), chec
 api.delete('/notes/:patientId/:noteId', auth.isAuthPatient(roles.All), checkApiKey, notesCtrl.deleteNote)
 
 //gettoken
+api.get('/gettoken/', (req, res) => {
+  return res.status(401).json({ message: 'User ID is required' });
+});
 api.get('/gettoken/:userId', auth.isAuth(roles.All), checkApiKey, pubsubCtrl.getToken)
 
 //azureservices
 api.get('/getAzureBlobSasTokenWithContainer/:containerName', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenWithContainer)
 api.get('/getAzureBlobSasTokenForPatient/:patientId', auth.isAuth(roles.All), checkApiKey, f29azureserviceCtrl.getAzureBlobSasTokenForPatient)
+
+// Speech recognition
+const speechCtrl = require('../controllers/user/patient/speech')
+api.get('/speech/token', auth.isAuth(roles.All), checkApiKey, speechCtrl.getSpeechToken)
 
 // share
 api.get('/share/patient/generalshare/:patientId', auth.isAuthPatient(roles.All), checkApiKey, openShareCtrl.getGeneralShare)
@@ -240,6 +315,25 @@ api.get('/gocertius/getreportpdfurl/:reportId', checkApiKey, gocertiusCtrl.getRe
 api.get('/gocertius/getreportzip/:reportId', checkApiKey, gocertiusCtrl.getReportZip)
 
 api.post('/vote', feedbackCtrl.vote)
+
+// WhatsApp integration routes (from app - user authenticated)
+api.get('/whatsapp/status', auth.isAuth(roles.All), whatsappCtrl.getStatus)
+api.post('/whatsapp/generate-code', auth.isAuth(roles.All), whatsappCtrl.generateCode)
+api.delete('/whatsapp/unlink', auth.isAuth(roles.All), whatsappCtrl.unlink)
+
+// WhatsApp integration routes (from bot - HMAC signature authenticated)
+api.get('/whatsapp/session/:phoneNumber', checkBotSignature, whatsappCtrl.getSessionByPhone)
+api.post('/whatsapp/verify-code', checkBotSignature, whatsappCtrl.verifyCode)
+api.post('/whatsapp/unlink-by-phone', checkBotSignature, whatsappCtrl.unlinkByPhone)
+api.post('/whatsapp/patients/:userId', checkBotSignature, whatsappCtrl.getPatients)
+api.post('/whatsapp/set-patient', checkBotSignature, whatsappCtrl.setActivePatient)
+api.post('/whatsapp/ask', checkBotSignature, whatsappCtrl.ask)
+api.post('/whatsapp/add-event', checkBotSignature, whatsappCtrl.addEvent)
+api.post('/whatsapp/summary', checkBotSignature, whatsappCtrl.getSummary)
+api.post('/whatsapp/infographic', checkBotSignature, whatsappCtrl.getInfographic)
+api.post('/whatsapp/upload', checkBotSignature, whatsappCtrl.uploadDocument)
+// Public endpoint to serve infographic images (no auth - token-based access)
+api.get('/whatsapp/infographic/view/:token', whatsappCtrl.serveInfographic)
 
 /*api.get('/testToken', auth, (req, res) => {
 	res.status(200).send(true)

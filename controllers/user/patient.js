@@ -205,7 +205,7 @@ function getPatientsUser (req, res){
 				patients.forEach(function(u) {
 					var id = u._id.toString();
 					var idencrypt= crypt.encrypt(id);
-					listpatients.push({sub:idencrypt, patientName: u.patientName, birthDate: u.birthDate, gender: u.gender, owner: true});
+					listpatients.push({sub:idencrypt, patientName: u.patientName, birthDate: u.birthDate, gender: u.gender, country: u.country, owner: true});
 				});
 
 				//res.status(200).send({patient, patient})
@@ -226,7 +226,7 @@ function getPatientsUser (req, res){
 				patients.forEach(function(u) {
 					var id = u._id.toString();
 					var idencrypt= crypt.encrypt(id);
-					listpatients.push({sub:idencrypt, patientName: u.patientName, surname: u.surname, isArchived: u.isArchived, birthDate: u.birthDate, gender: u.gender, owner: true});
+					listpatients.push({sub:idencrypt, patientName: u.patientName, surname: u.surname, isArchived: u.isArchived, birthDate: u.birthDate, gender: u.gender, country: u.country, owner: true});
 				});
 
 				//res.status(200).send({patient, patient})
@@ -395,7 +395,7 @@ function updatePatient (req, res){
 		}
 		var id = patientUpdated._id.toString();
 		var idencrypt= crypt.encrypt(id);
-		var patientInfo = {sub:idencrypt, patientName: patientUpdated.patientName, birthDate: patientUpdated.birthDate, gender: patientUpdated.gender, owner: true};
+		var patientInfo = {sub:idencrypt, patientName: patientUpdated.patientName, birthDate: patientUpdated.birthDate, gender: patientUpdated.gender, country: patientUpdated.country, owner: true};
 
 		res.status(200).send({message: 'Patient updated', patientInfo: patientInfo})
 	})
@@ -474,6 +474,7 @@ function findDocumentsWithoutAnonymization(patientId) {
 		  patientName: patient.patientName,
 		  birthDate: patient.birthDate,
 		  gender: patient.gender,
+		  country: patient.country,
 		  owner: false
 		};
 	  });

@@ -10,6 +10,7 @@ const crypt = require('../../../services/crypt')
 const insights = require('../../../services/insights')
 const langchain = require('../../../services/langchain')
 const f29azureService = require("../../../services/f29azure")
+const { getOrGenerateTimeline, invalidateTimelineCache } = require('../../../services/timelineConsolidationService')
 // Aquí puedes añadir más campos si los necesitas...
 
 function getEventsDate(req, res) {
@@ -56,6 +57,11 @@ async function getEvents(req, res) {
 				if (eventObj.docId) {
 					eventObj.docId = crypt.encrypt(eventObj.docId.toString());
 				}
+				// Marcar eventos que necesitan revisión de fecha (sin fecha o con fecha estimada)
+				if ((eventObj.date === null && eventObj.dateConfidence === 'missing') || 
+				    eventObj.dateConfidence === 'estimated') {
+					eventObj.needsDateReview = true;
+				}
 				return eventObj;
 			}) : [];
 		res.status(200).send(listEventsdb)
@@ -75,6 +81,11 @@ async function getEventsDocument(req, res) {
 			eventObj._id = crypt.encrypt(eventObj._id.toString());
 			if (eventObj.docId) {
 				eventObj.docId = crypt.encrypt(eventObj.docId.toString());
+			}
+			// Marcar eventos que necesitan revisión de fecha (sin fecha o con fecha estimada)
+			if ((eventObj.date === null && eventObj.dateConfidence === 'missing') || 
+			    eventObj.dateConfidence === 'estimated') {
+				eventObj.needsDateReview = true;
 			}
 			return eventObj;
 		}) : [];
@@ -121,6 +132,7 @@ function saveEvent(req, res) {
 	let userId = crypt.decrypt(req.params.userId);
 	let eventdb = new Events()
 	eventdb.date = req.body.date
+	eventdb.dateEnd = req.body.dateEnd || null
 	eventdb.name = req.body.name
 	eventdb.notes = req.body.notes
 	eventdb.key = req.body.key
@@ -147,6 +159,7 @@ function saveEventDoc(req, res) {
 	let userId = crypt.decrypt(req.params.userId);
 	let eventdb = new Events()
 	eventdb.date = req.body.date
+	eventdb.dateEnd = req.body.dateEnd || null
 	eventdb.name = req.body.name
 	eventdb.key = req.body.key
 	eventdb.createdBy = patientId
@@ -178,6 +191,7 @@ async function saveEventForm(req, res) {
     let promises = events.map(async (event) => {
         let eventdb = new Events();
         eventdb.date = event.date || new Date(); // Asignar fecha actual si no se proporciona
+        eventdb.dateEnd = event.dateEnd || null;
         eventdb.name = event.name;
         eventdb.notes = event.notes || '';
         eventdb.key = event.key;
@@ -190,6 +204,7 @@ async function saveEventForm(req, res) {
             let itemPromises = list.map((item) => {
                 let eventdb2 = new Events();
                 eventdb2.date = eventdb.date;
+                eventdb2.dateEnd = eventdb.dateEnd;
                 eventdb2.name = item;
                 eventdb2.notes = eventdb.notes;
                 eventdb2.key = eventdb.key;
@@ -227,23 +242,34 @@ function saveOne(eventdb){
 	})});
 }
 
-function updateEvent(req, res) {
-	let eventId = crypt.decrypt(req.params.eventId);
-	let userId = crypt.decrypt(req.params.userId);
-	let update = { ...req.body };
-	update.addedBy = userId;
-	// Eliminar _id y __v del objeto de actualización
-	delete update._id;
-	delete update.__v;
-	// Desencriptar docId si existe
-	if (update.docId) {
-		update.docId = crypt.decrypt(update.docId);
-	}
+async function updateEvent(req, res) {
+	try {
+		let eventId = crypt.decrypt(req.params.eventId);
+		let userId = crypt.decrypt(req.params.userId);
+		let update = { ...req.body };
+		update.addedBy = userId;
+		// Eliminar _id y __v del objeto de actualización
+		delete update._id;
+		delete update.__v;
+		// Desencriptar docId si existe
+		if (update.docId) {
+			update.docId = crypt.decrypt(update.docId);
+		}
 
-	Events.findByIdAndUpdate(eventId, update, { new: true }, async (err, eventdbUpdated) => {
-		if (err){
-			insights.error(err);
-			return res.status(500).send({ message: `Error making the request: ${err}` })
+		// Si se está actualizando la fecha y antes era null/missing o estimated, marcar como user_provided
+		if (update.date !== undefined && update.date !== null) {
+			// Obtener el evento actual para verificar su estado anterior
+			const currentEvent = await Events.findById(eventId);
+			if (currentEvent && (currentEvent.date === null || 
+			    currentEvent.dateConfidence === 'missing' || 
+			    currentEvent.dateConfidence === 'estimated')) {
+				update.dateConfidence = 'user_provided';
+			}
+		}
+
+		const eventdbUpdated = await Events.findByIdAndUpdate(eventId, update, { new: true });
+		if (!eventdbUpdated) {
+			return res.status(404).send({ message: 'Event not found' });
 		}
 
 		const eventObj = eventdbUpdated.toObject();
@@ -251,14 +277,21 @@ function updateEvent(req, res) {
 		if (eventObj.docId) {
 			eventObj.docId = crypt.encrypt(eventObj.docId.toString());
 		}
+		// Marcar si aún necesita revisión (sin fecha o con fecha estimada)
+		if ((eventObj.date === null && eventObj.dateConfidence === 'missing') || 
+		    eventObj.dateConfidence === 'estimated') {
+			eventObj.needsDateReview = true;
+		}
 		let containerName = crypt.getContainerName(eventdbUpdated.createdBy.toString());
 		var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 		//dont return the createdBy field
 		delete eventObj.createdBy;
 		delete eventObj.addedBy;
 		res.status(200).send({ message: 'Eventdb updated', eventdb: eventObj })
-
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error making the request: ${err}` })
+	}
 }
 
 
@@ -347,6 +380,61 @@ async function explainMedicalEvent(req, res) {
 
 }
 
+/**
+ * GET /api/timeline/consolidated/:patientId
+ * Obtiene el timeline consolidado (cacheado o generado)
+ */
+async function getConsolidatedTimeline(req, res) {
+	try {
+		const patientId = crypt.decrypt(req.params.patientId);
+		const userLang = req.query.lang || 'es';
+		const forceRegenerate = req.query.regenerate === 'true';
+		
+		console.log(`[Timeline] Solicitando timeline consolidado para ${patientId}, lang=${userLang}, force=${forceRegenerate}`);
+		
+		const timeline = await getOrGenerateTimeline(patientId, userLang, forceRegenerate);
+		
+		res.status(200).json(timeline);
+	} catch (error) {
+		console.error('[Timeline] Error:', error);
+		insights.error({ message: 'Error getting consolidated timeline', error: error.message });
+		res.status(500).json({ 
+			success: false, 
+			message: 'Error generating timeline',
+			error: error.message 
+		});
+	}
+}
+
+/**
+ * POST /api/timeline/regenerate/:patientId
+ * Fuerza la regeneración del timeline consolidado
+ */
+async function regenerateConsolidatedTimeline(req, res) {
+	try {
+		const patientId = crypt.decrypt(req.params.patientId);
+		const userLang = req.body.lang || req.query.lang || 'es';
+		
+		console.log(`[Timeline] Regenerando timeline para ${patientId}`);
+		
+		// Invalidar caché primero
+		await invalidateTimelineCache(patientId);
+		
+		// Generar nuevo
+		const timeline = await getOrGenerateTimeline(patientId, userLang, true);
+		
+		res.status(200).json(timeline);
+	} catch (error) {
+		console.error('[Timeline] Error regenerando:', error);
+		insights.error({ message: 'Error regenerating timeline', error: error.message });
+		res.status(500).json({ 
+			success: false, 
+			message: 'Error regenerating timeline',
+			error: error.message 
+		});
+	}
+}
+
 module.exports = {
 	getEventsDate,
 	getEvents,
@@ -360,5 +448,7 @@ module.exports = {
 	deleteEvent,
 	deleteAllEvents,
 	deleteEvents,
-	explainMedicalEvent
+	explainMedicalEvent,
+	getConsolidatedTimeline,
+	regenerateConsolidatedTimeline
 }

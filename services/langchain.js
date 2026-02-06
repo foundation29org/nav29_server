@@ -1,5 +1,6 @@
-const { ChatOpenAI } = require("@langchain/openai");
+const { ChatOpenAI, OpenAIEmbeddings } = require("@langchain/openai");
 const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
+const { ChatPromptTemplate } = require("@langchain/core/prompts");
 const Events = require('../models/events')
 const Patient = require('../models/patient')
 const Document = require('../models/document')
@@ -17,14 +18,26 @@ const { LangChainTracer } = require("@langchain/core/tracers/tracer_langchain");
 const { BedrockChat } = require("@langchain/community/chat_models/bedrock");
 const { ChatBedrockConverse } = require("@langchain/aws");
 const { ChatGoogleGenerativeAI } = require("@langchain/google-genai");
+const { GoogleGenAI } = require("@google/genai");
 const axios = require('axios');
+const { SearchIndexClient, SearchClient } = require("@azure/search-documents");
+const { AzureKeyCredential } = require("@azure/core-auth");
+const { createChunksIndex } = require('./vectorStoreService');
 
-const O_A_K = config.O_A_K;
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
-const OPENAI_API_BASE = config.OPENAI_API_BASE;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
 const OPENAI_API_BASE_GPT4O = config.OPENAI_API_BASE_GPT4O;
-const O_A_K_GPT5MINI = config.O_A_K_GPT5MINI;
+const OPENAI_API_BASE_FALLBACK = config.OPENAI_API_BASE_FALLBACK;
+const O_A_K_FALLBACK = config.O_A_K_FALLBACK;
+
+const embeddings = new OpenAIEmbeddings({
+  azureOpenAIApiKey: config.O_A_K_GPT4O,
+  azureOpenAIApiVersion: config.OPENAI_API_VERSION,
+  azureOpenAIApiInstanceName: config.OPENAI_API_BASE_GPT4O,
+  azureOpenAIApiDeploymentName: "text-embedding-3-large",
+  model: "text-embedding-3-large",
+  modelName: "text-embedding-3-large",
+});
 
 const BEDROCK_API_KEY = config.BEDROCK_USER_KEY;
 const BEDROCK_API_SECRET = config.BEDROCK_USER_SECRET;
@@ -41,7 +54,7 @@ function createModels(projectName, modelType = null) {
 
     // Si se especifica un tipo de modelo, solo crear ese
     if (modelType) {
-      if (projectName !== 'default') {
+      if (projectName !== 'default' && config.LANGSMITH_API_KEY && config.LANGSMITH_API_KEY.trim() !== '') {
         try {
           const client = new Client({
             apiUrl: "https://api.smith.langchain.com",
@@ -52,9 +65,13 @@ function createModels(projectName, modelType = null) {
             client,
           });
         } catch (error) {
-          console.warn('LangSmith tracer initialization failed:', error);
-          // Continuar sin tracer
+          console.warn('LangSmith tracer initialization failed, continuing without tracer:', error.message);
+          // Continuar sin tracer - no loguear el error completo para evitar spam
+          tracer = null;
         }
+      } else if (projectName !== 'default') {
+        // Silenciosamente continuar sin tracer si no hay API key
+        tracer = null;
       }
       switch(modelType) {
         case 'azuregpt4o':
@@ -74,12 +91,57 @@ function createModels(projectName, modelType = null) {
           break;
           case 'gpt4omini':
             model = new ChatOpenAI({
-              modelName: "gpt-4o-mini-nav29",
+              modelName: "gpt-4o-mini",
               azure: true,
               azureOpenAIApiKey: O_A_K_GPT4O,
               azureOpenAIApiVersion: OPENAI_API_VERSION,
               azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
-              azureOpenAIApiDeploymentName: "gpt-4o-mini-nav29",
+              azureOpenAIApiDeploymentName: "gpt-4o-mini",
+              temperature: 0,
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            //poner  azureOpenAIEndpoint  undefined
+            model.azureOpenAIEndpoint = undefined;
+            break;
+          case 'gpt-4.1-nano':
+            model = new ChatOpenAI({
+              modelName: "gpt-4.1-nano",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_GPT4O,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+              azureOpenAIApiDeploymentName: "gpt-4.1-nano",
+              temperature: 0,
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            //poner  azureOpenAIEndpoint  undefined
+            model.azureOpenAIEndpoint = undefined;
+            break;
+            case 'gpt-4.1-mini':
+              model = new ChatOpenAI({
+                modelName: "gpt-4.1-mini",
+                azure: true,
+                azureOpenAIApiKey: O_A_K_GPT4O,
+                azureOpenAIApiVersion: OPENAI_API_VERSION,
+                azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+                azureOpenAIApiDeploymentName: "gpt-4.1-mini",
+                temperature: 0,
+                timeout: 140000,
+                callbacks: tracer ? [tracer] : undefined
+              });
+              //poner  azureOpenAIEndpoint  undefined
+              model.azureOpenAIEndpoint = undefined;
+              break;
+          case 'gpt-4.1':
+            model = new ChatOpenAI({
+              modelName: "gpt-4.1",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_GPT4O,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+              azureOpenAIApiDeploymentName: "gpt-4.1",
               temperature: 0,
               timeout: 140000,
               callbacks: tracer ? [tracer] : undefined
@@ -91,28 +153,41 @@ function createModels(projectName, modelType = null) {
           model = new ChatOpenAI({
             modelName: "gpt-5-mini",
             azure: true,
-            azureOpenAIApiKey: O_A_K_GPT5MINI,
-            azureOpenAIApiVersion: '2024-12-01-preview',
-            // Endpoint completo en región distinta
-            azureOpenAIEndpoint: 'https://foundation29-ai-aiservices.cognitiveservices.azure.com/',
-            azureOpenAIApiDeploymentName: "gpt-5-mini",
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          break;
-        case 'model32k':
-          model = new ChatOpenAI({
-            modelName: "gpt-4-32k-0613",
-            azureOpenAIApiKey: O_A_K,
+            azureOpenAIApiKey: O_A_K_GPT4O,
             azureOpenAIApiVersion: OPENAI_API_VERSION,
-            azureOpenAIApiInstanceName: OPENAI_API_BASE,
-            azureOpenAIApiDeploymentName: "test32k",
-            temperature: 0,
+            azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+            azureOpenAIApiDeploymentName: "gpt-5-mini",
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });
           model.azureOpenAIEndpoint = undefined;
           break;
+        case 'gpt-5-nano':
+          model = new ChatOpenAI({
+            modelName: "gpt-5-nano",
+            azure: true,
+            azureOpenAIApiKey: O_A_K_GPT4O,
+            azureOpenAIApiVersion: OPENAI_API_VERSION,
+            azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
+            azureOpenAIApiDeploymentName: "gpt-5-nano",
+            timeout: 140000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          model.azureOpenAIEndpoint = undefined;
+          break;
+          case 'gpt-5.2':
+            model = new ChatOpenAI({
+              modelName: "gpt-5.2",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_FALLBACK,
+              azureOpenAIApiVersion: OPENAI_API_VERSION,
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_FALLBACK,
+              azureOpenAIApiDeploymentName: "gpt-5.2",
+              timeout: 140000,
+              callbacks: tracer ? [tracer] : undefined
+            });
+            model.azureOpenAIEndpoint = undefined;
+            break;
         case 'claude3sonnet':
           model = new ChatBedrockConverse({
             model: "anthropic.claude-3-sonnet-20240229-v1:0",
@@ -145,6 +220,24 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           break;
+        case 'gemini3flashpreview':
+          model = new ChatGoogleGenerativeAI({
+            model: "gemini-3-flash-preview",
+            apiKey: config.GOOGLE_API_KEY,
+            temperature: 0,
+            timeout: 140000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          break;
+        case 'gemini3proimagepreview':
+          model = new ChatGoogleGenerativeAI({
+            model: "gemini-3-pro-image-preview",
+            apiKey: config.GOOGLE_API_KEY,
+            temperature: 0.7,
+            timeout: 180000,
+            callbacks: tracer ? [tracer] : undefined
+          });
+          break;
         case 'gemini25flash':
           model = new ChatGoogleGenerativeAI({
             model: "gemini-flash-latest",
@@ -171,11 +264,7 @@ function createModels(projectName, modelType = null) {
 
       // Verificar la configuración del modelo
       if (model) {
-        console.log('Model Configuration:', {
-          hasAzureKey: !!model.azureOpenAIApiKey,
-          instanceName: model.azureOpenAIApiInstanceName,
-          deploymentName: model.azureOpenAIApiDeploymentName
-        });
+        console.log('Model Configuration:', model.azureOpenAIApiDeploymentName);
       }
 
       return { [modelType]: model };
@@ -185,6 +274,7 @@ function createModels(projectName, modelType = null) {
     // ... resto del código actual ...
   } catch (error) {
     console.error('Error in createModels:', error);
+    insights.error({ message: 'Error in createModels', error: error });
     throw error;
   }
 }
@@ -316,11 +406,11 @@ async function summarizeServer(patientId, medicalLevel, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
 
   const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-  let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+  let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const summarize_prompt = await pull("foundation29/summarize-single_prompt_v1");
 
-  const chatPrompt = summarize_prompt.pipe(azuregpt4o);
+  const chatPrompt = summarize_prompt.pipe(model);
   
   const summary = await chatPrompt.invoke({
     referenceDocs: docs,
@@ -344,28 +434,67 @@ async function extractAndParse(summaryText) {
     const extractedJson = JSON.parse(matches[1]);
     return JSON.stringify(extractedJson);
   } catch (error) {
-    console.warn("Invalid JSON format in <output> tags.");
+    console.warn("[extractTimelineOutput] Invalid JSON format in <output> tags:", error.message);
+    insights.error({ message: '[extractTimelineOutput] Invalid JSON format', error: error.message, textPreview: matches[1]?.substring(0, 200) });
     return "[]";
   }
 }
 
-async function timelineServer(patientId, docs) {
-  // Refactor of the summarize function to be used completely and independently in the server
+async function timelineServer(patientId, docs, reportDate) {
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    
+    const reportDateStr = reportDate instanceof Date ? reportDate.toISOString().split('T')[0] : reportDate;
 
-  const timeline_prompt = await pull("foundation29/timeline-single_prompt_v1");
+    let timeline_prompt;
+    try {
+      // Intentamos bajar el prompt del Hub
+      timeline_prompt = await pull("foundation29/timeline-single_prompt_v2");
+    } catch (e) {
+      console.warn("Prompt foundation29/timeline-single_prompt_v2 not found or error pulling, using local fallback");
+      timeline_prompt = ChatPromptTemplate.fromMessages([
+        ["system", `You are a high-precision medical data extractor. Your goal is to create an EXHAUSTIVE timeline.
+        
+### MANDATORY RULES:
+1. Scan from the very first line (Background/History).
+2. ANCHORING FOR CHRONIC CONDITIONS: For items in "BACKGROUND" or "HISTORY" sections with NO year mentioned (e.g., Hiatal hernia, Chondromalacia):
+   - Set "date": null
+   - Set "present": true
+3. REPORT DATE: Use {reportDate} for all findings, tests, and plans described as current or part of today's report.
+4. ISO FORMAT: Always convert to YYYY-MM-DD. 
+   - If only a year is available, use YYYY-01-01. 
+   - If only month and year are available, use YYYY-MM-01.
+   - NEVER output just "YYYY" or "YYYY-MM".
+   - Always return the date as a STRING enclosed in quotes, never as a number.
+5. Extract every surgery, diagnosis, medication, and abnormal test.
+6. If unsure of the year for a past event, "null" is mandatory.
+7. Write in English. Output MUST be a JSON array inside <output> tags.`],
+        ["human", `REFERENCE DATE (Today): {reportDate}
+DOCUMENT: {referenceDocs}
+TASK: Extract all events into a JSON array inside <output> tags.`]
+      ]);
+    }
 
-  const chatPrompt = timeline_prompt.pipe(azuregpt4o);
-  
-  const timeline = await chatPrompt.invoke({
-    referenceDocs: docs
-  });
+    const chatPrompt = timeline_prompt.pipe(model);
+    
+    // Unimos el contenido de los documentos en un solo string para que el LLM lo vea todo claro
+    const fullText = docs.map(d => d.pageContent).join("\n\n");
+
+    const timeline = await chatPrompt.invoke({
+      referenceDocs: fullText,
+      reportDate: reportDateStr
+    });
+
+    // Log para ver qué está respondiendo exactamente el modelo de timeline
+    console.log('--- TIMELINE LLM RAW OUTPUT ---');
+    console.log(timeline.content);
+    console.log('-------------------------------');
 
     return extractAndParse(timeline.content);
   } catch (error) {
     console.error('Error in timelineServer:', error);
+    insights.error({ message: 'Error in timelineServer', error: error });
     throw error;
   }
 }
@@ -374,11 +503,11 @@ async function anomaliesServer(patientId, docs) {
   // Refactor of the summarize function to be used completely and independently in the server
   try {
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
   const anomalies_prompt = await pull("foundation29/anomalies-single_prompt_v1");
 
-  const chatPrompt = anomalies_prompt.pipe(azuregpt4o);
+  const chatPrompt = anomalies_prompt.pipe(model);
   
   const anomalies = await chatPrompt.invoke({
     referenceDocs: docs
@@ -387,6 +516,7 @@ async function anomaliesServer(patientId, docs) {
     return extractAndParse(anomalies.content);
   } catch (error) {
     console.error('Error in anomaliesServer:', error);
+    insights.error({ message: 'Error in anomaliesServer', error: error });
     throw error;
   }
 }
@@ -468,13 +598,86 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
     const clean_text = text.replace(/{/g, '{{').replace(/}/g, '}}');
     const clean_raw_text = raw_text.replace(/{/g, '{{').replace(/}/g, '}}');
 
-    const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 500000 });
+    const document = await Document.findById(doc_id);
+    const reportDate = document.originaldate || document.date || new Date();
+    const dateStatus = document.originaldate ? 'confirmed' : 'missing';
+
+    // Vectorización de chunks para la nueva arquitectura
+    try {
+      const chunkSplitter = new RecursiveCharacterTextSplitter({ 
+        chunkSize: 3000, 
+        chunkOverlap: 200,
+        separators: ["\n\n", "\n", ". ", " ", ""]
+      });
+      
+      const chunkDocs = await chunkSplitter.createDocuments([clean_raw_text]);
+      
+      // Obtener embeddings para todos los chunks
+      const texts = chunkDocs.map(d => d.pageContent);
+      const embeddingsArrays = await embeddings.embedDocuments(texts);
+
+      const searchClient = new SearchClient(
+        config.SEARCH_API_ENDPOINT, 
+        config.cogsearchIndexChunks, 
+        new AzureKeyCredential(config.SEARCH_API_KEY)
+      );
+
+      const chunksToUpload = chunkDocs.map((chunk, index) => {
+        const metadata = {
+          id: `${doc_id}_${index}`,
+          patientId: patientId,
+          documentId: doc_id,
+          reportDate: reportDate.toISOString(),
+          dateStatus: dateStatus,
+          filename: filename,
+          documentType: 'document_chunk'
+        };
+        return {
+          id: metadata.id,
+          patientId: metadata.patientId,
+          documentId: metadata.documentId,
+          reportDate: metadata.reportDate,
+          dateStatus: metadata.dateStatus,
+          filename: metadata.filename,
+          documentType: metadata.documentType,
+          content: chunk.pageContent,
+          content_vector: embeddingsArrays[index], // Usamos nombre estándar
+          metadata: JSON.stringify(metadata) // Para compatibilidad con LangChain
+        };
+      });
+
+      // Asegurar que el índice existe primero
+      await createChunksIndex(embeddings, config.SEARCH_API_ENDPOINT, config.SEARCH_API_KEY);
+      
+      // Subir documentos directamente con el cliente de Azure
+      await searchClient.uploadDocuments(chunksToUpload);
+      
+      // Guardar chunks en Blob Storage para futura reindexación sin re-parsear
+      try {
+        const chunksUrl = url.replace(/\/[^\/]*$/, '/chunks.json');
+        await azure_blobs.createBlob(containerName, chunksUrl, JSON.stringify(chunksToUpload));
+      } catch (bError) {
+        console.warn('No se pudo guardar backup de chunks en blob:', bError.message);
+      }
+
+      console.log(`Documento ${doc_id} vectorizado en chunks (${chunksToUpload.length} fragmentos)`);
+    } catch (vError) {
+      console.error('[processDocument] Error vectorizando chunks:', vError.message);
+      insights.error({ message: '[processDocument] Error vectorizando chunks', error: vError.message, stack: vError.stack, docId: doc_id, patientId: patientId, filename: filename });
+      // No bloqueamos el proceso principal si falla la vectorización por ahora
+    }
+
+    const textSplitter = new RecursiveCharacterTextSplitter({ 
+      chunkSize: 3000, 
+      chunkOverlap: 200,
+      separators: ["\n\n", "\n", ". ", " ", ""]
+    });
     const docs = await textSplitter.createDocuments([clean_text]);
     const raw_docs = await textSplitter.createDocuments([clean_raw_text]);
-
+    // summarizeServer(patientId, medicalLevel, docs),
     const [result, result2, result3] = await Promise.all([
-      summarizeServer(patientId, medicalLevel, docs),
-      timelineServer(patientId, docs),
+      summarizeServer(patientId, medicalLevel, raw_docs),
+      timelineServer(patientId, raw_docs, reportDate),
       anomaliesServer(patientId, raw_docs)
     ]);
 
@@ -486,14 +689,16 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
         await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/anomalies.json'), result3);
       }
     } catch (error) {
-      insights.error(error);
+      console.error('[processDocument] Error processing anomalies:', error.message);
+      insights.error({ message: '[processDocument] Error processing anomalies', error: error.message, stack: error.stack, docId: doc_id, patientId: patientId });
       try {
         await email.sendMailError(error, "anomalies", patientId, url);
-      } catch (error) {
-        console.error(`Failed to send email: ${error.message}`);
+      } catch (emailError) {
+        console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+        insights.error({ message: '[processDocument] Failed to send anomalies error email', error: emailError.message, docId: doc_id });
       }
 
-      sendMessage("error anomalies", { error: error }, patientId);
+      sendMessage("error anomalies", { error: error.message }, patientId);
       await updateDocStatus('failed');
       return;
     }
@@ -507,18 +712,21 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
         for (let event of events) {
           event.keyMedicalEvent = await translateText(event.keyMedicalEvent, deepl_code, doc_lang);
         }
-        saveEventTimeline(events, patientId, doc_id, userId);
+        
+        saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus);
         sendMessage("timeline ready", {}, patientId);
       }
     } catch (error) {
-      insights.error(error);
+      console.error('[processDocument] Error processing timeline:', error.message);
+      insights.error({ message: '[processDocument] Error processing timeline', error: error.message, stack: error.stack, docId: doc_id, patientId: patientId });
       try {
         email.sendMailError(error, "timeline", patientId, url);
-      } catch (error) {
-        console.error(`Failed to send email: ${error.message}`);
+      } catch (emailError) {
+        console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+        insights.error({ message: '[processDocument] Failed to send timeline error email', error: emailError.message, docId: doc_id });
       }
 
-      sendMessage("error timeline", { error: error }, patientId);
+      sendMessage("error timeline", { error: error.message }, patientId);
       await updateDocStatus('failed');
       return;
     }
@@ -536,26 +744,30 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
       sendMessage("resumen ready", {}, patientId);
       await updateDocStatus('resumen ready');
     } catch (error) {
-      insights.error(error);
+      console.error('[processDocument] Error processing summary:', error.message);
+      insights.error({ message: '[processDocument] Error processing summary', error: error.message, stack: error.stack, docId: doc_id, patientId: patientId });
 
       try {
         await email.sendMailError(error, "summarize", patientId, url);
-      } catch (error) {
-        console.error(`Failed to send email: ${error.message}`);
+      } catch (emailError) {
+        console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+        insights.error({ message: '[processDocument] Failed to send summarize error email', error: emailError.message, docId: doc_id });
       }
-      sendMessage("error summarize", { error: error }, patientId);
+      sendMessage("error summarize", { error: error.message }, patientId);
       await updateDocStatus('failed');
       return;
     }
   } catch (error) {
-    insights.error({ message: 'Failed to summarize document: '+doc_id, error: error.message || error, stack: error.stack || 'No stack trace available' });
+    console.error('[processDocument] Failed to process document:', error.message);
+    insights.error({ message: '[processDocument] Failed to process document', docId: doc_id, patientId: patientId, error: error.message, stack: error.stack });
     try {
       email.sendMailError(error, "preparing", patientId, url);
-    } catch (error) {
-      console.error(`Failed to send email: ${error.message}`);
+    } catch (emailError) {
+      console.error(`[processDocument] Failed to send email: ${emailError.message}`);
+      insights.error({ message: '[processDocument] Failed to send preparing error email', error: emailError.message, docId: doc_id });
     }
 
-    sendMessage("failed", { error: error }, patientId);
+    sendMessage("failed", { error: error.message }, patientId);
     await updateDocStatus('failed');
   }
 }
@@ -572,24 +784,52 @@ function updateDocumentStatus(documentId, status) {
   });
 }
 
-function saveEventTimeline(events, patientId, doc_id, userId) {
+function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus) {
   for (let event of events) {
     let eventdb = new Events();
 
-    // Validar y convertir la fecha usando la función mejorada
-    const validDate = validateDate(event.date);
-    if (validDate) {
-      eventdb.date = validDate;
+    // 1. DETERMINAR LA FECHA DEL EVENTO
+    let finalDate = null;
+    let finalDateConfidence = 'missing';
+
+    if (event.date) {
+      const dateStr = String(event.date);
+      // 1. Intentamos validar si es YYYY-MM-DD
+      const validDate = validateDate(dateStr);
+      if (validDate) {
+        finalDate = validDate;
+        finalDateConfidence = 'confirmed';
+      } else {
+        // 2. SOPORTE PARA YYYY-MM (ej: 2021-06)
+        const monthMatch = dateStr.match(/^(\d{4})-(\d{2})$/);
+        if (monthMatch) {
+          finalDate = new Date(`${monthMatch[1]}-${monthMatch[2]}-01`);
+          finalDateConfidence = 'confirmed';
+        } else {
+          // 3. Intentamos validar si es solo un año (YYYY)
+          const yearMatch = dateStr.match(/^(\d{4})$/);
+          if (yearMatch) {
+            finalDate = new Date(`${yearMatch[1]}-01-01`);
+            finalDateConfidence = 'confirmed';
+          } else {
+            // Fallback: usar la del informe pero marcamos la duda
+            finalDate = reportDate;
+            finalDateConfidence = dateStatus || 'estimated';
+          }
+        }
+      }
+    } else if (event.date === null) {
+      // Caso explícito de condición crónica sin fecha (del Background)
+      finalDate = null;
+      finalDateConfidence = 'missing';
     } else {
-      //send patientId, doc_id, event.date to insights.error
-      let params = 'PatientId: ' + patientId + ' DocId: ' + doc_id + ' EventDate: ' + event.date;
-      insights.error(`Invalid date format for event: ${params}`);
-      insights.error(event);
-      console.log(event)
-      //set the actual date in YYYY-MM-DD format
-      eventdb.date = new Date().toISOString().split('T')[0];
-      //continue; // Saltar este evento si la fecha no es válida
+      // Fallback total: heredamos la del documento
+      finalDate = reportDate;
+      finalDateConfidence = dateStatus || 'missing';
     }
+
+    eventdb.date = finalDate;
+    eventdb.dateConfidence = finalDateConfidence;
     eventdb.status = event.present;
 
     eventdb.name = event.keyMedicalEvent;
@@ -597,9 +837,27 @@ function saveEventTimeline(events, patientId, doc_id, userId) {
     eventdb.origin = 'automatic';
     eventdb.docId = doc_id;
     eventdb.createdBy = patientId;
-    eventdb.addedBy = crypt.decrypt(userId);
+    // addedBy es opcional (puede ser null en migraciones/scripts)
+    if (userId) {
+      eventdb.addedBy = crypt.decrypt(userId);
+    }
 
-    Events.findOne({ "createdBy": patientId, "name": event.keyMedicalEvent, "key": event.eventType }, { "createdBy": false }, (err, eventdb2) => {
+    // Nuevos campos de fuente para arquitectura de tres capas
+    eventdb.source = {
+      kind: 'document',
+      documentId: doc_id,
+      filename: filename,
+      reportDate: reportDate
+    };
+    
+    eventdb.confidence = 0.8; // Valor base para extracciones automáticas
+
+    Events.findOne({ 
+      "createdBy": patientId, 
+      "name": event.keyMedicalEvent, 
+      "key": event.eventType,
+      "date": eventdb.date 
+    }, { "createdBy": false }, (err, eventdb2) => {
       if (err) {
         insights.error(err);
       }
@@ -610,7 +868,7 @@ function saveEventTimeline(events, patientId, doc_id, userId) {
           }
         });
       } else {
-        console.log('Event already exists');
+        console.log('Event already exists for this date');
       }
     });
   }
@@ -626,16 +884,14 @@ async function categorizeDocs(userId, content, patientId, containerName, url, do
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       // Format and call the prompt to categorize each document
       clean_doc = content.replace(/{/g, '{{').replace(/}/g, '}}');
 
-      let selectedModel = azuregpt4o;
-
       chatPrompt = await pull("foundation29/categorize_docs_base_v1");
 
-      const categoryChain = chatPrompt.pipe(selectedModel);
+      const categoryChain = chatPrompt.pipe(model);
       const category = await categoryChain.invoke({
         doc: clean_doc,
       });
@@ -737,29 +993,28 @@ function validateDate(documentDate) {
 }
 
 async function anonymize(patientId, containerName, url, docId, filename, userId) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      let url2 = url.replace(/\/[^\/]*$/, '/fast_extracted_translated.txt');
-      let lang_url = url.replace(/\/[^\/]*$/, '/language.txt');
-      let text, doc_lang;
+  const logContext = { patientId, docId, filename, containerName };
+  
+  try {
+    let url2 = url.replace(/\/[^\/]*$/, '/fast_extracted_translated.txt');
+    let lang_url = url.replace(/\/[^\/]*$/, '/language.txt');
+    let text, doc_lang;
 
-      try {
-        // Try to download the translation
-        text = await azure_blobs.downloadBlob(containerName, url2);
-        doc_lang = await azure_blobs.downloadBlob(containerName, lang_url);
-        //.log("Lang: ", doc_lang);
-      } catch (error) {
-        insights.error(error);
-        console.error('Error downloading the translated blob:', error);
-        // Handle the error and make a different call here
-        // For example:
-        let url3 = url.replace(/\/[^\/]*$/, '/fast_extracted.txt');
-        text = await azure_blobs.downloadBlob(containerName, url3);
-      }
+    try {
+      // Try to download the translation
+      text = await azure_blobs.downloadBlob(containerName, url2);
+      doc_lang = await azure_blobs.downloadBlob(containerName, lang_url);
+    } catch (error) {
+      console.error('[anonymize] Error downloading translated blob, trying fallback:', error.message);
+      insights.error({ message: '[anonymize] Error downloading translated blob', error: error.message, stack: error.stack, ...logContext });
+      // Handle the error and make a different call here
+      let url3 = url.replace(/\/[^\/]*$/, '/fast_extracted.txt');
+      text = await azure_blobs.downloadBlob(containerName, url3);
+    }
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { model32k} = createModels(projectName, 'model32k');
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       const textSplitter = new RecursiveCharacterTextSplitter({ chunkSize: 15000 });
       const docs = await textSplitter.createDocuments([text]);
@@ -767,7 +1022,7 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
       let anonymize_prompt = await pull("foundation29/anonymize_doc_base_v1");
 
       // This function creates a document chain prompted to anonymize a set of documents.
-      const chain = anonymize_prompt.pipe(model32k);
+      const chain = anonymize_prompt.pipe(model);
 
       const patientIdCrypt = crypt.encrypt(patientId);
       let docIdEnc = crypt.encrypt(docId);
@@ -809,21 +1064,25 @@ async function anonymize(patientId, containerName, url, docId, filename, userId)
         const blob_response2 = await azure_blobs.createBlob(containerName, url.replace(/\/[^\/]*$/, '/anonymized.txt'), source_text)
       }
 
-      // Alert the client that the summary is ready (change status in the message)
-      message["time"] = new Date().toISOString();
-      message["status"] = "anonymize ready"
-      message["patientId"] = patientIdCrypt
-      pubsub.sendToUser(userId, message)
-      resolve(true);
-    } catch (error) {
-      console.log("Error happened: ", error)
-      insights.error(error);
-      const patientIdCrypt = crypt.encrypt(patientId);
-      let docIdEnc = crypt.encrypt(docId);
-      pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "error anonymize", "filename": filename, "error": error, "step": "anonymize", "patientId": patientIdCrypt })
-      resolve(false);
-    };
-  });
+    // Alert the client that the summary is ready (change status in the message)
+    message["time"] = new Date().toISOString();
+    message["status"] = "anonymize ready"
+    message["patientId"] = patientIdCrypt
+    pubsub.sendToUser(userId, message)
+    return true;
+  } catch (error) {
+    console.error('[anonymize] Error during anonymization:', error.message);
+    insights.error({ 
+      message: '[anonymize] Error during anonymization', 
+      error: error.message, 
+      stack: error.stack,
+      ...logContext
+    });
+    const patientIdCrypt = crypt.encrypt(patientId);
+    let docIdEnc = crypt.encrypt(docId);
+    pubsub.sendToUser(userId, { "time": new Date().toISOString(), "docId": docIdEnc, "status": "error anonymize", "filename": filename, "error": error.message, "step": "anonymize", "patientId": patientIdCrypt })
+    return false;
+  }
 }
 
 async function summarySuggestions(patientId, containerName, url) {
@@ -835,12 +1094,13 @@ async function summarySuggestions(patientId, containerName, url) {
 
       // Create the models
       const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-      let { azuregpt4o } = createModels(projectName, 'azuregpt4o');
+      // gpt-4.1-mini: mejor calidad en generación de sugerencias
+      let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
 
       // Create a langchain prompt with all the summaries to generate a summary
       let summary_suggestions_prompt = await pull("foundation29/summary_suggestions_base_v1");
 
-      const chainSummarySuggestions = summary_suggestions_prompt.pipe(azuregpt4o);
+      const chainSummarySuggestions = summary_suggestions_prompt.pipe(model);
       console.log("Calling summary suggestions chain...");
 
       const suggestions = await chainSummarySuggestions.invoke({
@@ -957,10 +1217,16 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
       const birthDate = patientData.birthDate;
       const patientName = patientData.patientName;
 
-      // Generate the event summary with updated event structure considering new keys
-      let event_summary = eventsMinusDeleted.reduce((summary, event) => {
+      // Filter only manual events (not extracted from documents)
+      const manualEvents = eventsMinusDeleted.filter(event => 
+        event.origin === 'manual' || !event.origin
+      );
+
+      // Generate the event summary with only manual events
+      let event_summary = manualEvents.reduce((summary, event) => {
         const formattedDate = event.date ? new Date(event.date).toISOString().split('T')[0] : "unknown";
-        return summary + `Event: ${event.name}, Date: ${formattedDate}\n`;
+        const eventType = event.type || event.key || "other";
+        return summary + `- [${eventType}] ${event.name} (Date: ${formattedDate})\n`;
       }, "");
 
       // Extract the date of birth from the 'name' field of the event with key 'dob', parse it, and calculate the patient's current age
@@ -1021,6 +1287,7 @@ async function summarizePatientBrute(patientId, idWebpubsub, medicalLevel, prefe
 
       const finalCardSummary = await chainFinalCardSummary.invoke({
         summaries: clean_patient_info,
+        manual_events: event_summary,
         todayDate: todayDate,
         patientName: patientName,
         age: age,
@@ -1107,111 +1374,40 @@ const formatToday = () => {
   return { dayOfWeek, isoDate };
 };
 
-async function extractTimelineEvents(question, userId, patientId) {
+async function extractEvents(question, answer, userId, patientId) {
   /*
-  This functions analyses the user question and try to extract a timeline of events from the patient's documents.
-  It uses the model32k to do so. It returns a JSON object with the timeline of events.
-  The timeline should be structured as a list of events, with each individual event containing a date, type and an small description of the event.
-
-  */
-  return new Promise(async (resolve, reject) => {
-    const patientIdCrypt = crypt.encrypt(patientId);
-    pubsub.sendToUser(userId, { "time": new Date().toISOString(), "status": "analizando respuesta timeline", "step": "extract events", "patientId": patientIdCrypt })
-    // Create the models
-    const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k } = createModels(projectName, 'model32k');
-    try {
-      // Use the function to get today's date and day
-      const { dayOfWeek, isoDate } = formatToday();
-
-      // Generate a prompt with the question's user
-      let extract_events_prompt = await pull("foundation29/extract_timeline_events_v1");
-
-      const chainExtractEvents = extract_events_prompt.pipe(model32k);
-
-      const extractedEvents = await chainExtractEvents.invoke({
-        questionText: question,
-        dayOfWeek: dayOfWeek,
-        isoDate: isoDate
-      });
-
-      let eventJson
-      try {
-        // Eliminar posibles caracteres extra al inicio y al final
-        let extractedText = extractedEvents.content.trim();
-        if (extractedText.startsWith("```json") && extractedText.endsWith("```")) {
-          extractedText = extractedText.slice(7, -3).trim();
-        }
-
-        // Intentar parsear el texto
-        const parsedData = JSON.parse(extractedText);
-
-        // Verificar si el resultado parseado es un array
-        if (Array.isArray(parsedData)) {
-          eventJson = parsedData;
-        } else {
-          eventJson = [];
-        }
-      } catch (error) {
-        eventJson = [];
-      }
-
-      // Iterate over the extracted events and add the current date only if the event does not have a proper ISO date or is unknown
-      if (Array.isArray(eventJson) && eventJson.length > 0) {
-        eventJson.forEach(event => {
-          if (!event.date || isNaN(Date.parse(event.date)) || event.date.toLowerCase() === 'unknown') {
-            event.date = new Date().toISOString();
-          }
-        });
-      }
-
-      pubsub.sendToUser(userId, {
-        time: new Date().toISOString(),
-        status: "respuesta timeline analizada",
-        events: eventJson,
-        step: "extract events",
-        patientId: patientIdCrypt
-      });
-
-      resolve(eventJson);
-
-      // Add the extracted events to the verified events (will require a verification from the user?)
-    } catch (error) {
-      insights.error(error);
-      console.error(error);
-    }
-  });
-}
-
-async function extractEvents(question, answer, userId, patientId, keyEvents) {
-  /*
-  This functions analyses a pair of question and answer and compares it to the patient's verified events.
-  It searchs for new events that are not in the verified events and adds them to the verified events.
+  This function analyses a pair of question and answer and compares it to the patient's verified events.
+  It searches for new events that are not in the verified events and adds them to the verified events.
   It also checks if the answer contains a date and if it does, it adds it to the date of the event if not use the current date.
+  Events are always fetched from DB to ensure freshness.
   */
   return new Promise(async (resolve, reject) => {
     const patientIdCrypt = crypt.encrypt(patientId);
     pubsub.sendToUser(userId, { "time": new Date().toISOString(), "status": "analizando respuesta", "step": "extract events", "patientId": patientIdCrypt })
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k } = createModels(projectName, 'model32k');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
 
-      // Get all the verified events for this patient
-      const events = await getAllEvents(patientId);
+      // Get all the verified events for this patient (excluding deleted ones)
+      const allEvents = await getAllEvents(patientId);
+      const events = allEvents.filter(event => event.status !== "deleted");
       const patientData = await getPatientData(patientId);
       const gender = patientData.gender;
       const birthDate = patientData.birthDate;
       const patientName = patientData.patientName;
 
       // Generate the event summary with updated event structure considering new keys
+      // Solución 2: Incluir más información (tipo de evento) para mejor comparación y evitar duplicados
       let event_summary = events.reduce((summary, event) => {
         const formattedDate = event.date ? new Date(event.date).toISOString().split('T')[0] : "unknown";
-        return summary + `Event: ${event.name}, Date: ${formattedDate}\n`;
+        const eventType = event.type || event.key || "other";
+        return summary + `- [${eventType}] ${event.name} (Date: ${formattedDate})\n`;
       }, "");
-      event_summary += `Gender: ${gender}\n`;
-      event_summary += `BirthDate: ${birthDate}\n`;
-      event_summary += `Name: ${patientName}\n`;
+      event_summary += `\nPatient Info:\n`;
+      event_summary += `- Gender: ${gender}\n`;
+      event_summary += `- BirthDate: ${birthDate}\n`;
+      event_summary += `- Name: ${patientName}\n`;
 
       // Use the function to get today's date and day
       const { dayOfWeek, isoDate } = formatToday();
@@ -1219,8 +1415,7 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
       // Generate a prompt with the question's user, answer from Navigator and the events and ask the model to extract new events
       let extract_events_prompt = await pull("foundation29/extract_events_v1");
 
-      const chainExtractEvents = extract_events_prompt.pipe(model32k);
-
+      const chainExtractEvents = extract_events_prompt.pipe(model);
       const extractedEvents = await chainExtractEvents.invoke({
         questionText: question,
         events: event_summary,
@@ -1246,6 +1441,8 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
           eventJson = [];
         }
       } catch (error) {
+        console.warn('[extractEvents] Error parsing events JSON:', error.message);
+        insights.error({ message: '[extractEvents] Error parsing events JSON', error: error.message, textPreview: extractedText?.substring(0, 200) });
         eventJson = [];
       }
 
@@ -1257,13 +1454,41 @@ async function extractEvents(question, answer, userId, patientId, keyEvents) {
           }
         });
       }
-
-      // Remove events with future dates
+      // Remove events with future dates, except for appointments and reminders
+      const allowedFutureTypes = ['appointment', 'reminder'];
       eventJson = eventJson.filter(event => {
         const eventDate = new Date(event.date);
         const currentDate = new Date();
+        // Allow future dates for appointments and reminders
+        if (allowedFutureTypes.includes(event.key)) {
+          return true;
+        }
         return eventDate <= currentDate;
       });
+
+      // Filtrar eventos duplicados: misma fecha + mismo tipo (key)
+      // Esto evita proponer eventos que ya existen (ej: appointment en 2026-02-04)
+      if (Array.isArray(eventJson) && eventJson.length > 0 && events.length > 0) {
+        const originalCount = eventJson.length;
+        eventJson = eventJson.filter(newEvent => {
+          const newDate = newEvent.date ? newEvent.date.split('T')[0] : null;
+          const newKey = newEvent.key || 'other';
+          
+          const isDuplicate = events.some(existingEvent => {
+            const existingDate = existingEvent.date ? new Date(existingEvent.date).toISOString().split('T')[0] : null;
+            const existingKey = existingEvent.type || existingEvent.key || 'other';
+            
+            // Duplicado si tiene misma fecha Y mismo tipo de evento
+            return newDate && existingDate && newDate === existingDate && newKey === existingKey;
+          });
+          
+          return !isDuplicate;
+        });
+        
+        if (originalCount !== eventJson.length) {
+          console.log(`[extractEvents] Filtered ${originalCount - eventJson.length} duplicate events (${originalCount} -> ${eventJson.length})`);
+        }
+      }
 
       pubsub.sendToUser(userId, {
         time: new Date().toISOString(),
@@ -1296,7 +1521,7 @@ async function extractInitialEvents(patientId, ogLang) {
     // pubsub.sendToUser(userId, {"status": "analizando inicio", "step": "extract events"})
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { azuregpt4o} = createModels(projectName, 'azuregpt4o');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Get all the documents for this patient
       // Obtener nombre del contenedor Azure para este paciente
@@ -1332,7 +1557,7 @@ async function extractInitialEvents(patientId, ogLang) {
         ).join("\n");
       }
   
-      const chainExtractEvents = initial_events_prompt.pipe(azuregpt4o);
+      const chainExtractEvents = initial_events_prompt.pipe(model);
   
       const extractedEvents = await chainExtractEvents.invoke({
         documents: summaries,
@@ -1343,17 +1568,23 @@ async function extractInitialEvents(patientId, ogLang) {
         try {
           eventJson = JSON.parse(extractedEvents.content);
         } catch (error) {
-          console.log(error)
+          console.warn('[extractInitialEvents] Direct JSON parse failed, trying cleanup:', error.message);
           // Sometimes the .content begins with ```json and ends with ```, so we need to remove these before parsing
           let content = extractedEvents.content || '';
-          if (content.startsWith("```json") && content.endsWith("```")) {
-            content = content.slice(7, -3).trim();
-            eventJson = JSON.parse(content);
-          } else if (content.startsWith("```") && content.endsWith("```")) {
-            // Handle case where it's just ``` without json tag
-            content = content.slice(3, -3).trim();
-            eventJson = JSON.parse(content);
-          } else {
+          try {
+            if (content.startsWith("```json") && content.endsWith("```")) {
+              content = content.slice(7, -3).trim();
+              eventJson = JSON.parse(content);
+            } else if (content.startsWith("```") && content.endsWith("```")) {
+              // Handle case where it's just ``` without json tag
+              content = content.slice(3, -3).trim();
+              eventJson = JSON.parse(content);
+            } else {
+              throw new Error('Content does not match expected markdown format');
+            }
+          } catch (cleanupError) {
+            console.error('[extractInitialEvents] All JSON parse attempts failed:', cleanupError.message);
+            insights.error({ message: '[extractInitialEvents] Failed to parse initial events JSON', error: cleanupError.message, originalError: error.message, textPreview: content?.substring(0, 300) });
             eventJson = [
               {
                 "insight": null,
@@ -1474,18 +1705,16 @@ async function extractInitialEvents(patientId, ogLang) {
 
 
 async function divideElements(event, patientId) {
-  /*
-  This functions analyses a text and divides it into elements. Using the model32k to do so. It returns a list of elements.
-  */
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k } = createModels(projectName, 'model32k');
+    // gpt-4.1-mini: mejor precisión en división de elementos
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Generate a prompt with the question's user
       let divide_elements_prompt = await pull("foundation29/divide_elements_v1");
 
-      const chainDivideElements = divide_elements_prompt.pipe(model32k);
+      const chainDivideElements = divide_elements_prompt.pipe(model);
 
       const dividedElements = await chainDivideElements.invoke({
         event: event.name,
@@ -1508,20 +1737,15 @@ async function divideElements(event, patientId) {
 }
 
 async function explainMedicalEvent(eventDescription, patientId) {
-  /*
-  This function analyzes a medical event description and provides a detailed explanation of the event.
-  It uses the model32k to do so and returns the explanation in a user-friendly format, limited to one paragraph.
-  The explanation will be in the same language as the input event description.
-  */
   return new Promise(async (resolve, reject) => {
     // Create the models
     const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
-    let { model32k} = createModels(projectName, 'model32k');
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
     try {
       // Generate a prompt with the medical event
       let explain_event_prompt = await pull("foundation29/explain_medical_event_v1");
 
-      const chainExplainEvent = explain_event_prompt.pipe(model32k);
+      const chainExplainEvent = explain_event_prompt.pipe(model);
 
       const explanation = await chainExplainEvent.invoke({
         eventDescription: eventDescription,
@@ -1546,6 +1770,333 @@ async function explainMedicalEvent(eventDescription, patientId) {
 }
 
 
+/**
+ * Genera una infografía visual del paciente usando Gemini 3 Pro Image Preview
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientSummary - Resumen clínico del paciente
+ * @param {string} lang - Idioma del usuario ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, imageData?: string, mimeType?: string, error?: string}>}
+ */
+async function generatePatientInfographic(patientId, patientSummary, lang = 'en') {
+  console.log(`[Infographic] Generating infographic for patient ${patientId}`);
+  
+  try {
+    // Inicializar el SDK de Google GenAI
+    const ai = new GoogleGenAI({ apiKey: config.GOOGLE_API_KEY });
+    
+    // Construir el prompt para la infografía según el idioma preferido
+    const langMap = {
+      'es': 'El texto en la infografía debe estar en español.',
+      'en': 'The text in the infographic should be in English.',
+      'fr': 'Le texte de l\'infographie doit être en français.',
+      'de': 'Der Text in der Infografik muss auf Deutsch sein.',
+      'it': 'Il testo nell\'infografica deve essere in italiano.',
+      'pt': 'O texto no infográfico deve estar em português.'
+    };
+    const langInstructions = langMap[lang] || `The text in the infographic should be in the language with code "${lang}".`;
+    
+    const prompt = `Create a professional, clean, and visually appealing medical infographic for a patient health summary. 
+${langInstructions}
+
+The infographic should:
+1. Have a modern, clean healthcare design with soft colors (light blue, green, white tones)
+2. Include clear sections with icons for: diagnoses, medications, symptoms, and key health metrics
+3. Use a timeline or flow representation if there's chronological data
+4. Include visual icons representing medical concepts
+5. Be easy to read and understand for patients
+6. Include the patient's name and relevant personal data (age, gender) if available in the summary
+7. Focus on the medical journey and current health status
+8. Include a header with the infographic generation date
+
+Patient Health Summary to visualize:
+${patientSummary}
+
+Style: Modern healthcare infographic, professional medical illustration style, clean typography, soft color palette, icons and visual elements to represent medical concepts.`;
+
+    console.log(`[Infographic] Calling Gemini 3 Pro Image Preview...`);
+    
+    // Llamar al modelo de generación de imágenes con timeout de 2 minutos
+    const timeoutMs = 120000;
+    const generatePromise = ai.models.generateContent({
+      model: "gemini-3-pro-image-preview",
+      contents: prompt,
+    });
+    
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error(`Gemini request timed out after ${timeoutMs/1000}s`)), timeoutMs)
+    );
+    
+    const response = await Promise.race([generatePromise, timeoutPromise]);
+
+    // Extraer la imagen de la respuesta
+    if (response.candidates && response.candidates[0] && response.candidates[0].content && response.candidates[0].content.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData) {
+          console.log(`[Infographic] Image generated successfully`);
+          return {
+            success: true,
+            imageData: part.inlineData.data,
+            mimeType: part.inlineData.mimeType || 'image/png'
+          };
+        }
+      }
+    }
+
+    // Si no hay imagen en la respuesta
+    console.warn(`[Infographic] No image in response`);
+    return {
+      success: false,
+      error: 'No image was generated. The model may have returned text instead.'
+    };
+
+  } catch (error) {
+    console.error(`[Infographic] Error generating infographic:`, error.message);
+    insights.error({ message: '[Infographic] Error generating infographic', error: error.message, patientId });
+    return {
+      success: false,
+      error: error.message || 'Error generating infographic'
+    };
+  }
+}
+
+/**
+ * Genera preguntas sugeridas para la consulta SOAP basándose en los síntomas y el contexto del paciente
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientSymptoms - Síntomas referidos por el paciente
+ * @param {string} patientContext - Contexto clínico del paciente
+ * @param {string} lang - Idioma ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, questions?: string[], error?: string}>}
+ */
+async function generateSoapQuestions(patientId, patientSymptoms, patientContext, lang = 'en') {
+  console.log(`[SOAP] Generating questions for patient ${patientId}`);
+  
+  try {
+    const projectName = `SOAP Questions - ${patientId}`;
+    const model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    
+    const langMap = {
+      'es': 'Genera las preguntas en español.',
+      'en': 'Generate the questions in English.',
+      'fr': 'Générez les questions en français.',
+      'de': 'Generieren Sie die Fragen auf Deutsch.',
+      'it': 'Genera le domande in italiano.',
+      'pt': 'Gere as perguntas em português.'
+    };
+    const langInstruction = langMap[lang] || `Generate the questions in the language with code "${lang}".`;
+    
+    const prompt = `You are an experienced physician conducting a patient consultation. Based on the patient's reported symptoms and their medical history, generate 5-7 targeted follow-up questions to gather more information for a comprehensive SOAP assessment.
+
+${langInstruction}
+
+PATIENT'S REPORTED SYMPTOMS:
+${patientSymptoms}
+
+PATIENT'S MEDICAL CONTEXT:
+${patientContext}
+
+Generate specific, clinically relevant questions that will help:
+1. Clarify the nature, duration, and severity of symptoms
+2. Identify potential triggers or aggravating factors
+3. Assess impact on daily activities
+4. Check for related symptoms or red flags
+5. Review relevant medication or treatment effects
+
+Return ONLY a JSON array of strings with the questions. Example format:
+["Question 1?", "Question 2?", "Question 3?"]`;
+
+    const response = await model.invoke(prompt);
+    const responseText = response.content.trim();
+    
+    // Parse JSON response
+    let questions;
+    try {
+      // Try to extract JSON array from response
+      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        questions = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON array found');
+      }
+    } catch (parseError) {
+      console.warn('[SOAP] Failed to parse questions JSON, splitting by lines');
+      // Fallback: split by newlines and clean
+      questions = responseText
+        .split('\n')
+        .map(q => q.replace(/^[\d\.\-\*]+\s*/, '').trim())
+        .filter(q => q.length > 10 && q.includes('?'));
+    }
+    
+    console.log(`[SOAP] Generated ${questions.length} questions`);
+    return { success: true, questions };
+    
+  } catch (error) {
+    console.error('[SOAP] Error generating questions:', error.message);
+    insights.error({ message: '[SOAP] Error generating questions', error: error.message, patientId });
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Genera el informe SOAP completo basándose en los síntomas, preguntas/respuestas y contexto del paciente
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientSymptoms - Síntomas referidos por el paciente
+ * @param {Array<{question: string, answer: string}>} questionsAndAnswers - Preguntas y respuestas
+ * @param {string} patientContext - Contexto clínico del paciente
+ * @param {string} lang - Idioma ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, soap?: object, error?: string}>}
+ */
+async function generateSoapReport(patientId, patientSymptoms, questionsAndAnswers, patientContext, lang = 'en') {
+  console.log(`[SOAP] Generating report for patient ${patientId}`);
+  
+  try {
+    const projectName = `SOAP Report - ${patientId}`;
+    const model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    
+    const langMap = {
+      'es': 'Genera el informe SOAP en español.',
+      'en': 'Generate the SOAP report in English.',
+      'fr': 'Générez le rapport SOAP en français.',
+      'de': 'Generieren Sie den SOAP-Bericht auf Deutsch.',
+      'it': 'Genera il rapporto SOAP in italiano.',
+      'pt': 'Gere o relatório SOAP em português.'
+    };
+    const langInstruction = langMap[lang] || `Generate the SOAP report in the language with code "${lang}".`;
+    
+    // Format Q&A
+    const qaFormatted = questionsAndAnswers
+      .filter(qa => qa.answer && qa.answer.trim())
+      .map((qa, i) => `Q${i+1}: ${qa.question}\nA${i+1}: ${qa.answer}`)
+      .join('\n\n');
+    
+    const prompt = `You are an experienced physician. Generate a comprehensive SOAP note based on the consultation data provided.
+
+${langInstruction}
+
+PATIENT'S INITIAL COMPLAINTS:
+${patientSymptoms}
+
+CONSULTATION Q&A:
+${qaFormatted}
+
+PATIENT'S MEDICAL HISTORY:
+${patientContext}
+
+Generate a structured SOAP note with the following sections:
+
+1. SUBJECTIVE (S): Patient's chief complaint, history of present illness, symptoms in their own words, relevant medical history.
+
+2. OBJECTIVE (O): Observable/measurable findings, vital signs if mentioned, physical examination findings, relevant test results from medical history.
+
+3. ASSESSMENT (A): Clinical impression, differential diagnoses, analysis integrating subjective and objective findings.
+
+4. PLAN (P): Treatment recommendations, medications, follow-up, referrals, patient education, lifestyle modifications.
+
+Return the response as a JSON object with this exact structure:
+{
+  "subjective": "...",
+  "objective": "...",
+  "assessment": "...",
+  "plan": "..."
+}
+
+Each section should be comprehensive but concise, using proper medical terminology while remaining understandable.`;
+
+    const response = await model.invoke(prompt);
+    const responseText = response.content.trim();
+    
+    // Parse JSON response
+    let soap;
+    try {
+      // Try to extract JSON object from response
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        soap = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON object found');
+      }
+    } catch (parseError) {
+      console.warn('[SOAP] Failed to parse SOAP JSON:', parseError.message);
+      // Fallback: create structured response from text
+      soap = {
+        subjective: 'Error parsing response. Please try again.',
+        objective: '',
+        assessment: '',
+        plan: ''
+      };
+    }
+    
+    console.log('[SOAP] Report generated successfully');
+    return { success: true, soap };
+    
+  } catch (error) {
+    console.error('[SOAP] Error generating report:', error.message);
+    insights.error({ message: '[SOAP] Error generating report', error: error.message, patientId });
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Diariza una transcripción de consulta médica, separando los hablantes (médico/paciente)
+ * @param {string} text - Transcripción cruda de la consulta
+ * @param {string} patientId - ID del paciente
+ * @param {string} userId - ID del usuario
+ * @returns {Promise<{success: boolean, diarizedText?: string, error?: string}>}
+ */
+async function diarizeConversation(text, patientId, userId) {
+  try {
+    console.log('[Diarization] Starting conversation diarization...');
+    
+    const projectName = `${config.LANGSMITH_PROJECT} - ${patientId}`;
+    let model = createModels(projectName, 'gpt-4.1-mini')['gpt-4.1-mini'];
+    
+    const prompt = `You are an expert in medical consultation transcription. Your task is to analyze this transcription of a conversation between a doctor and a patient, and separate it by speakers.
+
+INSTRUCTIONS:
+1. Identify who is the DOCTOR and who is the PATIENT based on:
+   - The doctor asks questions about symptoms, medical history, examinations
+   - The doctor uses technical medical vocabulary
+   - The doctor gives instructions, prescriptions, diagnoses
+   - The patient describes symptoms, sensations, concerns
+   - The patient answers questions about their condition
+
+2. STRICT output format:
+   DOCTOR: [doctor's text]
+   PATIENT: [patient's text]
+   DOCTOR: [next doctor intervention]
+   ...
+
+3. If there are ambiguous parts, use your best judgment based on context.
+
+4. Maintain the chronological order of the conversation.
+
+5. If there is text that does not correspond to any speaker (noise, unintelligible text), omit it.
+
+TRANSCRIPTION TO DIARIZE:
+${text}
+
+DIARIZED TRANSCRIPTION:`;
+
+    const chatPrompt = ChatPromptTemplate.fromMessages([
+      ["system", "You are an expert in medical transcription specialized in diarization of clinical conversations."],
+      ["human", prompt]
+    ]);
+    
+    const chain = chatPrompt.pipe(model);
+    const response = await chain.invoke({});
+    
+    const diarizedText = response.content;
+    
+    console.log('[Diarization] Conversation diarized successfully');
+    
+    return { success: true, diarizedText };
+    
+  } catch (error) {
+    console.error('[Diarization] Error diarizing conversation:', error.message);
+    insights.error({ message: '[Diarization] Error diarizing conversation', error: error.message, patientId });
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   processDocument,
   categorizeDocs,
@@ -1553,10 +2104,19 @@ module.exports = {
   summarizePatientBrute,
   summarySuggestions,
   extractEvents,
-  extractTimelineEvents,
   extractInitialEvents,
   divideElements,
   explainMedicalEvent,
   getPatientData,
-  createModels
+  createModels,
+  embeddings,
+  generatePatientInfographic,
+  generateSoapQuestions,
+  generateSoapReport,
+  diarizeConversation,
+  // Para scripts de migración
+  timelineServer,
+  summarizeServer,
+  anomaliesServer,
+  saveEventTimeline
 };
