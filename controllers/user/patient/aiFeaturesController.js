@@ -498,6 +498,11 @@ async function handleRarescopeRequest(req, res) {
     /* 1 · Seguridad ----------------------------------------------------*/
     const patientId = crypt.decrypt(req.params.patientId);
 
+    /* 1.1 · Rol: Clinical | Caregiver | paciente (cada uno con su prompt) */
+    const role = (req.body?.role || '').trim();
+    const isClinicalView = role === 'Clinical';
+    const isCaregiverView = role === 'Caregiver';
+
     /* 2 · Descripción clínica (puede venir del caller) -----------------*/
     const customDescription = req.body?.customPatientDescription || req.body?.customMedicalDescription;
     let ctxStr = customDescription;
@@ -543,12 +548,12 @@ async function handleRarescopeRequest(req, res) {
       }
     }
 
-    /* 3 · Prompt -------------------------------------------------------*/
-    const prompt = `Act as a medical expert specializing in patient advocacy and clinical needs assessment. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of THIS SPECIFIC PATIENT based on their medical history. Do not add explanations or extra formatting.
+    /* 3 · Prompt según rol (Clinical | Caregiver | paciente); todos con mismo formato de salida */
+    const promptPatient = `Act as a medical expert specializing in patient advocacy and clinical needs assessment. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of THIS SPECIFIC PATIENT based on their medical history, from the PATIENT'S OWN PERSPECTIVE (what they experience and need). Do not add explanations or extra formatting.
 
 These needs should reflect challenges such as lack of specific treatment options for their condition, need for specialized follow-up, management of chronic symptoms, psychological support, or information gaps that the patient faces. Valid output example: ["Need 1","Need 2"]
 
-IMPORTANT: 
+IMPORTANT:
 - Tailor the needs to the actual diagnoses, treatments, and symptoms mentioned in the patient context.
 - You may use your medical knowledge to identify if the condition requires specialized care typical of rare or complex diseases, but focus on the patient's specific evidence.
 - Base your analysis on what is explicitly stated in the clinical history, not on assumptions.
@@ -557,15 +562,58 @@ IMPORTANT:
 ## Patient Context
 ${ctxStr}`.trim();
 
+    const promptClinical = `Act as a medical expert assessing a patient from a CLINICIAN perspective. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string is a concrete UNMET CLINICAL NEED for THIS SPECIFIC PATIENT—i.e. what the clinician identifies as missing or needed in their care (e.g. access to treatments, specialized follow-up, multidisciplinary care, diagnostic clarity, symptom control, psychosocial support). Do not add explanations or extra formatting.
+
+Focus on care gaps and needs that a healthcare professional would document when planning or reviewing the patient's care. Valid output example: ["Need 1","Need 2"]
+
+IMPORTANT:
+- Base each need on the actual diagnoses, treatments, and symptoms in the patient context.
+- Use medical knowledge for rare/complex conditions but anchor on the patient's specific evidence.
+- Do not assume; use only what is stated or clearly implied in the clinical history.
+- Respond in the SAME LANGUAGE as the patient context provided below.
+
+## Patient Context
+${ctxStr}`.trim();
+
+    const promptCaregiver = `Act as a medical expert supporting family caregivers. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string is a concrete UNMET NEED for THIS SPECIFIC PATIENT from the CAREGIVER'S PERSPECTIVE—i.e. what the person caring for the patient identifies as missing or needed (e.g. respite care, clear information about the condition, coordination between providers, daily living support, emotional support for the caregiver, access to treatments, help with symptom management at home). Do not add explanations or extra formatting.
+
+Focus on needs that matter to someone who supports the patient day-to-day: practical, informational, and emotional gaps. Valid output example: ["Need 1","Need 2"]
+
+IMPORTANT:
+- Base each need on the actual diagnoses, treatments, and symptoms in the patient context.
+- Consider both the patient's clinical needs and the caregiver's own support needs where relevant.
+- Do not assume; use only what is stated or clearly implied in the clinical history.
+- Respond in the SAME LANGUAGE as the patient context provided below.
+
+## Patient Context
+${ctxStr}`.trim();
+
+    let prompt;
+    if (isClinicalView) prompt = promptClinical;
+    else if (isCaregiverView) prompt = promptCaregiver;
+    else prompt = promptPatient;
+    if (isClinicalView) console.log('📋 Rarescope: usando prompt perspectiva CLÍNICA (Their Needs)');
+    else if (isCaregiverView) console.log('📋 Rarescope: usando prompt perspectiva CUIDADOR (Caregiver)');
+    else console.log('📋 Rarescope: usando prompt perspectiva PACIENTE (My Needs)');
+
     /* 4 · Llamada REST a Azure OpenAI ---------------------------------*/
     const deployment = 'gpt-4o';
     const url = `https://${azureInstance}.openai.azure.com/openai/deployments/${deployment}/chat/completions?api-version=${config.OPENAI_API_VERSION}`;
+
+    let systemMessage;
+    if (isClinicalView) {
+      systemMessage = 'You are a medical expert assessing a patient from a clinician perspective. Output only a JSON array of unmet clinical needs. Always use the same language as the provided patient context.';
+    } else if (isCaregiverView) {
+      systemMessage = 'You are a medical expert supporting family caregivers. Output only a JSON array of unmet needs from the caregiver perspective. Always use the same language as the provided patient context.';
+    } else {
+      systemMessage = 'You are a medical expert assistant specializing in patient advocacy. Always respond in the same language as the provided patient context.';
+    }
 
     const { data } = await axios.post(
       url,
       {
         messages: [
-          { role: 'system', content: 'You are a medical expert assistant. Always respond in the same language as the provided patient context.' },
+          { role: 'system', content: systemMessage },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
@@ -581,14 +629,34 @@ ${ctxStr}`.trim();
 
     let answerRaw = data?.choices?.[0]?.message?.content?.trim() || '';
 
+    // Quitar markdown si el modelo devolvió ```json ... ``` o ```
+    let jsonStr = answerRaw
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/, '')
+      .trim();
+    // Si aún hay texto antes/después del array, intentar extraer solo [...]
+    const arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
+    if (arrayMatch) jsonStr = arrayMatch[0];
+
     let unmetNeeds;
     try {
-      unmetNeeds = JSON.parse(answerRaw);
+      unmetNeeds = JSON.parse(jsonStr);
       if (!Array.isArray(unmetNeeds)) throw new Error('Not array');
+      // Filtrar entradas que no son necesidades reales (sobrantes de markdown o fragmentos de JSON)
+      const junk = /^[\[\]`,]+$|^```(?:json)?$/i;
+      unmetNeeds = unmetNeeds
+        .filter(item => typeof item === 'string' && item.trim().length > 0)
+        .map(s => s.trim())
+        .filter(s => !junk.test(s))
+        .map(s => s.replace(/^["']|["'],?\s*$/g, '').trim()) // quitar comillas/coma sobrantes si el modelo devolvió "\"texto\","
+        .filter(Boolean);
     } catch (e) {
-      // Fallback: split by newline or semicolon
+      // Fallback: split por newline/semicolon y limpiar líneas tipo "\"texto\","
       unmetNeeds = answerRaw.split(/\n|\r|\u2028|\u2029/)
         .map(s => s.replace(/^[\-•\d\.\s]+/, '').trim())
+        .filter(Boolean)
+        .filter(s => !/^[\[\]`#,]+$/.test(s))
+        .map(s => s.replace(/^["']|["'],?\s*$|^\[|^\],?$/g, '').trim())
         .filter(Boolean);
     }
 
@@ -652,6 +720,7 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
           patientId: encryptedPatientId,
           status: 'extracting-facts',
           message: `Analizando ${selectedChunks.length} fragmentos de evidencia médica...`,
+          messageParams: { count: selectedChunks.length },
           progress: 40
         });
 
@@ -727,7 +796,7 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
       taskId,
       patientId: encryptedPatientId,
       status: 'calling-api',
-      message: 'Consultando DxGPT API...',
+      message: 'Consultando DxGPT...',
       progress: 90
     });
     
@@ -843,6 +912,7 @@ async function buildContextStringWithProgress(raw, patientId, userId, taskId, do
         patientId: encryptedPatientId,
         status: 'summarizing-documents',
         message: `Resumiendo documento ${i + 1} de ${totalDocs}: ${doc.name}...`,
+        messageParams: { current: i + 1, total: totalDocs, name: doc.name || '' },
         progress
       });
       

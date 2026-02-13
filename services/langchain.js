@@ -23,6 +23,7 @@ const axios = require('axios');
 const { SearchIndexClient, SearchClient } = require("@azure/search-documents");
 const { AzureKeyCredential } = require("@azure/core-auth");
 const { createChunksIndex } = require('./vectorStoreService');
+const { parseJson, parseJsonFast, JSON_TYPES } = require('./parserJson');
 
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
@@ -280,45 +281,18 @@ function createModels(projectName, modelType = null) {
 }
 
 async function getActualEvents(patientId) {
-  return new Promise((resolve, reject) => {
-    Events.find({ "createdBy": patientId, "status": "true" }, { "createdBy": false }, (err, eventsdb) => {
-      if (err) {
-        reject(err);
-      } else {
-        var listEventsdb = [];
-        listEventsdb = eventsdb;
-        resolve(listEventsdb);
-      }
-    });
-  });
+  const eventsdb = await Events.find({ "createdBy": patientId, "status": "true" }).select('-createdBy');
+  return eventsdb || [];
 }
 
 async function getAllEvents(patientId) {
-  return new Promise((resolve, reject) => {
-    Events.find({ "createdBy": patientId }, { "createdBy": false }, (err, eventsdb) => {
-      if (err) {
-        reject(err);
-      } else {
-        var listEventsdb = [];
-        listEventsdb = eventsdb;
-        resolve(listEventsdb);
-      }
-    });
-  });
+  const eventsdb = await Events.find({ "createdBy": patientId }).select('-createdBy');
+  return eventsdb || [];
 }
 
 async function getPatientData(patientId) {
-  return new Promise((resolve, reject) => {
-    // console.log("PatientId: ", patientId);
-    Patient.findById(patientId, { "gender": 1, "birthDate": 1, "_id": 0, "patientName": 1 }, (err, eventsdb) => {
-      if (err) {
-        reject(err);
-      } else {
-        // console.log("Eventsdb: ", eventsdb.toObject());
-        resolve(eventsdb.toObject());
-      }
-    });
-  });
+  const eventsdb = await Patient.findById(patientId).select('gender birthDate patientName -_id');
+  return eventsdb ? eventsdb.toObject() : null;
 }
 
 async function getMostCommonLanguage(blobs, containerName) {
@@ -428,16 +402,30 @@ async function extractAndParse(summaryText) {
     return "[]";
   }
 
-  // Step 2: Convert Extracted Text to JSON
-  try {
-    // Consider only the first match
-    const extractedJson = JSON.parse(matches[1]);
-    return JSON.stringify(extractedJson);
-  } catch (error) {
-    console.warn("[extractTimelineOutput] Invalid JSON format in <output> tags:", error.message);
-    insights.error({ message: '[extractTimelineOutput] Invalid JSON format', error: error.message, textPreview: matches[1]?.substring(0, 200) });
+  // Step 2: Convert Extracted Text to JSON using parseJson (with jsonrepair + GPT fallback)
+  let extractedText = matches[1].trim();
+  
+  // Si el contenido parece ser objetos separados por comas sin array wrapper, añadir corchetes
+  if (extractedText.startsWith('{') && !extractedText.startsWith('[')) {
+    extractedText = '[' + extractedText + ']';
+  }
+  
+  // Usar parseJson con GPT fallback para máxima robustez
+  const parsedJson = await parseJson(extractedText, JSON_TYPES.TIMELINE_EVENTS, {
+    useGptFallback: true,
+    context: 'extractAndParse timeline'
+  });
+  
+  if (!Array.isArray(parsedJson) || parsedJson.length === 0) {
+    console.warn("[extractTimelineOutput] Failed to parse JSON from <output> tags");
+    insights.error({ 
+      message: '[extractTimelineOutput] parseJson returned empty', 
+      textPreview: matches[1]?.substring(0, 200) 
+    });
     return "[]";
   }
+  
+  return JSON.stringify(parsedJson);
 }
 
 async function timelineServer(patientId, docs, reportDate) {
@@ -772,19 +760,16 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
   }
 }
 
-function updateDocumentStatus(documentId, status) {
-  return new Promise((resolve, reject) => {
-    Document.findByIdAndUpdate(documentId, { status: status }, { new: true }, (err, documentUpdated) => {
-      if (err) {
-        reject(err);
-      }
-      resolve(documentUpdated);
-    }
-    )
-  });
+async function updateDocumentStatus(documentId, status) {
+  const documentUpdated = await Document.findByIdAndUpdate(
+    documentId, 
+    { status: status }, 
+    { new: true }
+  );
+  return documentUpdated;
 }
 
-function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus) {
+async function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus) {
   for (let event of events) {
     let eventdb = new Events();
 
@@ -852,25 +837,22 @@ function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDa
     
     eventdb.confidence = 0.8; // Valor base para extracciones automáticas
 
-    Events.findOne({ 
-      "createdBy": patientId, 
-      "name": event.keyMedicalEvent, 
-      "key": event.eventType,
-      "date": eventdb.date 
-    }, { "createdBy": false }, (err, eventdb2) => {
-      if (err) {
-        insights.error(err);
-      }
-      if (!eventdb2) {
-        eventdb.save((err, eventdbStored) => {
-          if (err) {
-            insights.error(err);
-          }
-        });
+    try {
+      const existingEvent = await Events.findOne({ 
+        "createdBy": patientId, 
+        "name": event.keyMedicalEvent, 
+        "key": event.eventType,
+        "date": eventdb.date 
+      }).select('-createdBy');
+      
+      if (!existingEvent) {
+        await eventdb.save();
       } else {
         console.log('Event already exists for this date');
       }
-    });
+    } catch (err) {
+      insights.error(err);
+    }
   }
 }
 
@@ -1665,6 +1647,52 @@ async function extractInitialEvents(patientId, ogLang) {
           }
         }
 
+        // Merge with full expected keys so we never lose weight/height when the model returns a shortened JSON
+        const EXPECTED_INITIAL_KEYS = ['name', 'dob', 'weightMetric', 'heightCm', 'ethnicGroup', 'gender', 'chronicConditions', 'diagnosis', 'familyHealthHistory', 'familyHealthHistoryDetails', 'knownAllergies', 'allergiesDetails', 'surgicalHistory', 'surgicalHistoryDetails', 'currentMedications', 'currentMedicationsDetails'];
+        const byKey = new Map((eventJson || []).map(e => [e.key, e]));
+        eventJson = EXPECTED_INITIAL_KEYS.map(key => {
+          const existing = byKey.get(key);
+          if (existing) return existing;
+          return { insight: null, date: 'unknown', key };
+        });
+
+        // Normalize weight and height from any common unit (m, cm, feet/in; kg, kilos, lb/libras)
+        const normalizeHeightCm = (insight) => {
+          if (insight == null || insight === '') return null;
+          const raw = String(insight).trim().toLowerCase().replace(/,/g, '.');
+          // Feet and inches: e.g. "5 ft 8 in", "5'8\"", "5 feet 8 inches"
+          const ftInMatch = raw.match(/(\d+)\s*(?:ft|feet|′|')\s*(\d+)\s*(?:in|inch|inches|″|")?/i) || raw.match(/(\d+)\s*ft\s*(\d+)/i);
+          if (ftInMatch) {
+            const cm = parseInt(ftInMatch[1], 10) * 30.48 + parseInt(ftInMatch[2], 10) * 2.54;
+            return Math.round(cm);
+          }
+          const num = parseFloat(raw.replace(/[^\d.]/g, '') || raw);
+          if (Number.isNaN(num)) return null;
+          if (num > 0.5 && num < 3.5) return Math.round(num * 100); // meters -> cm
+          if (num >= 50 && num <= 250) return Math.round(num); // already cm
+          return null;
+        };
+        const normalizeWeightMetric = (insight) => {
+          if (insight == null || insight === '') return null;
+          const raw = String(insight).trim().toLowerCase().replace(/,/g, '.');
+          const isLb = /\b(lb|lbs|libras?|pounds?)\b/.test(raw);
+          const num = parseFloat(raw.replace(/[^\d.]/g, '') || raw);
+          if (Number.isNaN(num) || num <= 0) return null;
+          if (isLb && num < 1000) return Math.round(num / 2.205); // pounds -> kg
+          if (num > 500) return null; // likely lb already parsed as number
+          return Math.round(num); // assume kg
+        };
+        eventJson.forEach((event) => {
+          if (event.key === 'heightCm' && event.insight != null && event.insight !== '') {
+            const normalized = normalizeHeightCm(event.insight);
+            if (normalized != null) event.insight = normalized;
+          }
+          if (event.key === 'weightMetric' && event.insight != null && event.insight !== '') {
+            const normalized = normalizeWeightMetric(event.insight);
+            if (normalized != null) event.insight = normalized;
+          }
+        });
+
         // Check if the doc_lang is available in DeepL
         let deeplCode = await translate.getDeeplCode(ogLang);
         console.log(eventJson)
@@ -1684,9 +1712,9 @@ async function extractInitialEvents(patientId, ogLang) {
           }
         }));
         // Remove event.key === "ethnicGroup" if "insight" is "unknown" or null to avoid errors
-        eventJson = eventJson.filter(event => !(event.key === "ethnicGroup" && (event.insight === null || (event.insight && event.insight.toLowerCase() === "unknown"))));
-        //filter if insight '' if insight is null or unknown or '', don't include it
-        eventJson = eventJson.filter(event => event.insight !== null && event.insight !== "" && event.insight.toLowerCase() !== "unknown");
+        eventJson = eventJson.filter(event => !(event.key === "ethnicGroup" && (event.insight == null || (typeof event.insight === 'string' && event.insight.toLowerCase() === "unknown"))));
+        // Filter out null, empty string, or "unknown"; keep numbers (e.g. weightMetric, heightCm) and arrays
+        eventJson = eventJson.filter(event => event.insight != null && event.insight !== "" && (typeof event.insight !== 'string' || event.insight.toLowerCase() !== "unknown"));
 
         resolve(eventJson);
       }else{

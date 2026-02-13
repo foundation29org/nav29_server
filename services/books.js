@@ -91,16 +91,13 @@ async function translateText(text, deepl_code, doc_lang) {
 
 }
 
-function updateDocumentStatus(documentId, status) {
-	return new Promise((resolve, reject) => {
-		Document.findByIdAndUpdate(documentId, { status: status }, { new: true }, (err, documentUpdated) => {
-			if (err) {
-				reject(err);
-			}
-			resolve(documentUpdated);
-		}
-		)
-	});
+async function updateDocumentStatus(documentId, status) {
+	const documentUpdated = await Document.findByIdAndUpdate(
+		documentId, 
+		{ status: status }, 
+		{ new: true }
+	);
+	return documentUpdated;
 }
 
 const updateDocStatus = async (doc_id, status) => {
@@ -195,11 +192,11 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 					}
 					
 					// Marcar el documento como tipo consulta
-					Document.findByIdAndUpdate(documentId, { documentType: 'consultation' }, { new: true }, (err) => {
-						if (err) {
-							console.error('[form_recognizer] Error updating document type:', err.message);
-						}
-					});
+					try {
+						await Document.findByIdAndUpdate(documentId, { documentType: 'consultation' }, { new: true });
+					} catch (err) {
+						console.error('[form_recognizer] Error updating document type:', err.message);
+					}
 				}
 			}
 			// // 4. Traducir el contenido del documento
@@ -251,12 +248,12 @@ async function form_recognizer(patientId, documentId, containerName, url, filena
 				throw new Error('Error categorizing document: ' + error.message);
 			  }
 
-			Document.findByIdAndUpdate(documentId, { categoryTag: categoryTag, originaldate: validateDate(documentDate) }, { new: true }, (err, documentUpdated) => {
-				if (err) {
-					console.error('[form_recognizer] Error updating document category:', err.message);
-					insights.error({ message: '[form_recognizer] Error updating document category', error: err.message, ...logContext });
-				}
-			});
+			try {
+				await Document.findByIdAndUpdate(documentId, { categoryTag: categoryTag, originaldate: validateDate(documentDate) }, { new: true });
+			} catch (err) {
+				console.error('[form_recognizer] Error updating document category:', err.message);
+				insights.error({ message: '[form_recognizer] Error updating document category', error: err.message, ...logContext });
+			}
 
 			// Call the Node server
 			analizeDoc(containerName, url, documentId, filename, patientId, userId, saveTimeline, medicalLevel);
@@ -503,22 +500,20 @@ async function setStateAnonymizedDoc(documentId, state) {
 }
 
 async function getUserId(patientId) {
-	return new Promise(async function (resolve, reject) {
-		Patient.findById(patientId, { "_id": false }, (err, patient) => {
-			if (err) {
-				insights.error(err);
-				console.log(err)
-				resolve(null)
-			}
-			if (patient) {
-				resolve(patient.createdBy);
-			} else {
-				insights.error('No patient found');
-				console.log('No patient found')
-				resolve(null)
-			}
-		})
-	});
+	try {
+		const patient = await Patient.findById(patientId).select('-_id');
+		if (patient) {
+			return patient.createdBy;
+		} else {
+			insights.error('No patient found');
+			console.log('No patient found')
+			return null;
+		}
+	} catch (err) {
+		insights.error(err);
+		console.log(err)
+		return null;
+	}
 }
 
 async function deleteIndexAzure(indexName) {

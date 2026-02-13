@@ -9,40 +9,43 @@ const crypt = require('../../../services/crypt')
 const User = require('../../../models/user')
 const insights = require('../../../services/insights')
 
-function getLastAppointments (req, res){
-	let patientId= crypt.decrypt(req.params.patientId);
-	var period = 7;
-	var actualDate = new Date();
-	actualDate.setDate(actualDate.getDate() -1);
-	var actualDateTime = actualDate.getTime();
+async function getLastAppointments (req, res){
+	try {
+		let patientId = crypt.decrypt(req.params.patientId);
+		var period = 7;
+		var actualDate = new Date();
+		actualDate.setDate(actualDate.getDate() -1);
+		var actualDateTime = actualDate.getTime();
 
-	var futureDate=new Date(actualDate);
-    futureDate.setDate(futureDate.getDate() + period);
-	var futureDateDateTime = futureDate.getTime();
-	//Appointments.find({"createdBy": patientId, "date":{"$gte": actualDateTime, "$lt": futureDateDateTime}}, {"createdBy" : false},(err, eventsdb) => {
-	Appointments.find({"createdBy": patientId, "date":{"$gte": actualDateTime}}, {"createdBy" : false, "addedBy": false},(err, eventsdb) => {
-	//Appointments.find({"createdBy": patientId}, {"createdBy" : false},(err, eventsdb) => {
-		if (err) return res.status(500).send({message: `Error making the request: ${err}`})
+		var futureDate = new Date(actualDate);
+		futureDate.setDate(futureDate.getDate() + period);
+		var futureDateDateTime = futureDate.getTime();
+		
+		const eventsdb = await Appointments.find(
+			{"createdBy": patientId, "date":{"$gte": actualDateTime}}
+		).select('-createdBy -addedBy');
+		
 		var listEventsdb = [];
-
 		eventsdb.forEach(function(eventdb) {
 			listEventsdb.push(eventdb);
 		});
 		res.status(200).send(listEventsdb)
-	});
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({message: `Error making the request: ${err}`})
+	}
 }
 
 async function getAppointments(req, res) {
 	let patientId = crypt.decrypt(req.params.patientId);
 	try {
 		const eventsdb = await Appointments.find(
-			{"createdBy": patientId}, 
-			{"createdBy": false}
-		);
+			{"createdBy": patientId}
+		).select('-createdBy');
 
 		const formattedEvents = await Promise.all(eventsdb.map(async (eventdb) => {
 			let eventObj = eventdb.toObject();
-			const user = await User.findById(eventObj.addedBy, { userName: 1, email: 1 });
+			const user = await User.findById(eventObj.addedBy).select('userName email');
 			return {
 				...eventObj,
 				_id: crypt.encrypt(eventObj._id.toString()),
@@ -107,11 +110,11 @@ async function updateAppointment(req, res) {
 			dateInput: Date.now()
         };
 
-        const eventdbUpdated = await Appointments.findByIdAndUpdate(
+        await Appointments.findByIdAndUpdate(
             appointmentId, 
             update, 
             {
-                select: '-createdBy',
+                projection: { createdBy: 0 },
                 new: true
             }
         );
@@ -127,21 +130,21 @@ async function updateAppointment(req, res) {
 }
 
 
-function deleteAppointment (req, res){
-	let appointmentId= crypt.decrypt(req.params.appointmentId);
+async function deleteAppointment (req, res){
+	try {
+		let appointmentId = crypt.decrypt(req.params.appointmentId);
 
-	Appointments.findById(appointmentId, (err, eventdb) => {
-		if (err) return res.status(500).send({message: `Error deleting the appointmentId: ${err}`})
+		const eventdb = await Appointments.findById(appointmentId);
 		if (eventdb){
-			eventdb.remove(err => {
-				if(err) return res.status(500).send({message: `Error deleting the eventdb: ${err}`})
-				res.status(200).send({message: `Deleted`})
-			})
-		}else{
-			 return res.status(404).send({code: 208, message: `Error deleting the eventdb: ${err}`})
+			await Appointments.deleteOne({ _id: appointmentId });
+			res.status(200).send({message: `Deleted`})
+		} else {
+			return res.status(404).send({code: 208, message: `Error deleting the eventdb: not found`})
 		}
-
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({message: `Error deleting the appointmentId: ${err}`})
+	}
 }
 
 module.exports = {

@@ -14,6 +14,7 @@ const insights = require('../../../services/insights')
 const path = require('path');
 const azure_blobs = require('../../../services/f29azure')
 const { reindexDocumentMetadata } = require('../../../services/vectorStoreService');
+const { invalidateTimelineCache } = require('../../../services/timelineConsolidationService');
 
 async function getDocuments(req, res) {
 	//get docs and events of each doc of the patient
@@ -22,63 +23,58 @@ async function getDocuments(req, res) {
 }
 
 async function getDocs(encPatientId, userId){
-return new Promise(async function (resolve, reject) {
 	let patientId = crypt.decrypt(encPatientId);
 	const eventsdb = await findDocuments(patientId, userId);
-	resolve(eventsdb);
-	});
+	return eventsdb;
 }
 
-function findDocuments(patientId, userId) {
-	return new Promise((resolve, reject) => {
-		Document.find(
-			{ createdBy: patientId },
-			null,  // Quitamos la proyección aquí
-			(err, eventsdb) => {
-				if (err) {
-					reject(err);
-				} else {
-					const plainDocuments = eventsdb ? eventsdb.map((doc) => {
-						const docObj = doc.toObject();
-						docObj._id = crypt.encrypt(docObj._id.toString());
-						docObj.isOwner = !docObj.addedBy || docObj.addedBy.toString() === userId.toString();
-						// Eliminamos los campos sensibles después de usarlos
-						delete docObj.createdBy;
-						delete docObj.addedBy;
-						return docObj;
-					}) : [];
-					resolve(plainDocuments);
-				}
-			}
-		)
-	});
+async function findDocuments(patientId, userId) {
+	try {
+		const eventsdb = await Document.find({ createdBy: patientId });
+		const plainDocuments = eventsdb ? eventsdb.map((doc) => {
+			const docObj = doc.toObject();
+			docObj._id = crypt.encrypt(docObj._id.toString());
+			docObj.isOwner = !docObj.addedBy || docObj.addedBy.toString() === userId.toString();
+			// Eliminamos los campos sensibles después de usarlos
+			delete docObj.createdBy;
+			delete docObj.addedBy;
+			return docObj;
+		}) : [];
+		return plainDocuments;
+	} catch (err) {
+		insights.error(err);
+		throw err;
+	}
 }
 
-  async function getDocument(req, res) {
-	let documentId = crypt.decrypt(req.params.documentId);
-	Document.findById(documentId, { "createdBy": false, "addedBy": false }, (err, documentdb) => {
-		if (err){
-			insights.error(err);
-			return res.status(500).send({ message: `Error making the request: ${err}` })
-		} 
+async function getDocument(req, res) {
+	try {
+		let documentId = crypt.decrypt(req.params.documentId);
+		const documentdb = await Document.findById(documentId).select('-createdBy -addedBy');
+		
 		if (documentdb) {
 			const docObj = documentdb.toObject();
 			docObj._id = crypt.encrypt(docObj._id.toString());
 			res.status(200).send(docObj)
 		} else {
-			return res.status(404).send({ code: 208, message: `Error getting the document: ${err}` })
+			return res.status(404).send({ code: 208, message: `Error getting the document: not found` })
 		}
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error making the request: ${err}` })
+	}
 }
 
 async function updateDate(req, res) {
-	let documentId = crypt.decrypt(req.params.documentId);
-	let patientId = crypt.decrypt(req.params.patientId); // Necesitamos el patientId real
-	
-	Document.findByIdAndUpdate(documentId, { originaldate: req.body.originaldate }, { new: true }, async (err, documentUpdated) => {
-		if (err) {
-			return res.status(500).send({ message: `Error updating the document: ${err}` })
-		}
+	try {
+		let documentId = crypt.decrypt(req.params.documentId);
+		let patientId = crypt.decrypt(req.params.patientId);
+		
+		const documentUpdated = await Document.findByIdAndUpdate(
+			documentId, 
+			{ originaldate: req.body.originaldate }, 
+			{ new: true }
+		);
 
 		// Reindexar chunks en Azure AI Search con la nueva fecha
 		try {
@@ -91,65 +87,61 @@ async function updateDate(req, res) {
 			// No devolvemos error al cliente porque la DB ya se actualizó
 		}
 
+		await invalidateTimelineCache(patientId).catch(() => {});
+
 		res.status(200).send(documentUpdated)
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error updating the document: ${err}` })
+	}
 }
 
 async function updateTitle(req, res) {
-	let documentId = crypt.decrypt(req.params.documentId);
-	// Extraer el nombre original del archivo de la URL
-	const originalFileName = req.body.url.split("/").pop();
-	if (originalFileName === req.body.title) {
-        return res.status(200).send({ message: "No changes needed", newUrl: req.body.url });
-    }
-	
-	// Crear el nuevo path manteniendo la misma ruta pero con el nuevo nombre
-	const newUrl = req.body.url.replace(originalFileName, req.body.title);
-	
-	Document.findByIdAndUpdate(
-		documentId, 
-		{ 
-			url: newUrl
-		}, 
-		{ new: true }, 
-		async (err, documentUpdated) => {
-			if (err) {
-				insights.error(err);
-				return res.status(500).send({ message: `Error updating the document: ${err}` })
-			}
-			
-			try {
-				// Renombrar el blob en Azure
-				let containerName = crypt.getContainerName(documentUpdated.createdBy.toString());
-				console.log(containerName)
-				await f29azureService.renameBlob(
-					containerName,
-					req.body.url, // URL original
-					newUrl // Nueva URL
-				);
-				res.status(200).send({ message: "Done" , newUrl: newUrl})
-			} catch (error) {
-				//restore the original url
-				Document.findByIdAndUpdate(documentId, { url: req.body.url }, { new: true }, (err, documentUpdated) => {
-					if (err) {
-						insights.error(err);
-					}
-				})
-				insights.error(error);
-				return res.status(500).send({ message: `Error renaming the blob: ${error}` })
-			}
+	try {
+		let documentId = crypt.decrypt(req.params.documentId);
+		// Extraer el nombre original del archivo de la URL
+		const originalFileName = req.body.url.split("/").pop();
+		if (originalFileName === req.body.title) {
+			return res.status(200).send({ message: "No changes needed", newUrl: req.body.url });
 		}
-	)
+		
+		// Crear el nuevo path manteniendo la misma ruta pero con el nuevo nombre
+		const newUrl = req.body.url.replace(originalFileName, req.body.title);
+		
+		const documentUpdated = await Document.findByIdAndUpdate(
+			documentId, 
+			{ url: newUrl }, 
+			{ new: true }
+		);
+		
+		try {
+			// Renombrar el blob en Azure
+			let containerName = crypt.getContainerName(documentUpdated.createdBy.toString());
+			console.log(containerName)
+			await f29azureService.renameBlob(
+				containerName,
+				req.body.url, // URL original
+				newUrl // Nueva URL
+			);
+			res.status(200).send({ message: "Done" , newUrl: newUrl})
+		} catch (error) {
+			// Restore the original url
+			await Document.findByIdAndUpdate(documentId, { url: req.body.url }, { new: true });
+			insights.error(error);
+			return res.status(500).send({ message: `Error renaming the blob: ${error}` })
+		}
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error updating the document: ${err}` })
+	}
 }
 
-function deleteDocument(req, res) {
-	let documentId = crypt.decrypt(req.params.documentId)
-	let userId = req.user;
-	Document.findById(documentId, async (err, documentdb) => {
-		if (err){
-			insights.error(err);
-			return res.status(500).send({ message: `Error making the request: ${err}` })
-		}
+async function deleteDocument(req, res) {
+	try {
+		let documentId = crypt.decrypt(req.params.documentId)
+		let userId = req.user;
+		const documentdb = await Document.findById(documentId);
+		
 		if (documentdb) {
 			// Verificar si el usuario es propietario
 			const isOwner = !documentdb.addedBy || documentdb.addedBy.toString() === userId.toString();
@@ -161,36 +153,27 @@ function deleteDocument(req, res) {
 			let containerName = crypt.getContainerName((documentdb.createdBy).toString());
 			await f29azureService.deleteBlobsInFolder(containerName, documentdb.url);
 			
-			documentdb.remove(async err => {
-				if (err){
-					insights.error(err);
-					return res.status(500).send({ message: `Error deleting the document: ${err}` })
-				}
-				deleteEvents(documentId);
-				var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
-				res.status(200).send({ message: `The document has been deleted`})
-			})
+			await Document.deleteOne({ _id: documentId });
+			await deleteEvents(documentId);
+			var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
+			await invalidateTimelineCache(documentdb.createdBy.toString()).catch(() => {});
+			res.status(200).send({ message: `The document has been deleted`})
 		} else {
 			res.status(200).send({ message: `The document has been deleted`, numEvents: 0 })
 		}
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error making the request: ${err}` })
+	}
 }
 
-function deleteEvents (docId){
-	Events.find({ 'docId': docId }, (err, events) => {
-		if (err){
-			insights.error(err);
-			console.log({message: `Error deleting the events: ${err}`})
-		} 
-		events.forEach(function(event) {
-			event.remove(err => {
-				if(err){
-					insights.error(err);
-					console.log({message: `Error deleting the events: ${err}`})
-				}
-			})
-		});
-	})
+async function deleteEvents(docId) {
+	try {
+		await Events.deleteMany({ 'docId': docId });
+	} catch (err) {
+		insights.error(err);
+		console.log({message: `Error deleting the events: ${err}`})
+	}
 }
 
 async function uploadFile(req, res) {
@@ -250,6 +233,8 @@ async function uploadFile(req, res) {
 		//guardar en una variable docId document._id in lowercase 
 		var docId = tempId.toLowerCase();
 		
+		await invalidateTimelineCache(patientId).catch(() => {});
+
 		//createbook
 		const filename = path.basename(req.body.url);
 		let isTextFile = req.files.thumbnail.mimetype === 'text/plain';
@@ -326,6 +311,8 @@ async function uploadFileWizard(req, res) {
 		var tempId = document._id.toString();
 		var docId = tempId.toLowerCase();
 		
+		await invalidateTimelineCache(patientId).catch(() => {});
+
 		//createbook
 		const filename = path.basename(req.body.url);
 		let isTextFile = req.files.thumbnail.mimetype === 'text/plain';
@@ -348,7 +335,7 @@ async function uploadFileWizard(req, res) {
 
 function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
-  }
+}
 
 async function continueanalizedocs(req, res) {
 	let patientId = crypt.decrypt(req.params.patientId);
@@ -386,12 +373,11 @@ async function continueanalizedocs(req, res) {
 			continue; // Continúa con el siguiente documento
 		  }
   
-		  Document.findByIdAndUpdate(document.docId, { categoryTag: categoryTag, originaldate: validateDate(documentDate) }, { new: true }, (err, documentUpdated) => {
-			if (err) {
-			  insights.error(err);
-			  console.log(err);
-			}
-		  });
+		  await Document.findByIdAndUpdate(
+			document.docId, 
+			{ categoryTag: categoryTag, originaldate: validateDate(documentDate) }, 
+			{ new: true }
+		  );
   
 		  bookService.analizeDoc(containerName, document.dataFile.url, document.docId, document.dataFile.name, patientId, req.body.userId, true, req.body.medicalLevel);
   
@@ -405,7 +391,7 @@ async function continueanalizedocs(req, res) {
 		}
 	  }
 	});
-  }
+}
 
 function validateDate(documentDate) {
 	if (!documentDate || documentDate === 'YYYY-MM-DD') {
@@ -461,122 +447,127 @@ async function saveDocument(patientId, url, userId) {
 	}
 }
 
-function updateDocumentStatus(documentId, status) {
-	return new Promise((resolve, reject) => {
-		Document.findByIdAndUpdate(documentId, { status: status }, { new: true }, (err, documentUpdated) => {
-			if (err) {
-				resolve(false);
-			}
-			resolve(documentUpdated);
-		}
-		)
-	});
+async function updateDocumentStatus(documentId, status) {
+	try {
+		const documentUpdated = await Document.findByIdAndUpdate(
+			documentId, 
+			{ status: status }, 
+			{ new: true }
+		);
+		return documentUpdated;
+	} catch (err) {
+		return false;
+	}
 }
 
 async function trySummarize(req, res) {
-	let patientId = crypt.decrypt(req.params.patientId);
-	// Calcular containerName desde patientId encriptado
-	let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
-	//create blob
-	var document = await findDocument(req.body.docId);
-	if (document) {
-		if(patientId == document.createdBy){
-			//get the role of the user in the ddbb
-			// Get the role of the user in the database
-			let userId = crypt.decrypt(req.body.userId);
-			const user = await User.findById(userId, { "_id": false, "password": false, "__v": false, "loginAttempts": false, "lastLogin": false }).exec();
-			let medicalLevel = "1";
-			if (user) {
-				medicalLevel = user.medicalLevel;
-			}
+	try {
+		let patientId = crypt.decrypt(req.params.patientId);
+		// Calcular containerName desde patientId encriptado
+		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
+		//create blob
+		var document = await findDocument(req.body.docId);
+		if (document) {
+			if(patientId == document.createdBy){
+				//get the role of the user in the ddbb
+				// Get the role of the user in the database
+				let userId = crypt.decrypt(req.body.userId);
+				const User = require('../../../models/user');
+				const user = await User.findById(userId).select('-_id -password -__v -loginAttempts -lastLogin');
+				let medicalLevel = "1";
+				if (user) {
+					medicalLevel = user.medicalLevel;
+				}
 
-			langchain.processDocument(patientId, containerName, document.url, req.body.docId, req.body.docName, req.body.userId, true, medicalLevel);
-			res.status(200).send({ message: "Done", docId: req.body.docId })
-		}else{
-			insights.error("Error 1 trySummarize");
+				langchain.processDocument(patientId, containerName, document.url, req.body.docId, req.body.docName, req.body.userId, true, medicalLevel);
+				res.status(200).send({ message: "Done", docId: req.body.docId })
+			}else{
+				insights.error("Error 1 trySummarize");
+				res.status(500).send({ message: `Error` })
+			}
+			
+		} else {
+			insights.error("Error 2 trySummarize");
 			res.status(500).send({ message: `Error` })
 		}
-		
-	} else {
-		insights.error("Error 2 trySummarize");
-		res.status(500).send({ message: `Error` })
+	} catch (err) {
+		insights.error(err);
+		res.status(500).send({ message: `Error: ${err}` })
 	}
-
 }
 
 async function summarySuggest(req, res) {
-	let patientId = crypt.decrypt(req.params.patientId);
-	// Calcular containerName desde patientId encriptado
-	let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
-	let documentId = crypt.decrypt(req.params.documentId);
-	var document = await findDocument(documentId);
-	if (document) {
-		if(patientId == document.createdBy){
-			let suggestions = await langchain.summarySuggestions(patientId, containerName, document.url);
-			res.status(200).send({ message: "Done", docId: req.params.documentId, suggestions: suggestions})
-		}else{
-			console.log("Error 1")
-			insights.error("Error 1 summarySuggest");
+	try {
+		let patientId = crypt.decrypt(req.params.patientId);
+		// Calcular containerName desde patientId encriptado
+		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
+		let documentId = crypt.decrypt(req.params.documentId);
+		var document = await findDocument(documentId);
+		if (document) {
+			if(patientId == document.createdBy){
+				let suggestions = await langchain.summarySuggestions(patientId, containerName, document.url);
+				res.status(200).send({ message: "Done", docId: req.params.documentId, suggestions: suggestions})
+			}else{
+				console.log("Error 1")
+				insights.error("Error 1 summarySuggest");
+				res.status(500).send({ message: `Error` })
+			}
+			
+		} else {
+			console.log("Error 2")
+			insights.error("Error 2 summarySuggest");
 			res.status(500).send({ message: `Error` })
 		}
-		
-	} else {
-		console.log("Error 2")
-		insights.error("Error 2 summarySuggest");
-		res.status(500).send({ message: `Error` })
+	} catch (err) {
+		insights.error(err);
+		res.status(500).send({ message: `Error: ${err}` })
 	}
-
 }
 
-function findDocument(docId) {
-	return new Promise((resolve, reject) => {
-		Document.findById(docId, (err, document) => {
-			if (err) {
-				resolve(false);
-			}
-			resolve(document);
-		}
-		)
-	});
-  }
+async function findDocument(docId) {
+	try {
+		const document = await Document.findById(docId);
+		return document;
+	} catch (err) {
+		return false;
+	}
+}
 
 async function anonymizeDocument(req, res) {
-	let patientId = crypt.decrypt(req.params.patientId);
-	let documentId = crypt.decrypt(req.body.docId);
-	Document.findById(documentId, (err, document) => {
-		if (err){
-			insights.error(err);
-			return res.status(500).send({ message: `Error making the request: ${err}` })
-		}
+	try {
+		let patientId = crypt.decrypt(req.params.patientId);
+		let documentId = crypt.decrypt(req.body.docId);
+		const document = await Document.findById(documentId);
+		
 		if (document && patientId == document.createdBy) {
 			bookService.anonymizeDocument(document);
 			res.status(200).send({ message: 'Done' })
 		} else {
 			insights.error("Error 2 anonymizeDocument");
-			return res.status(404).send({ code: 208, message: `Error anonymizing the document: ${err}` })
+			return res.status(404).send({ code: 208, message: `Error anonymizing the document: not found` })
 		}
-
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error making the request: ${err}` })
+	}
 }
 
-function deleteSummary(req, res) {
-	let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
-	let patientId = crypt.decrypt(req.params.patientId);
-	Patient.findById(patientId, async (err, patientdb) => {
-		if (err){
-			insights.error(err);
-			return res.status(500).send({ message: `Error making the request: ${err}` })
-		}
+async function deleteSummary(req, res) {
+	try {
+		let containerName = crypt.getContainerNameFromEncrypted(req.params.patientId);
+		let patientId = crypt.decrypt(req.params.patientId);
+		const patientdb = await Patient.findById(patientId);
+		
 		if (patientdb) {
 			var result = await f29azureService.deleteSummaryFilesBlobsInFolder(containerName);
 			res.status(200).send({ message: `The summary has been deleted`})
 		} else {
 			res.status(200).send({ message: `The summary has been deleted`})
-			/*insights.error('error deleting the document')
-			return res.status(404).send({ code: 208, message: `Error deleting the document: ${err}` })*/
 		}
-
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error making the request: ${err}` })
+	}
 }
 
 module.exports = {
