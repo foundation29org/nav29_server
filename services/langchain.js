@@ -2168,23 +2168,26 @@ ${patientContext}`;
       parsed = JSON.parse(responseText);
     } catch (jsonError) {
       console.warn(`[Dashboard] JSON.parse failed: ${jsonError.message}. Response length: ${responseText.length}, first 500 chars: ${responseText.substring(0, 500)}`);
-      // Fallback 1: extraer primer bloque JSON completo
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          parsed = JSON.parse(jsonMatch[0]);
-        } catch (_) {
-          parsed = null;
-        }
-      }
+      // Fallback 1: parser robusto compartido (clean + jsonrepair, sin GPT para latencia)
+      parsed = await parseJson(responseText, JSON_TYPES.GENERIC_OBJECT, {
+        useGptFallback: false,
+        context: 'generatePatientDashboard'
+      });
 
       // Fallback 2: extraer campos individualmente con regex
-      if (!parsed) {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         console.log('[Dashboard] JSON.parse failed, attempting field-level extraction...');
         parsed = extractDashboardFields(responseText);
         if (!parsed) {
           throw new Error('Dashboard generation returned non-JSON content');
         }
+      }
+    }
+
+    if (!parsed?.html || !parsed?.css) {
+      const extracted = extractDashboardFields(responseText);
+      if (extracted) {
+        parsed = { ...parsed, ...extracted };
       }
     }
 
