@@ -2170,7 +2170,7 @@ ${patientContext}`;
       console.warn(`[Dashboard] JSON.parse failed: ${jsonError.message}. Response length: ${responseText.length}, first 500 chars: ${responseText.substring(0, 500)}`);
       // Fallback 1: parser robusto compartido (clean + jsonrepair, sin GPT para latencia)
       parsed = await parseJson(responseText, JSON_TYPES.GENERIC_OBJECT, {
-        useGptFallback: false,
+        useGptFallback: true,
         context: 'generatePatientDashboard'
       });
 
