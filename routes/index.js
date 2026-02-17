@@ -212,6 +212,7 @@ api.post('/ai/rarescope/:patientId', auth.isAuthPatient(roles.All), checkApiKey,
 api.post('/ai/dxgpt/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDxGptRequest)
 api.post('/ai/disease-info/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleDiseaseInfoRequest)
 api.post('/ai/infographic/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleInfographicRequest)
+api.post('/ai/dashboard/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handlePatientDashboardRequest)
 api.post('/ai/soap/questions/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleSoapQuestionsRequest)
 api.post('/ai/soap/report/:patientId', auth.isAuthPatient(roles.All), checkApiKey, aiFeaturesCtrl.handleSoapReportRequest)
 

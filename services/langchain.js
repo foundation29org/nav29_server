@@ -43,6 +43,9 @@ const embeddings = new OpenAIEmbeddings({
 const BEDROCK_API_KEY = config.BEDROCK_USER_KEY;
 const BEDROCK_API_SECRET = config.BEDROCK_USER_SECRET;
 
+const OPENAI_API_BASE_ADVANCED = config.OPENAI_API_BASE_ADVANCED;
+const O_A_K_ADVANCED = config.O_A_K_ADVANCED;
+
 
 function createModels(projectName, modelType = null) {
   try {
@@ -203,6 +206,27 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           break;
+        case 'claude-sonnet-45':
+          model = new ChatOpenAI({
+            modelName: "claude-sonnet-45",
+            azure: true,
+            azureOpenAIApiKey: O_A_K_ADVANCED,
+            azureOpenAIApiVersion: '20250929',
+            azureOpenAIApiInstanceName: OPENAI_API_BASE_ADVANCED,
+            azureOpenAIApiDeploymentName: "claude-sonnet-45",
+          });
+          break;
+          case 'gpt-5.2-codex':
+            model = new ChatOpenAI({
+              modelName: "gpt-5.2-codex",
+              azure: true,
+              azureOpenAIApiKey: O_A_K_ADVANCED,
+              azureOpenAIApiVersion: '2025-04-01-preview',
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_ADVANCED,
+              azureOpenAIApiDeploymentName: "gpt-5.2-codex",
+            });
+            model.azureOpenAIEndpoint = undefined;
+            break;
         case 'gemini25pro':
           model = new ChatGoogleGenerativeAI({
             model: "gemini-2.5-pro",
@@ -1888,6 +1912,123 @@ Style: Modern healthcare infographic, professional medical illustration style, c
 }
 
 /**
+ * Genera un dashboard clínico personalizado (HTML/CSS/JS) para el paciente.
+ * El resultado está pensado para renderizarse en un iframe sandbox.
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientContext - Contexto clínico consolidado del paciente
+ * @param {string} lang - Idioma del usuario ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, dashboard?: object, error?: string}>}
+ */
+async function generatePatientDashboard(patientId, patientContext, lang = 'en', theme = 'light', contextMode = 'full') {
+  console.log(`[Dashboard] Generating dashboard for patient ${patientId}`);
+
+  try {
+    const projectName = `Dashboard - ${patientId}`;
+    const model = createModels(projectName, 'gpt-5.2-codex')['gpt-5.2-codex'];
+    //const model = createModels(projectName, 'claude-sonnet-45')['claude-sonnet-45'];
+
+    const langMap = {
+      'es': 'Genera todo el texto del dashboard en español.',
+      'en': 'Generate all dashboard text in English.',
+      'fr': 'Generez tout le texte du dashboard en francais.',
+      'de': 'Erstellen Sie den gesamten Dashboard-Text auf Deutsch.',
+      'it': 'Genera tutto il testo della dashboard in italiano.',
+      'pt': 'Gere todo o texto do dashboard em portugues.'
+    };
+    const langInstruction = langMap[lang] || `Generate all dashboard text in language code "${lang}".`;
+
+    const prompt = `You are a senior frontend and clinical data visualization assistant.
+
+Generate a SINGLE-PAGE patient-specific clinical dashboard as JSON with this exact structure:
+{
+  "title": "string",
+  "schemaVersion": "1.0.0",
+  "html": "string",
+  "css": "string",
+  "js": "string"
+}
+
+Context:
+- This dashboard is embedded directly inside Nav29 (Angular app modal), not in an iframe.
+- Make it visually outstanding, practical, and patient-friendly while clinically useful.
+- Active UI theme preference for this user: ${theme}.
+- If theme is "dark", use a dark dashboard palette with good contrast.
+- If theme is "light", use a light dashboard palette.
+- Context mode used to build data: ${contextMode} (summary | full | auto). 
+- If mode is "full", assume richer source data and build deeper, more complete views.
+
+Hard requirements:
+1) The dashboard must adapt to this patient's disease profile and clinical context (e.g., Dravet vs Duchenne vs diabetes must look/behave differently).
+2) Build a REAL interactive dashboard UI, not a plain report/article.
+3) The HTML must include a root container with id="dashboard-root".
+4) Include navigation controls/tabs/sections if useful for usability, and ensure tabs are fully functional with plain JavaScript (no external bootstrap.js dependency).
+5) Required core areas: overview KPIs, clinical evolution/timeline, treatments/medications, alerts/priorities, next steps.
+6) CRITICAL CSS ISOLATION: This dashboard is injected into an Angular app that has Bootstrap 5 loaded globally. You MUST NOT use standard Bootstrap class names that will collide with the host app styles. Specifically:
+   - Do NOT use: .nav, .nav-tabs, .nav-link, .nav-item, .card, .btn, .alert, .badge, .table, .list-group, .form-control, .input-group, .dropdown, .modal, .container, .row, .col-*
+   - Instead, use custom prefixed classes for all elements. Example: .dash-tab-nav, .dash-tab-btn, .dash-card, .dash-alert, .dash-kpi, .dash-timeline, etc.
+   - All your CSS selectors MUST be scoped under #dashboard-root to avoid leaking styles.
+   - Write ALL styles yourself in the css field. Do not rely on Bootstrap utility classes.
+7) If charts improve utility, use canvas with Chart.js via global "Chart". IMPORTANT: Always wrap the canvas in a container with explicit height (e.g., height: 350px) and set maintainAspectRatio: true in Chart.js options to prevent infinite canvas growth.
+8) External links are allowed only when useful; they must be clearly external.
+9) Keep CSS and JS reasonably compact and production-like.
+10) Do not duplicate title text at the top.
+11) Output strictly valid, well-formed HTML (all tags properly closed).
+12) Do NOT rely only on document.addEventListener('DOMContentLoaded', ...) for initialization; initialize immediately too (use an IIFE that runs at the end).
+13) Return ONLY valid JSON without markdown fences.
+14) CRITICAL DATA INTEGRITY: This is a medical dashboard. You MUST NEVER fabricate, invent, or hallucinate numerical data, measurements, dates, lab values, or statistics that are not explicitly present in the PATIENT CONTEXT below. 
+   - Only display data points, numbers, frequencies, lab results, or trends that are explicitly stated in the patient context.
+   - If the context says "~4 crisis/month" you may display that single KPI, but do NOT invent a 12-month or 24-month time series of crisis counts.
+   - If you do not have enough data points to build a meaningful chart, do NOT create a chart. Instead, use a qualitative timeline, a summary card, or a text-based trend description (e.g., "Decreasing trend from ~10/month in 2021 to ~4/month in 2024").
+   - Charts are ONLY allowed when the patient context provides at least 3 explicit, distinct data points with dates/values.
+   - For KPIs, only show values directly extracted from the context. If a value is approximate, mark it clearly (e.g., "~4/mes").
+   - When in doubt, prefer text over charts. A factual text summary is always better than a fabricated chart.
+
+${langInstruction}
+
+PATIENT CONTEXT:
+${patientContext}`;
+
+    const response = await model.invoke(prompt);
+    const responseTextRaw = String(response?.content || '').trim();
+    const responseText = responseTextRaw
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(responseText);
+    } catch (jsonError) {
+      // Fallback: extraer primer bloque JSON
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error('Dashboard generation returned non-JSON content');
+      }
+      parsed = JSON.parse(jsonMatch[0]);
+    }
+
+    const dashboard = {
+      title: String(parsed.title || 'Patient Dashboard').trim(),
+      schemaVersion: String(parsed.schemaVersion || '1.0.0').trim(),
+      html: String(parsed.html || '').trim(),
+      css: String(parsed.css || '').trim(),
+      js: String(parsed.js || '').trim()
+    };
+
+    if (!dashboard.html || !dashboard.css) {
+      throw new Error('Dashboard payload missing required html/css');
+    }
+
+    return { success: true, dashboard };
+  } catch (error) {
+    console.error('[Dashboard] Error generating dashboard:', error.message);
+    insights.error({ message: '[Dashboard] Error generating dashboard', error: error.message, patientId });
+    return { success: false, error: error.message || 'Error generating dashboard' };
+  }
+}
+
+/**
  * Genera preguntas sugeridas para la consulta SOAP basándose en los síntomas y el contexto del paciente
  * @param {string} patientId - ID del paciente
  * @param {string} patientSymptoms - Síntomas referidos por el paciente
@@ -2139,6 +2280,7 @@ module.exports = {
   createModels,
   embeddings,
   generatePatientInfographic,
+  generatePatientDashboard,
   generateSoapQuestions,
   generateSoapReport,
   diarizeConversation,

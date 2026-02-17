@@ -24,10 +24,12 @@ const { retrieveChunks, extractStructuredFacts } = require('../../../services/re
 const { curateContext } = require('../../../services/tools');
 
 const { generatePatientUUID } = require('../../../services/uuid');
-const { generatePatientInfographic, generateSoapQuestions, generateSoapReport } = require('../../../services/langchain');
+const { generatePatientInfographic, generatePatientDashboard, generateSoapQuestions, generateSoapReport } = require('../../../services/langchain');
 
 // Mutex para evitar peticiones duplicadas de infografía mientras se está generando
 const infographicInProgress = new Map();
+// Mutex para evitar peticiones duplicadas de dashboard mientras se está generando
+const dashboardInProgress = new Map();
 
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
@@ -1303,6 +1305,81 @@ async function findExistingInfographic(containerName) {
   }
 }
 
+/** Helper: Buscar dashboard existente en blob storage */
+async function findExistingDashboard(containerName, contextMode = null) {
+  try {
+    const files = await f29azure.listContainerFiles(containerName);
+    let dashboardFiles = files
+      .filter(f => f.startsWith('raitofile/dashboard/patient_dashboard_') && f.endsWith('.json'));
+
+    // Si se especifica contextMode, buscar primero los que coincidan por nombre.
+    if (contextMode) {
+      const modeFiles = dashboardFiles.filter(f => f.includes(`_${contextMode}_`));
+      if (modeFiles.length > 0) {
+        dashboardFiles = modeFiles;
+      }
+      // Si no hay archivos con el modo en el nombre, buscar en todos (compatibilidad con blobs antiguos).
+    }
+
+    dashboardFiles.sort((a, b) => {
+      const tsA = parseInt(a.match(/patient_dashboard_(\d+)/)?.[1] || '0');
+      const tsB = parseInt(b.match(/patient_dashboard_(\d+)/)?.[1] || '0');
+      return tsB - tsA;
+    });
+
+    if (dashboardFiles.length > 0) {
+      const latestFile = dashboardFiles[0];
+      const timestampMatch = latestFile.match(/patient_dashboard_(\d+)/);
+      const generatedAt = timestampMatch ? new Date(parseInt(timestampMatch[1])).toISOString() : null;
+      return { blobPath: latestFile, generatedAt };
+    }
+    return null;
+  } catch (error) {
+    console.warn('[Dashboard] Error searching for existing dashboard:', error.message);
+    return null;
+  }
+}
+
+/** Helper: Sanitiza y valida artefacto HTML/CSS/JS de dashboard */
+function sanitizeAndValidateDashboardPayload(dashboard) {
+  if (!dashboard || typeof dashboard !== 'object') {
+    throw new Error('Invalid dashboard payload');
+  }
+
+  const cleaned = {
+    title: String(dashboard.title || 'Patient Dashboard').trim(),
+    schemaVersion: String(dashboard.schemaVersion || '1.0.0').trim(),
+    html: String(dashboard.html || '').trim(),
+    css: String(dashboard.css || '').trim(),
+    js: String(dashboard.js || '').trim()
+  };
+
+  if (!cleaned.html || !cleaned.css) {
+    throw new Error('Dashboard payload missing html/css');
+  }
+
+  const forbiddenPatterns = [
+    /<iframe/i,
+    /<object/i,
+    /<embed/i
+  ];
+
+  const combined = `${cleaned.html}\n${cleaned.css}\n${cleaned.js}`;
+  for (const pattern of forbiddenPatterns) {
+    if (pattern.test(combined)) {
+      throw new Error(`Dashboard payload contains forbidden pattern: ${pattern}`);
+    }
+  }
+
+  // Mantener solo un filtrado mínimo de contenedores embebidos.
+  cleaned.html = cleaned.html
+    .replace(/<iframe[\s\S]*?>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<object[\s\S]*?>[\s\S]*?<\/object>/gi, '')
+    .replace(/<embed[\s\S]*?>[\s\S]*?<\/embed>/gi, '');
+
+  return cleaned;
+}
+
 /**
  * Genera una infografía visual del paciente usando Gemini 3 Pro Image Preview
  * @route POST /api/ai/infographic/:patientId
@@ -1541,7 +1618,222 @@ async function handleInfographicRequest(req, res) {
 }
 
 /*--------------------------------------------------------------------
- * 3.5 SOAP NOTES REQUESTS (Clinical)
+ * 3.5 PATIENT DASHBOARD REQUEST
+ *------------------------------------------------------------------*/
+
+/**
+ * Genera un dashboard HTML/CSS/JS específico para el paciente
+ * @route POST /api/ai/dashboard/:patientId
+ */
+async function processPatientDashboardAsync(patientId, lang, userId, theme = 'light', contextMode = 'full') {
+  const encryptedPatientId = crypt.encrypt(patientId);
+  const encryptedUserId = userId ? crypt.encrypt(userId) : null;
+
+  try {
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-processing',
+        patientId: encryptedPatientId,
+        status: 'started',
+        progress: 5,
+        message: 'Iniciando generación del dashboard clínico...'
+      });
+    }
+
+    const containerName = crypt.getContainerName(patientId);
+    let patientContext = null;
+    let isBasicDashboard = false;
+
+    const shouldUseSummaryFirst = contextMode === 'summary' || contextMode === 'auto';
+    if (shouldUseSummaryFirst) {
+      patientContext = await getPatientSummaryIfExists(patientId);
+    }
+
+    if (!patientContext || contextMode === 'full') {
+      if (!patientContext) {
+        isBasicDashboard = true;
+      }
+      if (encryptedUserId) {
+        pubsub.sendToUser(encryptedUserId, {
+          type: 'dashboard-processing',
+          patientId: encryptedPatientId,
+          status: 'retrieving-context',
+          progress: 30,
+          message: 'Recuperando contexto clínico del paciente...'
+        });
+      }
+
+      try {
+        const searchQuery = 'Complete patient health overview for adaptive clinical dashboard: diagnoses, symptoms, medications, progression, alerts, and care priorities';
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, 'TREND');
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+
+        const Document = require('../../../models/document');
+        const patientDocs = await Document.find({ createdBy: patientId }).select('url').lean();
+        const docUrls = patientDocs.map(d => d.url).filter(Boolean);
+
+        const curatedResult = await curateContext(
+          [],
+          [],
+          containerName,
+          docUrls,
+          searchQuery,
+          selectedChunks,
+          structuredFacts
+        );
+
+        const curatedContext = curatedResult.content;
+        if (contextMode === 'full' && patientContext && patientContext.length > 50) {
+          patientContext = `${patientContext}\n\n${curatedContext || ''}`.trim();
+        } else {
+          patientContext = curatedContext;
+        }
+
+        if (!patientContext || patientContext.length < 300) {
+          patientContext = await buildBasicPatientContext(patientId, raw, patientContext);
+        }
+      } catch (ragError) {
+        console.warn('[Dashboard] RAG failed, using basic context:', ragError.message);
+        patientContext = await buildBasicPatientContext(patientId, null, patientContext || '');
+      }
+    }
+
+    if (!patientContext || patientContext.trim().length < 50) {
+      throw new Error('Not enough patient data to generate dashboard. Please upload more medical documents.');
+    }
+
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-processing',
+        patientId: encryptedPatientId,
+        status: 'generating',
+        progress: 70,
+        message: 'Generando dashboard dinámico personalizado...'
+      });
+    }
+
+    const result = await generatePatientDashboard(patientId, patientContext, lang, theme, contextMode);
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to generate dashboard');
+    }
+
+    const dashboard = sanitizeAndValidateDashboardPayload(result.dashboard);
+    const generatedAt = new Date();
+    const blobPath = `raitofile/dashboard/patient_dashboard_${contextMode}_${generatedAt.getTime()}.json`;
+    const payload = {
+      generatedAt: generatedAt.toISOString(),
+      theme,
+      contextMode,
+      schemaVersion: dashboard.schemaVersion,
+      dashboard
+    };
+    await f29azure.createBlob(containerName, blobPath, Buffer.from(JSON.stringify(payload), 'utf8'));
+
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-result',
+        patientId: encryptedPatientId,
+        status: 'completed',
+        success: true,
+        isBasic: isBasicDashboard,
+        generatedAt: generatedAt.toISOString(),
+        blobPath
+      });
+    }
+  } catch (error) {
+    console.error('[Dashboard] Async error:', error.message);
+    insights.error({
+      message: '[Dashboard] Async generation error',
+      error: error.message,
+      patientId
+    });
+
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-result',
+        patientId: encryptedPatientId,
+        status: 'error',
+        success: false,
+        error: error.message || 'Error generating dashboard'
+      });
+    }
+  } finally {
+    dashboardInProgress.delete(patientId);
+  }
+}
+
+async function handlePatientDashboardRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const theme = req.body.theme || 'light';
+  const contextMode = req.body.contextMode || 'full';
+  const regenerate = req.body.regenerate || false;
+  const userId = req.body.userId ? crypt.decrypt(req.body.userId) : null;
+
+  console.log(`[Dashboard] Request for patient ${patientId}, lang: ${lang}, regenerate: ${regenerate}`);
+
+  try {
+    const containerName = crypt.getContainerName(patientId);
+
+    if (!regenerate) {
+      const existing = await findExistingDashboard(containerName, contextMode);
+      if (existing) {
+        const payloadRaw = await f29azure.downloadBlob(containerName, existing.blobPath);
+        const payloadParsed = JSON.parse(payloadRaw);
+        const cachedTheme = payloadParsed?.theme || 'light';
+        const cachedContextMode = payloadParsed?.contextMode || 'full';
+        if (cachedTheme === theme && cachedContextMode === contextMode) {
+          const dashboard = sanitizeAndValidateDashboardPayload(payloadParsed.dashboard || payloadParsed);
+
+          return res.json({
+            success: true,
+            cached: true,
+            generatedAt: existing.generatedAt,
+            blobPath: existing.blobPath,
+            dashboard,
+            message: 'Existing dashboard found'
+          });
+        }
+        console.log(`[Dashboard] Cache mismatch (theme: ${cachedTheme} -> ${theme}, mode: ${cachedContextMode} -> ${contextMode}), regenerating...`);
+      }
+    }
+
+    if (dashboardInProgress.has(patientId)) {
+      return res.status(202).json({
+        success: true,
+        processing: true,
+        message: 'Dashboard generation in progress'
+      });
+    }
+
+    dashboardInProgress.set(patientId, Date.now());
+    processPatientDashboardAsync(patientId, lang, userId, theme, contextMode);
+
+    return res.status(202).json({
+      success: true,
+      processing: true,
+      message: 'Dashboard generation started'
+    });
+  } catch (error) {
+    dashboardInProgress.delete(patientId);
+    console.error('[Dashboard] Error:', error.message);
+    insights.error({
+      message: '[Dashboard] Error handling request',
+      error: error.message,
+      patientId
+    });
+    return res.status(500).json({
+      success: false,
+      error: 'Error generating dashboard',
+      details: error.message
+    });
+  }
+}
+
+/*--------------------------------------------------------------------
+ * 3.6 SOAP NOTES REQUESTS (Clinical)
  *------------------------------------------------------------------*/
 
 /**
@@ -1717,6 +2009,7 @@ module.exports = {
   handleDxGptRequest,
   handleDiseaseInfoRequest,
   handleInfographicRequest,
+  handlePatientDashboardRequest,
   handleSoapQuestionsRequest,
   handleSoapReportRequest
 };
