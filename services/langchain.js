@@ -1919,14 +1919,170 @@ Style: Modern healthcare infographic, professional medical illustration style, c
  * @param {string} lang - Idioma del usuario ('es', 'en', etc.)
  * @returns {Promise<{success: boolean, dashboard?: object, error?: string}>}
  */
-async function generatePatientDashboard(patientId, patientContext, lang = 'en', theme = 'light', contextMode = 'full') {
-  console.log(`[Dashboard] Generating dashboard for patient ${patientId}`);
+/**
+ * Llama a la Azure OpenAI Responses API directamente (para modelos como gpt-5.2-codex
+ * que no soportan la Chat Completions API).
+ */
+async function invokeResponsesAPI(prompt, model = 'gpt-5.2-codex') {
+  const baseUrl = `https://${OPENAI_API_BASE_ADVANCED}.cognitiveservices.azure.com`;
+  const apiVersion = '2025-04-01-preview';
+  const url = `${baseUrl}/openai/responses?api-version=${apiVersion}`;
+
+  const response = await axios.post(url, {
+    model,
+    input: [
+      { role: 'user', content: prompt }
+    ],
+    max_output_tokens: 16384
+  }, {
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${O_A_K_ADVANCED}`
+    },
+    timeout: 180000
+  });
+
+  const data = response.data;
+  if (data?.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
+
+  // Extraer texto de la respuesta (Responses API format)
+  let text = '';
+  if (data?.output) {
+    for (const item of data.output) {
+      if (item.type === 'message' && item.content) {
+        for (const block of item.content) {
+          if (block.type === 'output_text' && block.text) {
+            text += block.text;
+          }
+        }
+      }
+    }
+  }
+
+  if (!text && data?.output_text) {
+    text = data.output_text;
+  }
+
+  if (!text) {
+    throw new Error('Responses API returned empty output');
+  }
+
+  return text.trim();
+}
+
+/**
+ * Llama a la API nativa de Anthropic desplegada en Azure AI Foundry.
+ * Endpoint: https://<instance>.services.ai.azure.com/anthropic/v1/messages
+ */
+async function invokeAnthropicAPI(prompt, model = 'claude-sonnet-45') {
+  const baseUrl = `https://${OPENAI_API_BASE_ADVANCED}.services.ai.azure.com`;
+  const url = `${baseUrl}/anthropic/v1/messages`;
+
+  console.log(`[Dashboard] Calling Anthropic API for model: ${model}`);
+
+  const response = await axios.post(url, {
+    model,
+    max_tokens: 16384,
+    temperature: 0,
+    messages: [
+      { role: 'user', content: prompt }
+    ]
+  }, {
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': O_A_K_ADVANCED,
+      'anthropic-version': '2023-06-01'
+    },
+    timeout: 180000
+  });
+
+  const data = response.data;
+  if (data?.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
+
+  let text = '';
+  if (data?.content) {
+    for (const block of data.content) {
+      if (block.type === 'text' && block.text) {
+        text += block.text;
+      }
+    }
+  }
+
+  if (!text) {
+    throw new Error('Anthropic API returned empty output');
+  }
+
+  return text.trim();
+}
+
+/**
+ * Extrae los campos del dashboard (title, html, css, js) de una respuesta
+ * que contiene JSON mal formado, usando búsqueda por claves.
+ */
+function extractDashboardFields(raw) {
+  const fields = ['title', 'schemaVersion', 'html', 'css', 'js'];
+  const result = {};
+
+  for (let i = 0; i < fields.length; i++) {
+    const key = fields[i];
+    const nextKey = fields[i + 1];
+
+    // Buscar "key": " y capturar hasta el siguiente campo o el final del JSON
+    const keyPattern = new RegExp(`"${key}"\\s*:\\s*"`);
+    const keyMatch = keyPattern.exec(raw);
+    if (!keyMatch) continue;
+
+    const valueStart = keyMatch.index + keyMatch[0].length;
+
+    // Buscar el final del valor: la siguiente clave del JSON o el cierre }
+    let valueEnd = -1;
+    if (nextKey) {
+      // Buscar ",\s*"nextKey": desde valueStart
+      const nextPattern = new RegExp(`"\\s*,\\s*"${nextKey}"\\s*:`);
+      const nextMatch = nextPattern.exec(raw.substring(valueStart));
+      if (nextMatch) {
+        valueEnd = valueStart + nextMatch.index;
+      }
+    }
+
+    if (valueEnd === -1) {
+      // Último campo: buscar "\s*} al final
+      const endMatch = raw.substring(valueStart).match(/"\s*\}\s*$/);
+      if (endMatch) {
+        valueEnd = valueStart + endMatch.index;
+      }
+    }
+
+    if (valueEnd > valueStart) {
+      let value = raw.substring(valueStart, valueEnd);
+      // Desescapar secuencias JSON estándar
+      try {
+        value = JSON.parse(`"${value}"`);
+      } catch (_) {
+        value = value.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      }
+      result[key] = value;
+    }
+  }
+
+  if (result.html || result.css) {
+    return result;
+  }
+  return null;
+}
+
+// Modelo por defecto para el dashboard si no se especifica.
+const DEFAULT_DASHBOARD_MODEL = 'gpt-5.2-codex';
+
+async function generatePatientDashboard(patientId, patientContext, lang = 'en', theme = 'light', contextMode = 'full', model = DEFAULT_DASHBOARD_MODEL) {
+  const dashboardModel = model || DEFAULT_DASHBOARD_MODEL;
+  console.log(`[Dashboard] Generating dashboard for patient ${patientId} with model: ${dashboardModel}`);
 
   try {
-    const projectName = `Dashboard - ${patientId}`;
-    const model = createModels(projectName, 'gpt-5.2-codex')['gpt-5.2-codex'];
-    //const model = createModels(projectName, 'claude-sonnet-45')['claude-sonnet-45'];
-
     const langMap = {
       'es': 'Genera todo el texto del dashboard en español.',
       'en': 'Generate all dashboard text in English.',
@@ -1988,8 +2144,19 @@ ${langInstruction}
 PATIENT CONTEXT:
 ${patientContext}`;
 
-    const response = await model.invoke(prompt);
-    const responseTextRaw = String(response?.content || '').trim();
+    let responseTextRaw;
+
+    if (dashboardModel === 'gpt-5.2-codex') {
+      responseTextRaw = await invokeResponsesAPI(prompt, 'gpt-5.2-codex');
+    } else if (dashboardModel === 'claude-sonnet-45') {
+      responseTextRaw = await invokeAnthropicAPI(prompt, 'claude-sonnet-45');
+    } else {
+      const projectName = `Dashboard - ${patientId}`;
+      const llm = createModels(projectName, dashboardModel)[dashboardModel];
+      const response = await llm.invoke(prompt);
+      responseTextRaw = String(response?.content || '').trim();
+    }
+
     const responseText = responseTextRaw
       .replace(/^```json\s*/i, '')
       .replace(/^```\s*/i, '')
@@ -2000,12 +2167,25 @@ ${patientContext}`;
     try {
       parsed = JSON.parse(responseText);
     } catch (jsonError) {
-      // Fallback: extraer primer bloque JSON
+      console.warn(`[Dashboard] JSON.parse failed: ${jsonError.message}. Response length: ${responseText.length}, first 500 chars: ${responseText.substring(0, 500)}`);
+      // Fallback 1: extraer primer bloque JSON completo
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error('Dashboard generation returned non-JSON content');
+      if (jsonMatch) {
+        try {
+          parsed = JSON.parse(jsonMatch[0]);
+        } catch (_) {
+          parsed = null;
+        }
       }
-      parsed = JSON.parse(jsonMatch[0]);
+
+      // Fallback 2: extraer campos individualmente con regex
+      if (!parsed) {
+        console.log('[Dashboard] JSON.parse failed, attempting field-level extraction...');
+        parsed = extractDashboardFields(responseText);
+        if (!parsed) {
+          throw new Error('Dashboard generation returned non-JSON content');
+        }
+      }
     }
 
     const dashboard = {

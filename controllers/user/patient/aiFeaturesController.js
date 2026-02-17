@@ -1306,35 +1306,23 @@ async function findExistingInfographic(containerName) {
 }
 
 /** Helper: Buscar dashboard existente en blob storage */
-async function findExistingDashboard(containerName, contextMode = null) {
+function getDashboardBlobPath(contextMode, model) {
+  return `raitofile/dashboard/patient_dashboard_${contextMode}_${model}.json`;
+}
+
+async function findExistingDashboard(containerName, contextMode, model) {
   try {
-    const files = await f29azure.listContainerFiles(containerName);
-    let dashboardFiles = files
-      .filter(f => f.startsWith('raitofile/dashboard/patient_dashboard_') && f.endsWith('.json'));
-
-    // Si se especifica contextMode, buscar primero los que coincidan por nombre.
-    if (contextMode) {
-      const modeFiles = dashboardFiles.filter(f => f.includes(`_${contextMode}_`));
-      if (modeFiles.length > 0) {
-        dashboardFiles = modeFiles;
-      }
-      // Si no hay archivos con el modo en el nombre, buscar en todos (compatibilidad con blobs antiguos).
-    }
-
-    dashboardFiles.sort((a, b) => {
-      const tsA = parseInt(a.match(/patient_dashboard_(\d+)/)?.[1] || '0');
-      const tsB = parseInt(b.match(/patient_dashboard_(\d+)/)?.[1] || '0');
-      return tsB - tsA;
-    });
-
-    if (dashboardFiles.length > 0) {
-      const latestFile = dashboardFiles[0];
-      const timestampMatch = latestFile.match(/patient_dashboard_(\d+)/);
-      const generatedAt = timestampMatch ? new Date(parseInt(timestampMatch[1])).toISOString() : null;
-      return { blobPath: latestFile, generatedAt };
+    const blobPath = getDashboardBlobPath(contextMode, model);
+    const exists = await f29azure.downloadBlob(containerName, blobPath);
+    if (exists) {
+      const payloadParsed = JSON.parse(exists);
+      return { blobPath, generatedAt: payloadParsed?.generatedAt || null, payload: payloadParsed };
     }
     return null;
   } catch (error) {
+    if (error?.statusCode === 404 || error?.code === 'BlobNotFound') {
+      return null;
+    }
     console.warn('[Dashboard] Error searching for existing dashboard:', error.message);
     return null;
   }
@@ -1625,7 +1613,7 @@ async function handleInfographicRequest(req, res) {
  * Genera un dashboard HTML/CSS/JS específico para el paciente
  * @route POST /api/ai/dashboard/:patientId
  */
-async function processPatientDashboardAsync(patientId, lang, userId, theme = 'light', contextMode = 'full') {
+async function processPatientDashboardAsync(patientId, lang, userId, theme = 'light', contextMode = 'full', model = 'gpt-5.2-codex') {
   const encryptedPatientId = crypt.encrypt(patientId);
   const encryptedUserId = userId ? crypt.encrypt(userId) : null;
 
@@ -1714,18 +1702,19 @@ async function processPatientDashboardAsync(patientId, lang, userId, theme = 'li
       });
     }
 
-    const result = await generatePatientDashboard(patientId, patientContext, lang, theme, contextMode);
+    const result = await generatePatientDashboard(patientId, patientContext, lang, theme, contextMode, model);
     if (!result.success) {
       throw new Error(result.error || 'Failed to generate dashboard');
     }
 
     const dashboard = sanitizeAndValidateDashboardPayload(result.dashboard);
     const generatedAt = new Date();
-    const blobPath = `raitofile/dashboard/patient_dashboard_${contextMode}_${generatedAt.getTime()}.json`;
+    const blobPath = getDashboardBlobPath(contextMode, model);
     const payload = {
       generatedAt: generatedAt.toISOString(),
       theme,
       contextMode,
+      model,
       schemaVersion: dashboard.schemaVersion,
       dashboard
     };
@@ -1769,6 +1758,8 @@ async function handlePatientDashboardRequest(req, res) {
   const lang = req.body.lang || 'en';
   const theme = req.body.theme || 'light';
   const contextMode = req.body.contextMode || 'full';
+  const allowedModels = ['gpt-5.2-codex', 'claude-sonnet-45', 'gemini25pro', 'gemini3propreview', 'gemini3flashpreview'];
+  const model = allowedModels.includes(req.body.model) ? req.body.model : 'gpt-5.2-codex';
   const regenerate = req.body.regenerate || false;
   const userId = req.body.userId ? crypt.decrypt(req.body.userId) : null;
 
@@ -1778,14 +1769,11 @@ async function handlePatientDashboardRequest(req, res) {
     const containerName = crypt.getContainerName(patientId);
 
     if (!regenerate) {
-      const existing = await findExistingDashboard(containerName, contextMode);
-      if (existing) {
-        const payloadRaw = await f29azure.downloadBlob(containerName, existing.blobPath);
-        const payloadParsed = JSON.parse(payloadRaw);
-        const cachedTheme = payloadParsed?.theme || 'light';
-        const cachedContextMode = payloadParsed?.contextMode || 'full';
-        if (cachedTheme === theme && cachedContextMode === contextMode) {
-          const dashboard = sanitizeAndValidateDashboardPayload(payloadParsed.dashboard || payloadParsed);
+      const existing = await findExistingDashboard(containerName, contextMode, model);
+      if (existing && existing.payload) {
+        const cachedTheme = existing.payload?.theme || 'light';
+        if (cachedTheme === theme) {
+          const dashboard = sanitizeAndValidateDashboardPayload(existing.payload.dashboard || existing.payload);
 
           return res.json({
             success: true,
@@ -1796,7 +1784,7 @@ async function handlePatientDashboardRequest(req, res) {
             message: 'Existing dashboard found'
           });
         }
-        console.log(`[Dashboard] Cache mismatch (theme: ${cachedTheme} -> ${theme}, mode: ${cachedContextMode} -> ${contextMode}), regenerating...`);
+        console.log(`[Dashboard] Cache theme mismatch (${cachedTheme}->${theme}), regenerating...`);
       }
     }
 
@@ -1809,7 +1797,7 @@ async function handlePatientDashboardRequest(req, res) {
     }
 
     dashboardInProgress.set(patientId, Date.now());
-    processPatientDashboardAsync(patientId, lang, userId, theme, contextMode);
+    processPatientDashboardAsync(patientId, lang, userId, theme, contextMode, model);
 
     return res.status(202).json({
       success: true,
