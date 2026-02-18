@@ -1,4 +1,3 @@
-const OpenAI = require('openai');
 const axios = require('axios');
 const { DynamicStructuredTool } = require("@langchain/core/tools");
 const {createModels} = require('../services/langchain');
@@ -266,20 +265,27 @@ const clinicalTrialsTool = new DynamicStructuredTool({
 });
 
 async function suggestionsFromConversation(messages) {
-  try {
-    let { claude35sonnet } = createModels('default', 'claude35sonnet');
-    const suggestionsTemplate = await pull('foundation29/conv_suggestions_base_v1');
-    const runnable = suggestionsTemplate.pipe(claude35sonnet);
-    const suggestions = await runnable.invoke({
-      chat_history: messages
-    });
-    let suggestionsArray = JSON.parse(suggestions.suggestions);
-    return suggestionsArray.suggestions;
-  } catch (error) {
-    console.error('[suggestionsFromConversation] Error generating suggestions:', error.message);
-    insights.error({ message: '[suggestionsFromConversation] Error generating suggestions', error: error.message, stack: error.stack });
-    return []; // Devolver array vacío para que el flujo continúe
+  const fallbackModels = ['deepseek-r1', 'gemini3propreview', 'gpt-5.2'];
+  const suggestionsTemplate = await pull('foundation29/conv_suggestions_base_v1');
+
+  for (const modelName of fallbackModels) {
+    try {
+      const models = createModels('default', modelName);
+      const model = models[modelName];
+      const runnable = suggestionsTemplate.pipe(model);
+      const suggestions = await runnable.invoke({
+        chat_history: messages
+      });
+      let suggestionsArray = JSON.parse(suggestions.suggestions);
+      return suggestionsArray.suggestions;
+    } catch (error) {
+      console.error(`[suggestionsFromConversation] Error with ${modelName}:`, error.message);
+      insights.error({ message: `[suggestionsFromConversation] Error with ${modelName}`, error: error.message, stack: error.stack });
+    }
   }
+
+  console.error('[suggestionsFromConversation] All models failed');
+  return [];
 }
 
 async function processDocs(docs, containerName) {
