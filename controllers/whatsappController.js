@@ -722,18 +722,21 @@ async function getSummary(req, res) {
         
         // Try SHA256 container name first
         let containerName = crypt.getContainerName(patientId)
+        console.log('[WhatsApp] getSummary - patientId (decrypted):', patientId)
         console.log('[WhatsApp] getSummary - Trying containerName (SHA256):', containerName)
         let exists = await f29azure.checkBlobExists(containerName, summaryPath)
+        console.log('[WhatsApp] getSummary - SHA256 exists:', exists)
         
         // If not found, try legacy container name
         if (!exists) {
             containerName = crypt.getContainerNameLegacy(patientId)
             console.log('[WhatsApp] getSummary - Trying containerName (Legacy):', containerName)
             exists = await f29azure.checkBlobExists(containerName, summaryPath)
+            console.log('[WhatsApp] getSummary - Legacy exists:', exists)
         }
         
         if (!exists) {
-            console.log('[WhatsApp] getSummary - Summary file not found, checking if generation is needed')
+            console.log('[WhatsApp] getSummary - Summary file NOT found in either container')
             
             // Check if patient has any documents or events to generate summary from
             const eventsCount = await Events.countDocuments({ createdBy: patientId })
@@ -745,6 +748,8 @@ async function getSummary(req, res) {
                     message: 'El paciente no tiene información suficiente para generar un resumen. Añade eventos o documentos primero.'
                 })
             }
+            
+            console.log('[WhatsApp] getSummary - patient.summary status:', patient.summary, '| eventsCount:', eventsCount)
             
             // Check if summary is already being generated
             if (patient.summary === 'inProcess') {
