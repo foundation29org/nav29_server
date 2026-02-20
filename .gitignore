@@ -16,5 +16,3 @@ config_dev.js
 *-service-account*.json
 *firebase-adminsdk*.json
 /deploy
-/azure-pipelines-dev.yml
-/azure-pipelines-prod.yml
