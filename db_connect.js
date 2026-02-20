@@ -6,8 +6,9 @@ const config = require('./config')
 // Mongoose 9.x - opciones modernas de conexión
 const connectionOptions = {
 	maxPoolSize: 10,
-	serverSelectionTimeoutMS: 30000, // 30s para Cosmos DB (puede tardar en despertar)
+	serverSelectionTimeoutMS: 30000,
 	socketTimeoutMS: 45000,
+	retryWrites: false,
 }
 
 const conndbaccounts = mongoose.createConnection(config.dbaccounts, connectionOptions)

@@ -23,7 +23,7 @@
     "@azure/search-documents": "^12.2.0",
     "@azure/storage-blob": "^12.2.0-preview.1",
     "@azure/web-pubsub": "^1.1.1",
-    "@google/genai": "^1.38.0",
+    "@google/genai": "^1.42.0",
     "@iamtraction/google-translate": "^1.1.2",
     "@langchain/community": "^1.1.16",
     "@langchain/core": "^1.1.26",
@@ -42,10 +42,10 @@
     "deepl-node": "^1.10.2",
     "express": "^4.16.2",
     "express-fileupload": "^1.4.0",
-    "express-handlebars": "^6.0.6",
+    "express-handlebars": "^8.0.6",
     "firebase-admin": "^13.0.0",
     "fs-extra": "^5.0.0",
-    "jasmine": "^3.5.0",
+    "jasmine": "^6.0.0",
     "jose": "^4.10.4",
     "js-levenshtein": "^1.1.6",
     "js-sha512": "^0.7.1",
@@ -55,12 +55,13 @@
     "moment": "^2.19.1",
     "mongoose": "^9.0.0",
     "nodemailer": "^8.0.0",
-    "nodemailer-express-handlebars": "^5.0.0",
+    "nodemailer-express-handlebars": "^7.0.0",
     "wikijs": "^6.3.2",
     "ws": "^8.12.1"
   },
   "devDependencies": {
     "cross-env": "^7.0.3",
+    "minimatch": "^10.2.2",
     "nodemon": "^3.1.0"
   },
   "volta": {
