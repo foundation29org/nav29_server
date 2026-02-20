@@ -11,8 +11,10 @@
  */
 
 const { jsonrepair } = require('jsonrepair');
-const { createModels } = require('./langchain');
 const insights = require('./insights');
+
+// Nota: createModels se importa dinámicamente en repairJsonWithGPT
+// para evitar dependencia circular con langchain.js
 
 /**
  * Tipos de JSON soportados para reparación con GPT
@@ -169,6 +171,8 @@ ${instructions}
 Return ONLY the fixed JSON, no explanations, no markdown code blocks:`;
 
   try {
+    // Lazy loading para evitar dependencia circular con langchain.js
+    const { createModels } = require('./langchain');
     const model = createModels('default', 'gpt-4.1-mini')['gpt-4.1-mini'];
     
     const response = await model.invoke([

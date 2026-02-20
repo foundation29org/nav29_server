@@ -137,20 +137,20 @@ async function reindexDocumentMetadata(documentId, patientId, newMetadata) {
   try {
     const searchResults = await searchClient.search("*", {
       filter: `documentId eq '${documentId}' and patientId eq '${patientId}'`,
-      select: ["id", "content", "content_vector", "metadata", "patientId", "documentId", "documentType", "filename"]
+      select: ["id"]
     });
 
     const documentsToUpdate = [];
     for await (const result of searchResults.results) {
       documentsToUpdate.push({
-        ...result.document,
+        id: result.document.id,
         reportDate: newMetadata.reportDate,
         dateStatus: newMetadata.dateStatus
       });
     }
 
     if (documentsToUpdate.length > 0) {
-      await searchClient.uploadDocuments(documentsToUpdate);
+      await searchClient.mergeDocuments(documentsToUpdate);
       return true;
     }
     return false;

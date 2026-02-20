@@ -24,10 +24,12 @@ const { retrieveChunks, extractStructuredFacts } = require('../../../services/re
 const { curateContext } = require('../../../services/tools');
 
 const { generatePatientUUID } = require('../../../services/uuid');
-const { generatePatientInfographic, generateSoapQuestions, generateSoapReport } = require('../../../services/langchain');
+const { generatePatientInfographic, generatePatientDashboard, generateSoapQuestions, generateSoapReport } = require('../../../services/langchain');
 
 // Mutex para evitar peticiones duplicadas de infografía mientras se está generando
 const infographicInProgress = new Map();
+// Mutex para evitar peticiones duplicadas de dashboard mientras se está generando
+const dashboardInProgress = new Map();
 
 /*--------------------------------------------------------------------
  * 2. HELPERS ───────────── ✂ ────────────────────────────────────────*/
@@ -498,6 +500,11 @@ async function handleRarescopeRequest(req, res) {
     /* 1 · Seguridad ----------------------------------------------------*/
     const patientId = crypt.decrypt(req.params.patientId);
 
+    /* 1.1 · Rol: Clinical | Caregiver | paciente (cada uno con su prompt) */
+    const role = (req.body?.role || '').trim();
+    const isClinicalView = role === 'Clinical';
+    const isCaregiverView = role === 'Caregiver';
+
     /* 2 · Descripción clínica (puede venir del caller) -----------------*/
     const customDescription = req.body?.customPatientDescription || req.body?.customMedicalDescription;
     let ctxStr = customDescription;
@@ -543,12 +550,12 @@ async function handleRarescopeRequest(req, res) {
       }
     }
 
-    /* 3 · Prompt -------------------------------------------------------*/
-    const prompt = `Act as a medical expert specializing in patient advocacy and clinical needs assessment. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of THIS SPECIFIC PATIENT based on their medical history. Do not add explanations or extra formatting.
+    /* 3 · Prompt según rol (Clinical | Caregiver | paciente); todos con mismo formato de salida */
+    const promptPatient = `Act as a medical expert specializing in patient advocacy and clinical needs assessment. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string represents a real and concrete unmet need of THIS SPECIFIC PATIENT based on their medical history, from the PATIENT'S OWN PERSPECTIVE (what they experience and need). Do not add explanations or extra formatting.
 
 These needs should reflect challenges such as lack of specific treatment options for their condition, need for specialized follow-up, management of chronic symptoms, psychological support, or information gaps that the patient faces. Valid output example: ["Need 1","Need 2"]
 
-IMPORTANT: 
+IMPORTANT:
 - Tailor the needs to the actual diagnoses, treatments, and symptoms mentioned in the patient context.
 - You may use your medical knowledge to identify if the condition requires specialized care typical of rare or complex diseases, but focus on the patient's specific evidence.
 - Base your analysis on what is explicitly stated in the clinical history, not on assumptions.
@@ -557,15 +564,58 @@ IMPORTANT:
 ## Patient Context
 ${ctxStr}`.trim();
 
+    const promptClinical = `Act as a medical expert assessing a patient from a CLINICIAN perspective. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string is a concrete UNMET CLINICAL NEED for THIS SPECIFIC PATIENT—i.e. what the clinician identifies as missing or needed in their care (e.g. access to treatments, specialized follow-up, multidisciplinary care, diagnostic clarity, symptom control, psychosocial support). Do not add explanations or extra formatting.
+
+Focus on care gaps and needs that a healthcare professional would document when planning or reviewing the patient's care. Valid output example: ["Need 1","Need 2"]
+
+IMPORTANT:
+- Base each need on the actual diagnoses, treatments, and symptoms in the patient context.
+- Use medical knowledge for rare/complex conditions but anchor on the patient's specific evidence.
+- Do not assume; use only what is stated or clearly implied in the clinical history.
+- Respond in the SAME LANGUAGE as the patient context provided below.
+
+## Patient Context
+${ctxStr}`.trim();
+
+    const promptCaregiver = `Act as a medical expert supporting family caregivers. Read the clinical information and extract exclusively a JSON ARRAY of strings, where each string is a concrete UNMET NEED for THIS SPECIFIC PATIENT from the CAREGIVER'S PERSPECTIVE—i.e. what the person caring for the patient identifies as missing or needed (e.g. respite care, clear information about the condition, coordination between providers, daily living support, emotional support for the caregiver, access to treatments, help with symptom management at home). Do not add explanations or extra formatting.
+
+Focus on needs that matter to someone who supports the patient day-to-day: practical, informational, and emotional gaps. Valid output example: ["Need 1","Need 2"]
+
+IMPORTANT:
+- Base each need on the actual diagnoses, treatments, and symptoms in the patient context.
+- Consider both the patient's clinical needs and the caregiver's own support needs where relevant.
+- Do not assume; use only what is stated or clearly implied in the clinical history.
+- Respond in the SAME LANGUAGE as the patient context provided below.
+
+## Patient Context
+${ctxStr}`.trim();
+
+    let prompt;
+    if (isClinicalView) prompt = promptClinical;
+    else if (isCaregiverView) prompt = promptCaregiver;
+    else prompt = promptPatient;
+    if (isClinicalView) console.log('📋 Rarescope: usando prompt perspectiva CLÍNICA (Their Needs)');
+    else if (isCaregiverView) console.log('📋 Rarescope: usando prompt perspectiva CUIDADOR (Caregiver)');
+    else console.log('📋 Rarescope: usando prompt perspectiva PACIENTE (My Needs)');
+
     /* 4 · Llamada REST a Azure OpenAI ---------------------------------*/
     const deployment = 'gpt-4o';
     const url = `https://${azureInstance}.openai.azure.com/openai/deployments/${deployment}/chat/completions?api-version=${config.OPENAI_API_VERSION}`;
+
+    let systemMessage;
+    if (isClinicalView) {
+      systemMessage = 'You are a medical expert assessing a patient from a clinician perspective. Output only a JSON array of unmet clinical needs. Always use the same language as the provided patient context.';
+    } else if (isCaregiverView) {
+      systemMessage = 'You are a medical expert supporting family caregivers. Output only a JSON array of unmet needs from the caregiver perspective. Always use the same language as the provided patient context.';
+    } else {
+      systemMessage = 'You are a medical expert assistant specializing in patient advocacy. Always respond in the same language as the provided patient context.';
+    }
 
     const { data } = await axios.post(
       url,
       {
         messages: [
-          { role: 'system', content: 'You are a medical expert assistant. Always respond in the same language as the provided patient context.' },
+          { role: 'system', content: systemMessage },
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
@@ -581,14 +631,34 @@ ${ctxStr}`.trim();
 
     let answerRaw = data?.choices?.[0]?.message?.content?.trim() || '';
 
+    // Quitar markdown si el modelo devolvió ```json ... ``` o ```
+    let jsonStr = answerRaw
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```\s*$/, '')
+      .trim();
+    // Si aún hay texto antes/después del array, intentar extraer solo [...]
+    const arrayMatch = jsonStr.match(/\[[\s\S]*\]/);
+    if (arrayMatch) jsonStr = arrayMatch[0];
+
     let unmetNeeds;
     try {
-      unmetNeeds = JSON.parse(answerRaw);
+      unmetNeeds = JSON.parse(jsonStr);
       if (!Array.isArray(unmetNeeds)) throw new Error('Not array');
+      // Filtrar entradas que no son necesidades reales (sobrantes de markdown o fragmentos de JSON)
+      const junk = /^[\[\]`,]+$|^```(?:json)?$/i;
+      unmetNeeds = unmetNeeds
+        .filter(item => typeof item === 'string' && item.trim().length > 0)
+        .map(s => s.trim())
+        .filter(s => !junk.test(s))
+        .map(s => s.replace(/^["']|["'],?\s*$/g, '').trim()) // quitar comillas/coma sobrantes si el modelo devolvió "\"texto\","
+        .filter(Boolean);
     } catch (e) {
-      // Fallback: split by newline or semicolon
+      // Fallback: split por newline/semicolon y limpiar líneas tipo "\"texto\","
       unmetNeeds = answerRaw.split(/\n|\r|\u2028|\u2029/)
         .map(s => s.replace(/^[\-•\d\.\s]+/, '').trim())
+        .filter(Boolean)
+        .filter(s => !/^[\[\]`#,]+$/.test(s))
+        .map(s => s.replace(/^["']|["'],?\s*$|^\[|^\],?$/g, '').trim())
         .filter(Boolean);
     }
 
@@ -652,6 +722,7 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
           patientId: encryptedPatientId,
           status: 'extracting-facts',
           message: `Analizando ${selectedChunks.length} fragmentos de evidencia médica...`,
+          messageParams: { count: selectedChunks.length },
           progress: 40
         });
 
@@ -727,7 +798,7 @@ async function processDxGptAsync(patientId, lang, custom, diseasesList, userId, 
       taskId,
       patientId: encryptedPatientId,
       status: 'calling-api',
-      message: 'Consultando DxGPT API...',
+      message: 'Consultando DxGPT...',
       progress: 90
     });
     
@@ -843,6 +914,7 @@ async function buildContextStringWithProgress(raw, patientId, userId, taskId, do
         patientId: encryptedPatientId,
         status: 'summarizing-documents',
         message: `Resumiendo documento ${i + 1} de ${totalDocs}: ${doc.name}...`,
+        messageParams: { current: i + 1, total: totalDocs, name: doc.name || '' },
         progress
       });
       
@@ -1174,7 +1246,7 @@ async function handleDiseaseInfoRequest(req, res) {
     const body = {
       questionType,
       disease,
-      lang,
+      detectedLang: lang,
       myuuid: generatePatientUUID(patientId),
       timezone: req.body.timezone || 'UTC',
       ...(description ? { medicalDescription: description } : {})
@@ -1231,6 +1303,69 @@ async function findExistingInfographic(containerName) {
     console.warn('[Infographic] Error searching for existing infographic:', error.message);
     return null;
   }
+}
+
+/** Helper: Buscar dashboard existente en blob storage */
+function getDashboardBlobPath(contextMode, model) {
+  return `raitofile/dashboard/patient_dashboard_${contextMode}_${model}.json`;
+}
+
+async function findExistingDashboard(containerName, contextMode, model) {
+  try {
+    const blobPath = getDashboardBlobPath(contextMode, model);
+    const exists = await f29azure.downloadBlob(containerName, blobPath);
+    if (exists) {
+      const payloadParsed = JSON.parse(exists);
+      return { blobPath, generatedAt: payloadParsed?.generatedAt || null, payload: payloadParsed };
+    }
+    return null;
+  } catch (error) {
+    if (error?.statusCode === 404 || error?.code === 'BlobNotFound') {
+      return null;
+    }
+    console.warn('[Dashboard] Error searching for existing dashboard:', error.message);
+    return null;
+  }
+}
+
+/** Helper: Sanitiza y valida artefacto HTML/CSS/JS de dashboard */
+function sanitizeAndValidateDashboardPayload(dashboard) {
+  if (!dashboard || typeof dashboard !== 'object') {
+    throw new Error('Invalid dashboard payload');
+  }
+
+  const cleaned = {
+    title: String(dashboard.title || 'Patient Dashboard').trim(),
+    schemaVersion: String(dashboard.schemaVersion || '1.0.0').trim(),
+    html: String(dashboard.html || '').trim(),
+    css: String(dashboard.css || '').trim(),
+    js: String(dashboard.js || '').trim()
+  };
+
+  if (!cleaned.html || !cleaned.css) {
+    throw new Error('Dashboard payload missing html/css');
+  }
+
+  const forbiddenPatterns = [
+    /<iframe/i,
+    /<object/i,
+    /<embed/i
+  ];
+
+  const combined = `${cleaned.html}\n${cleaned.css}\n${cleaned.js}`;
+  for (const pattern of forbiddenPatterns) {
+    if (pattern.test(combined)) {
+      throw new Error(`Dashboard payload contains forbidden pattern: ${pattern}`);
+    }
+  }
+
+  // Mantener solo un filtrado mínimo de contenedores embebidos.
+  cleaned.html = cleaned.html
+    .replace(/<iframe[\s\S]*?>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<object[\s\S]*?>[\s\S]*?<\/object>/gi, '')
+    .replace(/<embed[\s\S]*?>[\s\S]*?<\/embed>/gi, '');
+
+  return cleaned;
 }
 
 /**
@@ -1471,7 +1606,222 @@ async function handleInfographicRequest(req, res) {
 }
 
 /*--------------------------------------------------------------------
- * 3.5 SOAP NOTES REQUESTS (Clinical)
+ * 3.5 PATIENT DASHBOARD REQUEST
+ *------------------------------------------------------------------*/
+
+/**
+ * Genera un dashboard HTML/CSS/JS específico para el paciente
+ * @route POST /api/ai/dashboard/:patientId
+ */
+async function processPatientDashboardAsync(patientId, lang, userId, theme = 'light', contextMode = 'full', model = 'gpt-5.2-codex') {
+  const encryptedPatientId = crypt.encrypt(patientId);
+  const encryptedUserId = userId ? crypt.encrypt(userId) : null;
+
+  try {
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-processing',
+        patientId: encryptedPatientId,
+        status: 'started',
+        progress: 5,
+        message: 'Iniciando generación del dashboard clínico...'
+      });
+    }
+
+    const containerName = crypt.getContainerName(patientId);
+    let patientContext = null;
+    let isBasicDashboard = false;
+
+    const shouldUseSummaryFirst = contextMode === 'summary' || contextMode === 'auto';
+    if (shouldUseSummaryFirst) {
+      patientContext = await getPatientSummaryIfExists(patientId);
+    }
+
+    if (!patientContext || contextMode === 'full') {
+      if (!patientContext) {
+        isBasicDashboard = true;
+      }
+      if (encryptedUserId) {
+        pubsub.sendToUser(encryptedUserId, {
+          type: 'dashboard-processing',
+          patientId: encryptedPatientId,
+          status: 'retrieving-context',
+          progress: 30,
+          message: 'Recuperando contexto clínico del paciente...'
+        });
+      }
+
+      try {
+        const searchQuery = 'Complete patient health overview for adaptive clinical dashboard: diagnoses, symptoms, medications, progression, alerts, and care priorities';
+        const retrievalResult = await retrieveChunks(patientId, searchQuery, 'TREND');
+        const selectedChunks = retrievalResult.selectedChunks || [];
+        const raw = await patientContextService.aggregateClinicalContext(patientId);
+        const structuredFacts = await extractStructuredFacts(selectedChunks, searchQuery, patientId);
+
+        const Document = require('../../../models/document');
+        const patientDocs = await Document.find({ createdBy: patientId }).select('url').lean();
+        const docUrls = patientDocs.map(d => d.url).filter(Boolean);
+
+        const curatedResult = await curateContext(
+          [],
+          [],
+          containerName,
+          docUrls,
+          searchQuery,
+          selectedChunks,
+          structuredFacts
+        );
+
+        const curatedContext = curatedResult.content;
+        if (contextMode === 'full' && patientContext && patientContext.length > 50) {
+          patientContext = `${patientContext}\n\n${curatedContext || ''}`.trim();
+        } else {
+          patientContext = curatedContext;
+        }
+
+        if (!patientContext || patientContext.length < 300) {
+          patientContext = await buildBasicPatientContext(patientId, raw, patientContext);
+        }
+      } catch (ragError) {
+        console.warn('[Dashboard] RAG failed, using basic context:', ragError.message);
+        patientContext = await buildBasicPatientContext(patientId, null, patientContext || '');
+      }
+    }
+
+    if (!patientContext || patientContext.trim().length < 50) {
+      throw new Error('Not enough patient data to generate dashboard. Please upload more medical documents.');
+    }
+
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-processing',
+        patientId: encryptedPatientId,
+        status: 'generating',
+        progress: 70,
+        message: 'Generando dashboard dinámico personalizado...'
+      });
+    }
+
+    const result = await generatePatientDashboard(patientId, patientContext, lang, theme, contextMode, model);
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to generate dashboard');
+    }
+
+    const dashboard = sanitizeAndValidateDashboardPayload(result.dashboard);
+    const generatedAt = new Date();
+    const blobPath = getDashboardBlobPath(contextMode, model);
+    const payload = {
+      generatedAt: generatedAt.toISOString(),
+      theme,
+      contextMode,
+      model,
+      schemaVersion: dashboard.schemaVersion,
+      dashboard
+    };
+    await f29azure.createBlob(containerName, blobPath, Buffer.from(JSON.stringify(payload), 'utf8'));
+
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-result',
+        patientId: encryptedPatientId,
+        status: 'completed',
+        success: true,
+        isBasic: isBasicDashboard,
+        generatedAt: generatedAt.toISOString(),
+        blobPath
+      });
+    }
+  } catch (error) {
+    console.error('[Dashboard] Async error:', error.message);
+    insights.error({
+      message: '[Dashboard] Async generation error',
+      error: error.message,
+      patientId
+    });
+
+    if (encryptedUserId) {
+      pubsub.sendToUser(encryptedUserId, {
+        type: 'dashboard-result',
+        patientId: encryptedPatientId,
+        status: 'error',
+        success: false,
+        error: error.message || 'Error generating dashboard'
+      });
+    }
+  } finally {
+    dashboardInProgress.delete(patientId);
+  }
+}
+
+async function handlePatientDashboardRequest(req, res) {
+  const patientId = crypt.decrypt(req.params.patientId);
+  const lang = req.body.lang || 'en';
+  const theme = req.body.theme || 'light';
+  const contextMode = req.body.contextMode || 'full';
+  const allowedModels = ['gpt-5.2-codex', 'claude-sonnet-45', 'gemini25pro', 'gemini3propreview', 'gemini3flashpreview'];
+  const model = allowedModels.includes(req.body.model) ? req.body.model : 'gpt-5.2-codex';
+  const regenerate = req.body.regenerate || false;
+  const userId = req.body.userId ? crypt.decrypt(req.body.userId) : null;
+
+  console.log(`[Dashboard] Request for patient ${patientId}, lang: ${lang}, regenerate: ${regenerate}`);
+
+  try {
+    const containerName = crypt.getContainerName(patientId);
+
+    if (!regenerate) {
+      const existing = await findExistingDashboard(containerName, contextMode, model);
+      if (existing && existing.payload) {
+        const cachedTheme = existing.payload?.theme || 'light';
+        if (cachedTheme === theme) {
+          const dashboard = sanitizeAndValidateDashboardPayload(existing.payload.dashboard || existing.payload);
+
+          return res.json({
+            success: true,
+            cached: true,
+            generatedAt: existing.generatedAt,
+            blobPath: existing.blobPath,
+            dashboard,
+            message: 'Existing dashboard found'
+          });
+        }
+        console.log(`[Dashboard] Cache theme mismatch (${cachedTheme}->${theme}), regenerating...`);
+      }
+    }
+
+    if (dashboardInProgress.has(patientId)) {
+      return res.status(202).json({
+        success: true,
+        processing: true,
+        message: 'Dashboard generation in progress'
+      });
+    }
+
+    dashboardInProgress.set(patientId, Date.now());
+    processPatientDashboardAsync(patientId, lang, userId, theme, contextMode, model);
+
+    return res.status(202).json({
+      success: true,
+      processing: true,
+      message: 'Dashboard generation started'
+    });
+  } catch (error) {
+    dashboardInProgress.delete(patientId);
+    console.error('[Dashboard] Error:', error.message);
+    insights.error({
+      message: '[Dashboard] Error handling request',
+      error: error.message,
+      patientId
+    });
+    return res.status(500).json({
+      success: false,
+      error: 'Error generating dashboard',
+      details: error.message
+    });
+  }
+}
+
+/*--------------------------------------------------------------------
+ * 3.6 SOAP NOTES REQUESTS (Clinical)
  *------------------------------------------------------------------*/
 
 /**
@@ -1647,6 +1997,7 @@ module.exports = {
   handleDxGptRequest,
   handleDiseaseInfoRequest,
   handleInfographicRequest,
+  handlePatientDashboardRequest,
   handleSoapQuestionsRequest,
   handleSoapReportRequest
 };

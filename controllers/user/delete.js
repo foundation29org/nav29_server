@@ -19,11 +19,11 @@ admin.initializeApp({
 	credential: admin.credential.cert(serviceAccount)
 });
 
-function deleteAccount(req, res) {
+async function deleteAccount(req, res) {
 	const email = (req.body.email).toLowerCase();
 	const firebaseUid = req.body.uid;
 	
-	User.getAuthenticatedByFirebase(email, firebaseUid, function (err, user, reason) {
+	User.getAuthenticatedByFirebase(email, firebaseUid, async function (err, user, reason) {
 		if (err) {
 			insights.error(err);
 			return res.status(500).send({ message: err })
@@ -31,26 +31,26 @@ function deleteAccount(req, res) {
 		
 		// Verificación exitosa si tenemos usuario
 		if (user) {
-			let userId = crypt.decrypt(req.params.userId);
-			Patient.find({ "createdBy": userId }, (err, patients) => {
-				if (err) {
-					insights.error(err);
-					return res.status(500).send({ message: `Error making the request: ${err}` })
-				}
+			try {
+				let userId = crypt.decrypt(req.params.userId);
+				const patients = await Patient.find({ "createdBy": userId });
 
-				patients.forEach(async function (u) {
+				for (const u of patients) {
 					var patientId = u._id.toString();
 					var containerName = crypt.getContainerName(u._id.toString());
-					deleteEvents(patientId);
-					deleteDocs(patientId);
+					await deleteEvents(patientId);
+					await deleteDocs(patientId);
 					await bookService.deleteIndexAzure(patientId);
-					deletePatient(res, patientId, containerName);
-				});
-				deleteAppointments(userId);
-				deleteLocations(userId);
+					await deletePatientAsync(patientId, containerName);
+				}
+				await deleteAppointments(userId);
+				await deleteLocations(userId);
 				// Usar firebaseUid del usuario para eliminar de Firebase
-				deleteUser(res, userId, user.firebaseUid || firebaseUid);
-			})
+				await deleteUserAsync(res, userId, user.firebaseUid || firebaseUid);
+			} catch (err) {
+				insights.error(err);
+				return res.status(500).send({ message: `Error making the request: ${err}` })
+			}
 		} else {
 			// Manejar diferentes razones de fallo
 			if (reason === User.failedLogin.NOT_FOUND) {
@@ -65,88 +65,51 @@ function deleteAccount(req, res) {
 }
 
 
-function deleteEvents(patientId) {
-	Events.find({ 'createdBy': patientId }, (err, events) => {
-		if (err) {
-			insights.error(err);
-			console.log({ message: `Error deleting the events: ${err}` })
-		}
-		events.forEach(function (event) {
-			event.remove(err => {
-				if (err) {
-					insights.error(err);
-					console.log({ message: `Error deleting the events: ${err}` })
-				}
-			})
-		});
-	})
+async function deleteEvents(patientId) {
+	try {
+		await Events.deleteMany({ 'createdBy': patientId });
+	} catch (err) {
+		insights.error(err);
+		console.log({ message: `Error deleting the events: ${err}` })
+	}
 }
 
-function deleteDocs(patientId) {
-	Document.find({ 'createdBy': patientId }, (err, documents) => {
-		if (err) {
-			insights.error(err);
-			console.log({ message: `Error deleting the documents: ${err}` })
-		}
-		if (documents) {
-			documents.forEach(async function (document) {
-				document.remove(err => {
-					if (err) {
-						insights.error(err);
-						console.log({ message: `Error deleting the documents: ${err}` })
-					}
-				})
-			});
-		}
-	})
+async function deleteDocs(patientId) {
+	try {
+		await Document.deleteMany({ 'createdBy': patientId });
+	} catch (err) {
+		insights.error(err);
+		console.log({ message: `Error deleting the documents: ${err}` })
+	}
 }
 
-function deletePatient(res, patientId, containerName) {
-	Patient.findById(patientId, (err, patient) => {
-		if (err) {
-			insights.error(err);
-			return res.status(500).send({ message: `Error deleting the case: ${err}` })
-		}
+async function deletePatientAsync(patientId, containerName) {
+	try {
+		const patient = await Patient.findById(patientId);
 		if (patient) {
-			patient.remove(err => {
-				if (err) {
-					insights.error(err);
-					return res.status(500).send({ message: `Error deleting the case: ${err}` })
-				}
-				f29azureService.deleteContainer(containerName)
-			})
-		} else {
-			f29azureService.deleteContainer(containerName);
+			await Patient.deleteOne({ _id: patientId });
 		}
-	})
+		await f29azureService.deleteContainer(containerName);
+	} catch (err) {
+		insights.error(err);
+		console.log({ message: `Error deleting the case: ${err}` })
+	}
 }
 
-function deleteAppointments(userId) {
-	Appointments.find({ 'addedBy': userId }, (err, appointments) => {
-		if (err) {
-			insights.error(err);
-			console.log({ message: `Error deleting the appointments: ${err}` })
-		}
-		appointments.forEach(function (appointment) {
-			appointment.remove(err => {
-				if (err) {
-					insights.error(err);
-					console.log({ message: `Error deleting the appointments: ${err}` })
-				}
-			})
-		});
-	})
+async function deleteAppointments(userId) {
+	try {
+		await Appointments.deleteMany({ 'addedBy': userId });
+	} catch (err) {
+		insights.error(err);
+		console.log({ message: `Error deleting the appointments: ${err}` })
+	}
 }
 
-function deleteLocations(userId) {
-	//delete all the locations on customShare on all the patients
-	Patient.find({ 'customShare.locations.userId': userId }, (err, patients) => {
-		if (err) {
-			insights.error(err);
-			console.log({ message: `Error deleting the locations: ${err}` })
-			return;
-		}
-		patients.forEach(function (patient) {
+async function deleteLocations(userId) {
+	try {
+		const patients = await Patient.find({ 'customShare.locations.userId': userId });
+		
+		for (const patient of patients) {
 			// Verificar si customShare existe
 			if (patient.customShare && Array.isArray(patient.customShare)) {
 				// Iterar sobre cada elemento en customShare
@@ -161,24 +124,20 @@ function deleteLocations(userId) {
 				});
 
 				patient.markModified('customShare'); // Marcar el campo como modificado
-				patient.save(err => {
-					if (err) {
-						insights.error(err);
-						console.log({ message: `Error deleting the locations: ${err}` })
-					} else {
-						console.log('Successfully updated patient locations');
-					}
-				})
+				await patient.save();
+				console.log('Successfully updated patient locations');
 			}
-		});
-	})
+		}
+	} catch (err) {
+		insights.error(err);
+		console.log({ message: `Error deleting the locations: ${err}` })
+	}
 }
 
 
 
 function deleteUserFirebase(uid) {
 	admin.auth().deleteUser(uid)
-
 		.then(() => {
 			console.log('Usuario eliminado exitosamente');
 		})
@@ -188,25 +147,20 @@ function deleteUserFirebase(uid) {
 		});
 }
 
-function deleteUser(res, userId, uid) {
-	User.findById(userId, (err, user) => {
-		if (err) {
-			insights.error(err);
-			return res.status(500).send({ message: `Error deleting the case: ${err}` })
-		}
+async function deleteUserAsync(res, userId, uid) {
+	try {
+		const user = await User.findById(userId);
 		if (user) {
-			user.remove(err => {
-				if (err) {
-					insights.error(err);
-					return res.status(500).send({ message: `Error deleting the case: ${err}` })
-				}
-				deleteUserFirebase(uid);
-				res.status(200).send({ message: `The case has been eliminated` })
-			})
+			await User.deleteOne({ _id: userId });
+			deleteUserFirebase(uid);
+			res.status(200).send({ message: `The case has been eliminated` })
 		} else {
 			return res.status(202).send({ message: 'The case has been eliminated' })
 		}
-	})
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error deleting the case: ${err}` })
+	}
 }
 
 function verifyToken(req, res, next) {
@@ -258,27 +212,26 @@ function verifyToken(req, res, next) {
 		});
 }
 
-function removePatient(req, res) {
-
-	let patientId = crypt.decrypt(req.params.patientId);
-
-	Patient.findById(patientId, { "_id": false, "createdBy": false }, async (err, patient) => {
-		if (err) {
-			insights.error(err);
-			return res.status(500).send({ message: `Error making the request: ${err}` })
-		}
+async function removePatient(req, res) {
+	try {
+		let patientId = crypt.decrypt(req.params.patientId);
+		const patient = await Patient.findById(patientId).select('-_id -createdBy');
+		
 		if (!patient) {
 			insights.error(`The patient does not exist`);
 			return res.status(202).send({ message: `The patient does not exist` })
-		} else {
-			var containerName = crypt.getContainerName(patientId);
-			deleteEvents(patientId);
-			deleteDocs(patientId);
-			await bookService.deleteIndexAzure(patientId)
-			deletePatient(res, patientId, containerName);
-			res.status(200).send({ message: `The case has been eliminated` })
 		}
-	})
+		
+		var containerName = crypt.getContainerName(patientId);
+		await deleteEvents(patientId);
+		await deleteDocs(patientId);
+		await bookService.deleteIndexAzure(patientId);
+		await deletePatientAsync(patientId, containerName);
+		res.status(200).send({ message: `The case has been eliminated` })
+	} catch (err) {
+		insights.error(err);
+		return res.status(500).send({ message: `Error making the request: ${err}` })
+	}
 }
 
 module.exports = {

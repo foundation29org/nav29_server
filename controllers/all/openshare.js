@@ -6,21 +6,21 @@ const Patient = require('../../models/patient')
 const crypt = require('../../services/crypt')
 const insights = require('../../services/insights')
 
-function getGeneralShare(req, res) {
-    let patientId = crypt.decrypt(req.params.patientId);
-    Patient.findById(patientId, { "_id": false, "createdBy": false }, (err, patient) => {
-        if (err){
-            insights.error(err);
-            return res.status(500).send({ message: `Error making the request: ${err}` })
-        } 
+async function getGeneralShare(req, res) {
+    try {
+        let patientId = crypt.decrypt(req.params.patientId);
+        const patient = await Patient.findById(patientId).select('-_id -createdBy');
         res.status(200).send({ generalShare: patient.generalShare })
-    })
+    } catch (err) {
+        insights.error(err);
+        return res.status(500).send({ message: `Error making the request: ${err}` })
+    }
 }
 
 async function getCustomShare(req, res) {
     try {
         let patientId = crypt.decrypt(req.params.patientId);
-        let patient = await Patient.findById(patientId, { "_id": false }).lean().exec();
+        let patient = await Patient.findById(patientId).select('-_id').lean();
 
         if (!patient) {
             return res.status(404).send({ message: 'Patient not found' });
@@ -30,7 +30,7 @@ async function getCustomShare(req, res) {
         if (isOwner) {
             let locationPromises = patient.customShare.map(async (element) => {
                 let locationPromises = element.locations.map(async (location) => {
-                    let user = await User.findOne({ email: location.email }).lean().exec();
+                    let user = await User.findOne({ email: location.email }).lean();
                     if (user && user.infoVerified.isVerified) {
                         location.originalName = user.infoVerified.info.firstName + ' ' + user.infoVerified.info.lastName;
                     }else{
@@ -83,10 +83,9 @@ async function updatecustomshare(req, res) {
                 .findByIdAndUpdate(
                     patientId, 
                     { $push: { customShare: req.body } }, 
-                    { select: '-createdBy', new: true }
+                    { projection: { createdBy: 0 }, new: true }
                 )
-                .lean()  // Convertir a objeto plano
-                .exec();
+                .lean();
 
             // Limpiar datos sensibles de todas las locations
             const cleanedCustomShare = patientUpdated.customShare.map(share => ({
@@ -108,10 +107,9 @@ async function updatecustomshare(req, res) {
                 .findOneAndUpdate(
                     { _id: patientId, 'customShare._id': req.body._id },
                     { $set: { 'customShare.$.notes': req.body.notes } },
-                    { select: '-createdBy', new: true }
+                    { projection: { createdBy: 0 }, new: true }
                 )
-                .lean()  // Convertir a objeto plano
-                .exec();
+                .lean();
 
             // Limpiar datos sensibles de todas las locations
             const cleanedCustomShare = patientUpdated.customShare.map(share => ({
@@ -151,13 +149,11 @@ async function deletecustomshare(req, res) {
         }
 
         // Si es el propietario, procedemos con la eliminación
-        const patientUpdated = await Patient
-            .findByIdAndUpdate(
-                patientId, 
-                { $pull: { customShare: { _id: req.body._id } } }, 
-                { select: '-createdBy', new: true }
-            )
-            .exec();
+        await Patient.findByIdAndUpdate(
+            patientId, 
+            { $pull: { customShare: { _id: req.body._id } } }, 
+            { projection: { createdBy: 0 }, new: true }
+        );
 
         res.status(200).send({ message: 'custom share deleted' });
 
@@ -170,7 +166,7 @@ async function deletecustomshare(req, res) {
 async function changeStatusCustomShare(req, res) {
     try {
         let patientId = crypt.decrypt(req.params.patientId);
-        let patient = await Patient.findById(patientId, { "_id": false, "createdBy": false }).exec();
+        let patient = await Patient.findById(patientId).select('-_id -createdBy');
 
         if (!patient) {
             return res.status(404).send({ message: 'Patient not found' });
@@ -201,11 +197,11 @@ async function changeStatusCustomShare(req, res) {
         let update = {};
         update[updatePath] = req.body.status;
 
-        let patientUpdated = await Patient.findOneAndUpdate(
+        await Patient.findOneAndUpdate(
             { _id: patientId, [`customShare.${customShareIndex}.locations._id`]: req.body._id },
             { $set: update },
-            { select: '-createdBy', new: true }
-        ).exec();
+            { projection: { createdBy: 0 }, new: true }
+        );
 
         res.status(200).send({ message: 'custom share status changed' });
 
@@ -215,87 +211,75 @@ async function changeStatusCustomShare(req, res) {
     }
 }
 
-function getIndividualShare(req, res) {
-    let patientId = crypt.decrypt(req.params.patientId);
-    Patient.findById(patientId, { "_id": false, "createdBy": false }, async (err, patient) => {
-        if (err){
-            insights.error(err);
-            return res.status(500).send({ message: `Error making the request: ${err}` })
-        }
-        if(patient.individualShare.length>0){
+async function getIndividualShare(req, res) {
+    try {
+        let patientId = crypt.decrypt(req.params.patientId);
+        const patient = await Patient.findById(patientId).select('-_id -createdBy');
+        
+        if(patient.individualShare.length > 0){
             var data = await getInfoUsers(patient.individualShare);
             return res.status(200).send({ individualShare: data })
-        }else{
+        } else {
             res.status(200).send({ individualShare: patient.individualShare })
         }
-        
-    })
+    } catch (err) {
+        insights.error(err);
+        return res.status(500).send({ message: `Error making the request: ${err}` })
+    }
 }
 
 async function getInfoUsers(individualShares) {
-	return new Promise(async function (resolve, reject) {
-
-                var promises = [];
-                for (var i = 0; i < individualShares.length; i++) {
-                    promises.push(getUserName(individualShares[i]));
-                }
-                await Promise.all(promises)
-                    .then(async function (data) {
-                        resolve(data)
-                    })
-                    .catch(function (err) {
-                        console.log('Manejar promesa rechazada (' + err + ') aquí.');
-                        insights.error(err);
-                        reject('Manejar promesa rechazada (' + err + ') aquí.');
-                    });
-
-		
-
-	});
+    var promises = [];
+    for (var i = 0; i < individualShares.length; i++) {
+        promises.push(getUserName(individualShares[i]));
+    }
+    return Promise.all(promises);
 }
 
-function getUserName(individualShare) {
-    return new Promise(async function (resolve, reject) {
-        if(individualShare.idUser!=null){
+async function getUserName(individualShare) {
+    try {
+        if(individualShare.idUser != null){
             let idUser = crypt.decrypt(individualShare.idUser);
-            //añado  {"_id" : false} para que no devuelva el _id
-            User.findById(idUser, { "_id": false, "__v": false, "loginAttempts": false, "role": false, "lastLogin": false }, (err, user) => {
-                var res = JSON.parse(JSON.stringify(individualShare))
-                if (err){
-                    insights.error(err);
-                    res.userInfo = { userName: '', lastName: '', email: '' }
-                    resolve(res)
-                }
-                if (user) {
-                    res.userInfo = { userName: user.userName, lastName: user.lastName, email: user.email }
-                    resolve(res)
-                }else{
-                    res.userInfo = { userName: '', lastName: '', email: '' }
-                    resolve(res)
-                }
-            })
-        }else{
+            const user = await User.findById(idUser).select('-_id -__v -loginAttempts -role -lastLogin');
+            
+            var res = JSON.parse(JSON.stringify(individualShare))
+            if (user) {
+                res.userInfo = { userName: user.userName, lastName: user.lastName, email: user.email }
+            } else {
+                res.userInfo = { userName: '', lastName: '', email: '' }
+            }
+            return res;
+        } else {
             var res = JSON.parse(JSON.stringify(individualShare))
             res.userInfo = { userName: '', lastName: '', email: '' }
-            resolve(res)
+            return res;
         }
-        
-    });
-	
+    } catch (err) {
+        insights.error(err);
+        var res = JSON.parse(JSON.stringify(individualShare))
+        res.userInfo = { userName: '', lastName: '', email: '' }
+        return res;
+    }
 }
 
-function setIndividualShare(req, res) {
-    let patientId = crypt.decrypt(req.params.patientId);
-    var info = {patientId: req.params.patientId, individualShare: req.body.individualShare[req.body.indexUpdated], type: 'Clinician'}
-    Patient.findByIdAndUpdate(patientId, { individualShare: req.body.individualShare }, { new: true }, (err, patientUpdated) => {
-        if (err) {
-            console.log(err);
-        }
+async function setIndividualShare(req, res) {
+    try {
+        let patientId = crypt.decrypt(req.params.patientId);
+        var info = {patientId: req.params.patientId, individualShare: req.body.individualShare[req.body.indexUpdated], type: 'Clinician'}
+        const patientUpdated = await Patient.findByIdAndUpdate(
+            patientId, 
+            { individualShare: req.body.individualShare }, 
+            { new: true }
+        );
+        
         if (patientUpdated) {
             res.status(200).send({ message: 'individuals share updated' })
-            
         }
-    })
+    } catch (err) {
+        console.log(err);
+        insights.error(err);
+        return res.status(500).send({ message: `Error making the request: ${err}` });
+    }
 }
 
 module.exports = {

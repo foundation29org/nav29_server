@@ -28,6 +28,15 @@ function error(message) {
   
 }
 
+function trackEvent(event) {
+  if (config.client_server == 'http://localhost:4200') {
+    console.log('AppInsights event:', event.name, event.properties || '');
+  } else {
+    client.trackEvent(event);
+  }
+}
+
 module.exports = {
-    error
+    error,
+    trackEvent
 }

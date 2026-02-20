@@ -22,27 +22,27 @@ const wellKnownPath = config.wellKnownPath;
 function setCrossDomain(req, res, next) {
   const origin = req.headers.origin;
   
-  // En desarrollo, permitir peticiones sin origin (Postman, curl, etc.)
   const isDevelopment = config.client_server === 'http://localhost:4200';
   
-  // Siempre indicar al navegador que la respuesta depende del origen
   res.header('Vary', 'Origin');
 
-  // Si no hay origin, permitir en desarrollo o si es GET/HEAD
   if (!origin) {
     if (isDevelopment || req.method === 'GET' || req.method === 'HEAD') {
       return next();
     }
     
-    // Permitir rutas del bot de WhatsApp que usan API key (sin origin)
-    // Estas rutas son llamadas desde el servidor del bot, no desde un navegador
+    // Azure SWA linked backend: peticiones llegan sin Origin (proxy interno)
+    const isSwaProxy = req.headers['x-ms-original-url'] || req.headers['x-azure-ref'];
+    if (isSwaProxy) {
+      return next();
+    }
+
     const isWhatsAppBotRoute = req.url.startsWith('/api/whatsapp/') && 
                                req.headers['x-api-key'] === config.Server_Key;
     if (isWhatsAppBotRoute) {
       return next();
     }
     
-    // En producción sin origin, rechazar métodos no seguros
     return res.status(403).json({ error: 'Origin header required' });
   }
 
@@ -56,14 +56,12 @@ function setCrossDomain(req, res, next) {
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization, Access-Control-Allow-Origin, Accept, Accept-Language, Origin, User-Agent, x-api-key, X-Gocertius-Token'
     );
-    // Responder rápido a los preflight
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
     }
     return next();
   }
 
-  // Origin no permitido - solo enviar email en producción
   if (!isDevelopment) {
     const clientIp = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
     const requestInfo = {
@@ -88,6 +86,10 @@ function setCrossDomain(req, res, next) {
 
 
 
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 app.use(bodyParser.urlencoded({limit: '50mb', extended: false}))
 app.use(bodyParser.json({limit: '50mb'}))
 app.use(setCrossDomain);
@@ -97,13 +99,5 @@ app.use('/.well-known/microsoft-identity-association.json', express.static(path.
 
 // use the forward slash with the module api api folder created routes
 app.use('/api',api)
-
-//ruta angular, poner carpeta dist publica
-app.use(express.static(path.join(__dirname, 'dist')));
-//app.use(express.static(path.join(__dirname, 'raito_resources')));
-// Send all other requests to the Angular app
-app.get('*', function (req, res, next) {
-    res.sendFile('dist/index.html', { root: __dirname });
- });
 
 module.exports = app

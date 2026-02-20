@@ -66,12 +66,12 @@ UserSchema.virtual('isLocked').get(function () {
 	return !!(this.lockUntil && this.lockUntil > Date.now());
 });
 
-UserSchema.methods.incLoginAttempts = function (cb) {
+UserSchema.methods.incLoginAttempts = async function () {
 	// if we have a previous lock that has expired, restart at 1
 	if (this.lockUntil && this.lockUntil < Date.now()) {
 		this.loginAttempts = 1;
 		this.lockUntil = undefined;
-		return this.save(cb);
+		return this.save();
 	}
 	// otherwise we're incrementing
 	this.loginAttempts += 1;
@@ -79,7 +79,7 @@ UserSchema.methods.incLoginAttempts = function (cb) {
 	if (this.loginAttempts >= MAX_LOGIN_ATTEMPTS && !this.isLocked) {
 		this.lockUntil = Date.now() + LOCK_TIME;
 	}
-	return this.save(cb);
+	return this.save();
 };
 
 // expose enum on the model, and provide an internal convenience reference
@@ -95,9 +95,10 @@ var reasons = UserSchema.statics.failedLogin = {
  * Autenticación por Firebase UID - Método principal recomendado
  * Busca usuario por email y verifica que el firebaseUid coincida
  */
-UserSchema.statics.getAuthenticatedByFirebase = function (email, firebaseUid, cb) {
-	this.findOne({ email: email }, function (err, user) {
-		if (err) return cb(err);
+UserSchema.statics.getAuthenticatedByFirebase = async function (email, firebaseUid, cb) {
+	try {
+		const user = await this.findOne({ email: email })
+			.select('_id email loginAttempts lockUntil lastLogin role userName lang blockedaccount firebaseUid');
 		
 		// Verificar que el usuario existe
 		if (!user) {
@@ -111,10 +112,8 @@ UserSchema.statics.getAuthenticatedByFirebase = function (email, firebaseUid, cb
 		
 		// Verificar si la cuenta está bloqueada temporalmente
 		if (user.isLocked) {
-			return user.incLoginAttempts(function (err) {
-				if (err) return cb(err);
-				return cb(null, null, reasons.MAX_ATTEMPTS);
-			});
+			await user.incLoginAttempts();
+			return cb(null, null, reasons.MAX_ATTEMPTS);
 		}
 		
 		// Verificar firebaseUid
@@ -123,10 +122,8 @@ UserSchema.statics.getAuthenticatedByFirebase = function (email, firebaseUid, cb
 			user.loginAttempts = 0;
 			user.lastLogin = Date.now();
 			user.lockUntil = undefined;
-			return user.save(function (err) {
-				if (err) return cb(err);
-				return cb(null, user);
-			});
+			await user.save();
+			return cb(null, user);
 		} else if (!user.firebaseUid) {
 			// Usuario existe pero no tiene firebaseUid (migración pendiente)
 			// Actualizar con el firebaseUid y hacer login
@@ -134,18 +131,16 @@ UserSchema.statics.getAuthenticatedByFirebase = function (email, firebaseUid, cb
 			user.loginAttempts = 0;
 			user.lastLogin = Date.now();
 			user.lockUntil = undefined;
-			return user.save(function (err) {
-				if (err) return cb(err);
-				return cb(null, user);
-			});
+			await user.save();
+			return cb(null, user);
 		} else {
 			// firebaseUid no coincide - incrementar intentos fallidos
-			return user.incLoginAttempts(function (err) {
-				if (err) return cb(err);
-				return cb(null, null, reasons.FIREBASE_UID_MISMATCH);
-			});
+			await user.incLoginAttempts();
+			return cb(null, null, reasons.FIREBASE_UID_MISMATCH);
 		}
-	}).select('_id email loginAttempts lockUntil lastLogin role userName lang blockedaccount firebaseUid');
+	} catch (err) {
+		return cb(err);
+	}
 };
 
 module.exports = conndbaccounts.model('User', UserSchema)
