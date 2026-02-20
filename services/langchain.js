@@ -1,5 +1,5 @@
-const { ChatOpenAI, OpenAIEmbeddings } = require("@langchain/openai");
-const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
+const { AzureChatOpenAI, AzureOpenAIEmbeddings } = require("@langchain/openai");
+const { RecursiveCharacterTextSplitter } = require("@langchain/textsplitters");
 const { ChatPromptTemplate } = require("@langchain/core/prompts");
 const Events = require('../models/events')
 const Patient = require('../models/patient')
@@ -15,14 +15,13 @@ const countTokens = require('@anthropic-ai/tokenizer');
 const { pull } = require("langchain/hub");
 const { Client } = require("langsmith");
 const { LangChainTracer } = require("@langchain/core/tracers/tracer_langchain");
-const { BedrockChat } = require("@langchain/community/chat_models/bedrock");
-const { ChatBedrockConverse } = require("@langchain/aws");
 const { ChatGoogleGenerativeAI } = require("@langchain/google-genai");
 const { GoogleGenAI } = require("@google/genai");
 const axios = require('axios');
 const { SearchIndexClient, SearchClient } = require("@azure/search-documents");
 const { AzureKeyCredential } = require("@azure/core-auth");
 const { createChunksIndex } = require('./vectorStoreService');
+const { parseJson, parseJsonFast, JSON_TYPES } = require('./parserJson');
 
 const OPENAI_API_VERSION = config.OPENAI_API_VERSION;
 const O_A_K_GPT4O = config.O_A_K_GPT4O;
@@ -30,17 +29,16 @@ const OPENAI_API_BASE_GPT4O = config.OPENAI_API_BASE_GPT4O;
 const OPENAI_API_BASE_FALLBACK = config.OPENAI_API_BASE_FALLBACK;
 const O_A_K_FALLBACK = config.O_A_K_FALLBACK;
 
-const embeddings = new OpenAIEmbeddings({
+const embeddings = new AzureOpenAIEmbeddings({
   azureOpenAIApiKey: config.O_A_K_GPT4O,
   azureOpenAIApiVersion: config.OPENAI_API_VERSION,
   azureOpenAIApiInstanceName: config.OPENAI_API_BASE_GPT4O,
   azureOpenAIApiDeploymentName: "text-embedding-3-large",
   model: "text-embedding-3-large",
-  modelName: "text-embedding-3-large",
 });
 
-const BEDROCK_API_KEY = config.BEDROCK_USER_KEY;
-const BEDROCK_API_SECRET = config.BEDROCK_USER_SECRET;
+const OPENAI_API_BASE_ADVANCED = config.OPENAI_API_BASE_ADVANCED;
+const O_A_K_ADVANCED = config.O_A_K_ADVANCED;
 
 
 function createModels(projectName, modelType = null) {
@@ -75,9 +73,7 @@ function createModels(projectName, modelType = null) {
       }
       switch(modelType) {
         case 'azuregpt4o':
-          model = new ChatOpenAI({
-            modelName: "gpt-4o",
-            azure: true,
+          model = new AzureChatOpenAI({
             azureOpenAIApiKey: O_A_K_GPT4O,
             azureOpenAIApiVersion: OPENAI_API_VERSION,
             azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
@@ -86,13 +82,9 @@ function createModels(projectName, modelType = null) {
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });
-          //poner  azureOpenAIEndpoint  undefined
-          model.azureOpenAIEndpoint = undefined;
           break;
           case 'gpt4omini':
-            model = new ChatOpenAI({
-              modelName: "gpt-4o-mini",
-              azure: true,
+            model = new AzureChatOpenAI({
               azureOpenAIApiKey: O_A_K_GPT4O,
               azureOpenAIApiVersion: OPENAI_API_VERSION,
               azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
@@ -101,13 +93,9 @@ function createModels(projectName, modelType = null) {
               timeout: 140000,
               callbacks: tracer ? [tracer] : undefined
             });
-            //poner  azureOpenAIEndpoint  undefined
-            model.azureOpenAIEndpoint = undefined;
             break;
           case 'gpt-4.1-nano':
-            model = new ChatOpenAI({
-              modelName: "gpt-4.1-nano",
-              azure: true,
+            model = new AzureChatOpenAI({
               azureOpenAIApiKey: O_A_K_GPT4O,
               azureOpenAIApiVersion: OPENAI_API_VERSION,
               azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
@@ -116,13 +104,9 @@ function createModels(projectName, modelType = null) {
               timeout: 140000,
               callbacks: tracer ? [tracer] : undefined
             });
-            //poner  azureOpenAIEndpoint  undefined
-            model.azureOpenAIEndpoint = undefined;
             break;
             case 'gpt-4.1-mini':
-              model = new ChatOpenAI({
-                modelName: "gpt-4.1-mini",
-                azure: true,
+              model = new AzureChatOpenAI({
                 azureOpenAIApiKey: O_A_K_GPT4O,
                 azureOpenAIApiVersion: OPENAI_API_VERSION,
                 azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
@@ -131,13 +115,9 @@ function createModels(projectName, modelType = null) {
                 timeout: 140000,
                 callbacks: tracer ? [tracer] : undefined
               });
-              //poner  azureOpenAIEndpoint  undefined
-              model.azureOpenAIEndpoint = undefined;
               break;
           case 'gpt-4.1':
-            model = new ChatOpenAI({
-              modelName: "gpt-4.1",
-              azure: true,
+            model = new AzureChatOpenAI({
               azureOpenAIApiKey: O_A_K_GPT4O,
               azureOpenAIApiVersion: OPENAI_API_VERSION,
               azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
@@ -146,13 +126,9 @@ function createModels(projectName, modelType = null) {
               timeout: 140000,
               callbacks: tracer ? [tracer] : undefined
             });
-            //poner  azureOpenAIEndpoint  undefined
-            model.azureOpenAIEndpoint = undefined;
             break;
         case 'gpt5mini':
-          model = new ChatOpenAI({
-            modelName: "gpt-5-mini",
-            azure: true,
+          model = new AzureChatOpenAI({
             azureOpenAIApiKey: O_A_K_GPT4O,
             azureOpenAIApiVersion: OPENAI_API_VERSION,
             azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
@@ -160,12 +136,9 @@ function createModels(projectName, modelType = null) {
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });
-          model.azureOpenAIEndpoint = undefined;
           break;
         case 'gpt-5-nano':
-          model = new ChatOpenAI({
-            modelName: "gpt-5-nano",
-            azure: true,
+          model = new AzureChatOpenAI({
             azureOpenAIApiKey: O_A_K_GPT4O,
             azureOpenAIApiVersion: OPENAI_API_VERSION,
             azureOpenAIApiInstanceName: OPENAI_API_BASE_GPT4O,
@@ -173,12 +146,9 @@ function createModels(projectName, modelType = null) {
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });
-          model.azureOpenAIEndpoint = undefined;
           break;
           case 'gpt-5.2':
-            model = new ChatOpenAI({
-              modelName: "gpt-5.2",
-              azure: true,
+            model = new AzureChatOpenAI({
               azureOpenAIApiKey: O_A_K_FALLBACK,
               azureOpenAIApiVersion: OPENAI_API_VERSION,
               azureOpenAIApiInstanceName: OPENAI_API_BASE_FALLBACK,
@@ -186,22 +156,15 @@ function createModels(projectName, modelType = null) {
               timeout: 140000,
               callbacks: tracer ? [tracer] : undefined
             });
-            model.azureOpenAIEndpoint = undefined;
             break;
-        case 'claude3sonnet':
-          model = new ChatBedrockConverse({
-            model: "anthropic.claude-3-sonnet-20240229-v1:0",
-            region: "eu-west-3",
-            credentials: {
-              accessKeyId: BEDROCK_API_KEY,
-              secretAccessKey: BEDROCK_API_SECRET,
-            },
-            temperature: 0,
-            maxTokens: 8191,
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          break;
+          case 'gpt-5.2-codex':
+            model = new AzureChatOpenAI({
+              azureOpenAIApiKey: O_A_K_ADVANCED,
+              azureOpenAIApiVersion: '2025-04-01-preview',
+              azureOpenAIApiInstanceName: OPENAI_API_BASE_ADVANCED,
+              azureOpenAIApiDeploymentName: "gpt-5.2-codex",
+            });
+            break;
         case 'gemini25pro':
           model = new ChatGoogleGenerativeAI({
             model: "gemini-2.5-pro",
@@ -247,19 +210,6 @@ function createModels(projectName, modelType = null) {
             callbacks: tracer ? [tracer] : undefined
           });
           break;
-        case 'claude35sonnet':
-          model = new ChatBedrockConverse({
-            model: "eu.anthropic.claude-3-5-sonnet-20240620-v1:0",
-            region: "eu-west-3",
-            credentials: {
-              accessKeyId: BEDROCK_API_KEY,
-              secretAccessKey: BEDROCK_API_SECRET,
-            },
-            temperature: 0,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          break;
-        // Añadir otros casos según necesidad
       }
 
       // Verificar la configuración del modelo
@@ -280,45 +230,18 @@ function createModels(projectName, modelType = null) {
 }
 
 async function getActualEvents(patientId) {
-  return new Promise((resolve, reject) => {
-    Events.find({ "createdBy": patientId, "status": "true" }, { "createdBy": false }, (err, eventsdb) => {
-      if (err) {
-        reject(err);
-      } else {
-        var listEventsdb = [];
-        listEventsdb = eventsdb;
-        resolve(listEventsdb);
-      }
-    });
-  });
+  const eventsdb = await Events.find({ "createdBy": patientId, "status": "true" }).select('-createdBy');
+  return eventsdb || [];
 }
 
 async function getAllEvents(patientId) {
-  return new Promise((resolve, reject) => {
-    Events.find({ "createdBy": patientId }, { "createdBy": false }, (err, eventsdb) => {
-      if (err) {
-        reject(err);
-      } else {
-        var listEventsdb = [];
-        listEventsdb = eventsdb;
-        resolve(listEventsdb);
-      }
-    });
-  });
+  const eventsdb = await Events.find({ "createdBy": patientId }).select('-createdBy');
+  return eventsdb || [];
 }
 
 async function getPatientData(patientId) {
-  return new Promise((resolve, reject) => {
-    // console.log("PatientId: ", patientId);
-    Patient.findById(patientId, { "gender": 1, "birthDate": 1, "_id": 0, "patientName": 1 }, (err, eventsdb) => {
-      if (err) {
-        reject(err);
-      } else {
-        // console.log("Eventsdb: ", eventsdb.toObject());
-        resolve(eventsdb.toObject());
-      }
-    });
-  });
+  const eventsdb = await Patient.findById(patientId).select('gender birthDate patientName -_id');
+  return eventsdb ? eventsdb.toObject() : null;
 }
 
 async function getMostCommonLanguage(blobs, containerName) {
@@ -428,16 +351,30 @@ async function extractAndParse(summaryText) {
     return "[]";
   }
 
-  // Step 2: Convert Extracted Text to JSON
-  try {
-    // Consider only the first match
-    const extractedJson = JSON.parse(matches[1]);
-    return JSON.stringify(extractedJson);
-  } catch (error) {
-    console.warn("[extractTimelineOutput] Invalid JSON format in <output> tags:", error.message);
-    insights.error({ message: '[extractTimelineOutput] Invalid JSON format', error: error.message, textPreview: matches[1]?.substring(0, 200) });
+  // Step 2: Convert Extracted Text to JSON using parseJson (with jsonrepair + GPT fallback)
+  let extractedText = matches[1].trim();
+  
+  // Si el contenido parece ser objetos separados por comas sin array wrapper, añadir corchetes
+  if (extractedText.startsWith('{') && !extractedText.startsWith('[')) {
+    extractedText = '[' + extractedText + ']';
+  }
+  
+  // Usar parseJson con GPT fallback para máxima robustez
+  const parsedJson = await parseJson(extractedText, JSON_TYPES.TIMELINE_EVENTS, {
+    useGptFallback: true,
+    context: 'extractAndParse timeline'
+  });
+  
+  if (!Array.isArray(parsedJson) || parsedJson.length === 0) {
+    console.warn("[extractTimelineOutput] Failed to parse JSON from <output> tags");
+    insights.error({ 
+      message: '[extractTimelineOutput] parseJson returned empty', 
+      textPreview: matches[1]?.substring(0, 200) 
+    });
     return "[]";
   }
+  
+  return JSON.stringify(parsedJson);
 }
 
 async function timelineServer(patientId, docs, reportDate) {
@@ -772,19 +709,16 @@ async function processDocument(patientId, containerName, url, doc_id, filename, 
   }
 }
 
-function updateDocumentStatus(documentId, status) {
-  return new Promise((resolve, reject) => {
-    Document.findByIdAndUpdate(documentId, { status: status }, { new: true }, (err, documentUpdated) => {
-      if (err) {
-        reject(err);
-      }
-      resolve(documentUpdated);
-    }
-    )
-  });
+async function updateDocumentStatus(documentId, status) {
+  const documentUpdated = await Document.findByIdAndUpdate(
+    documentId, 
+    { status: status }, 
+    { new: true }
+  );
+  return documentUpdated;
 }
 
-function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus) {
+async function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDate, dateStatus) {
   for (let event of events) {
     let eventdb = new Events();
 
@@ -852,25 +786,22 @@ function saveEventTimeline(events, patientId, doc_id, userId, filename, reportDa
     
     eventdb.confidence = 0.8; // Valor base para extracciones automáticas
 
-    Events.findOne({ 
-      "createdBy": patientId, 
-      "name": event.keyMedicalEvent, 
-      "key": event.eventType,
-      "date": eventdb.date 
-    }, { "createdBy": false }, (err, eventdb2) => {
-      if (err) {
-        insights.error(err);
-      }
-      if (!eventdb2) {
-        eventdb.save((err, eventdbStored) => {
-          if (err) {
-            insights.error(err);
-          }
-        });
+    try {
+      const existingEvent = await Events.findOne({ 
+        "createdBy": patientId, 
+        "name": event.keyMedicalEvent, 
+        "key": event.eventType,
+        "date": eventdb.date 
+      }).select('-createdBy');
+      
+      if (!existingEvent) {
+        await eventdb.save();
       } else {
         console.log('Event already exists for this date');
       }
-    });
+    } catch (err) {
+      insights.error(err);
+    }
   }
 }
 
@@ -1665,6 +1596,52 @@ async function extractInitialEvents(patientId, ogLang) {
           }
         }
 
+        // Merge with full expected keys so we never lose weight/height when the model returns a shortened JSON
+        const EXPECTED_INITIAL_KEYS = ['name', 'dob', 'weightMetric', 'heightCm', 'ethnicGroup', 'gender', 'chronicConditions', 'diagnosis', 'familyHealthHistory', 'familyHealthHistoryDetails', 'knownAllergies', 'allergiesDetails', 'surgicalHistory', 'surgicalHistoryDetails', 'currentMedications', 'currentMedicationsDetails'];
+        const byKey = new Map((eventJson || []).map(e => [e.key, e]));
+        eventJson = EXPECTED_INITIAL_KEYS.map(key => {
+          const existing = byKey.get(key);
+          if (existing) return existing;
+          return { insight: null, date: 'unknown', key };
+        });
+
+        // Normalize weight and height from any common unit (m, cm, feet/in; kg, kilos, lb/libras)
+        const normalizeHeightCm = (insight) => {
+          if (insight == null || insight === '') return null;
+          const raw = String(insight).trim().toLowerCase().replace(/,/g, '.');
+          // Feet and inches: e.g. "5 ft 8 in", "5'8\"", "5 feet 8 inches"
+          const ftInMatch = raw.match(/(\d+)\s*(?:ft|feet|′|')\s*(\d+)\s*(?:in|inch|inches|″|")?/i) || raw.match(/(\d+)\s*ft\s*(\d+)/i);
+          if (ftInMatch) {
+            const cm = parseInt(ftInMatch[1], 10) * 30.48 + parseInt(ftInMatch[2], 10) * 2.54;
+            return Math.round(cm);
+          }
+          const num = parseFloat(raw.replace(/[^\d.]/g, '') || raw);
+          if (Number.isNaN(num)) return null;
+          if (num > 0.5 && num < 3.5) return Math.round(num * 100); // meters -> cm
+          if (num >= 50 && num <= 250) return Math.round(num); // already cm
+          return null;
+        };
+        const normalizeWeightMetric = (insight) => {
+          if (insight == null || insight === '') return null;
+          const raw = String(insight).trim().toLowerCase().replace(/,/g, '.');
+          const isLb = /\b(lb|lbs|libras?|pounds?)\b/.test(raw);
+          const num = parseFloat(raw.replace(/[^\d.]/g, '') || raw);
+          if (Number.isNaN(num) || num <= 0) return null;
+          if (isLb && num < 1000) return Math.round(num / 2.205); // pounds -> kg
+          if (num > 500) return null; // likely lb already parsed as number
+          return Math.round(num); // assume kg
+        };
+        eventJson.forEach((event) => {
+          if (event.key === 'heightCm' && event.insight != null && event.insight !== '') {
+            const normalized = normalizeHeightCm(event.insight);
+            if (normalized != null) event.insight = normalized;
+          }
+          if (event.key === 'weightMetric' && event.insight != null && event.insight !== '') {
+            const normalized = normalizeWeightMetric(event.insight);
+            if (normalized != null) event.insight = normalized;
+          }
+        });
+
         // Check if the doc_lang is available in DeepL
         let deeplCode = await translate.getDeeplCode(ogLang);
         console.log(eventJson)
@@ -1684,9 +1661,9 @@ async function extractInitialEvents(patientId, ogLang) {
           }
         }));
         // Remove event.key === "ethnicGroup" if "insight" is "unknown" or null to avoid errors
-        eventJson = eventJson.filter(event => !(event.key === "ethnicGroup" && (event.insight === null || (event.insight && event.insight.toLowerCase() === "unknown"))));
-        //filter if insight '' if insight is null or unknown or '', don't include it
-        eventJson = eventJson.filter(event => event.insight !== null && event.insight !== "" && event.insight.toLowerCase() !== "unknown");
+        eventJson = eventJson.filter(event => !(event.key === "ethnicGroup" && (event.insight == null || (typeof event.insight === 'string' && event.insight.toLowerCase() === "unknown"))));
+        // Filter out null, empty string, or "unknown"; keep numbers (e.g. weightMetric, heightCm) and arrays
+        eventJson = eventJson.filter(event => event.insight != null && event.insight !== "" && (typeof event.insight !== 'string' || event.insight.toLowerCase() !== "unknown"));
 
         resolve(eventJson);
       }else{
@@ -1856,6 +1833,306 @@ Style: Modern healthcare infographic, professional medical illustration style, c
       success: false,
       error: error.message || 'Error generating infographic'
     };
+  }
+}
+
+/**
+ * Genera un dashboard clínico personalizado (HTML/CSS/JS) para el paciente.
+ * El resultado está pensado para renderizarse en un iframe sandbox.
+ * @param {string} patientId - ID del paciente
+ * @param {string} patientContext - Contexto clínico consolidado del paciente
+ * @param {string} lang - Idioma del usuario ('es', 'en', etc.)
+ * @returns {Promise<{success: boolean, dashboard?: object, error?: string}>}
+ */
+/**
+ * Llama a la Azure OpenAI Responses API directamente (para modelos como gpt-5.2-codex
+ * que no soportan la Chat Completions API).
+ */
+async function invokeResponsesAPI(prompt, model = 'gpt-5.2-codex') {
+  const baseUrl = `https://${OPENAI_API_BASE_ADVANCED}.cognitiveservices.azure.com`;
+  const apiVersion = '2025-04-01-preview';
+  const url = `${baseUrl}/openai/responses?api-version=${apiVersion}`;
+
+  const response = await axios.post(url, {
+    model,
+    input: [
+      { role: 'user', content: prompt }
+    ],
+    max_output_tokens: 16384
+  }, {
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${O_A_K_ADVANCED}`
+    },
+    timeout: 180000
+  });
+
+  const data = response.data;
+  if (data?.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
+
+  // Extraer texto de la respuesta (Responses API format)
+  let text = '';
+  if (data?.output) {
+    for (const item of data.output) {
+      if (item.type === 'message' && item.content) {
+        for (const block of item.content) {
+          if (block.type === 'output_text' && block.text) {
+            text += block.text;
+          }
+        }
+      }
+    }
+  }
+
+  if (!text && data?.output_text) {
+    text = data.output_text;
+  }
+
+  if (!text) {
+    throw new Error('Responses API returned empty output');
+  }
+
+  return text.trim();
+}
+
+/**
+ * Llama a la API nativa de Anthropic desplegada en Azure AI Foundry.
+ * Endpoint: https://<instance>.services.ai.azure.com/anthropic/v1/messages
+ */
+async function invokeAnthropicAPI(prompt, model = 'claude-sonnet-45') {
+  const baseUrl = `https://${OPENAI_API_BASE_ADVANCED}.services.ai.azure.com`;
+  const url = `${baseUrl}/anthropic/v1/messages`;
+
+  console.log(`[Dashboard] Calling Anthropic API for model: ${model}`);
+
+  const response = await axios.post(url, {
+    model,
+    max_tokens: 16384,
+    temperature: 0,
+    messages: [
+      { role: 'user', content: prompt }
+    ]
+  }, {
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': O_A_K_ADVANCED,
+      'anthropic-version': '2023-06-01'
+    },
+    timeout: 180000
+  });
+
+  const data = response.data;
+  if (data?.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
+
+  let text = '';
+  if (data?.content) {
+    for (const block of data.content) {
+      if (block.type === 'text' && block.text) {
+        text += block.text;
+      }
+    }
+  }
+
+  if (!text) {
+    throw new Error('Anthropic API returned empty output');
+  }
+
+  return text.trim();
+}
+
+/**
+ * Extrae los campos del dashboard (title, html, css, js) de una respuesta
+ * que contiene JSON mal formado, usando búsqueda por claves.
+ */
+function extractDashboardFields(raw) {
+  const fields = ['title', 'schemaVersion', 'html', 'css', 'js'];
+  const result = {};
+
+  for (let i = 0; i < fields.length; i++) {
+    const key = fields[i];
+    const nextKey = fields[i + 1];
+
+    // Buscar "key": " y capturar hasta el siguiente campo o el final del JSON
+    const keyPattern = new RegExp(`"${key}"\\s*:\\s*"`);
+    const keyMatch = keyPattern.exec(raw);
+    if (!keyMatch) continue;
+
+    const valueStart = keyMatch.index + keyMatch[0].length;
+
+    // Buscar el final del valor: la siguiente clave del JSON o el cierre }
+    let valueEnd = -1;
+    if (nextKey) {
+      // Buscar ",\s*"nextKey": desde valueStart
+      const nextPattern = new RegExp(`"\\s*,\\s*"${nextKey}"\\s*:`);
+      const nextMatch = nextPattern.exec(raw.substring(valueStart));
+      if (nextMatch) {
+        valueEnd = valueStart + nextMatch.index;
+      }
+    }
+
+    if (valueEnd === -1) {
+      // Último campo: buscar "\s*} al final
+      const endMatch = raw.substring(valueStart).match(/"\s*\}\s*$/);
+      if (endMatch) {
+        valueEnd = valueStart + endMatch.index;
+      }
+    }
+
+    if (valueEnd > valueStart) {
+      let value = raw.substring(valueStart, valueEnd);
+      // Desescapar secuencias JSON estándar
+      try {
+        value = JSON.parse(`"${value}"`);
+      } catch (_) {
+        value = value.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      }
+      result[key] = value;
+    }
+  }
+
+  if (result.html || result.css) {
+    return result;
+  }
+  return null;
+}
+
+// Modelo por defecto para el dashboard si no se especifica.
+const DEFAULT_DASHBOARD_MODEL = 'gpt-5.2-codex';
+
+async function generatePatientDashboard(patientId, patientContext, lang = 'en', theme = 'light', contextMode = 'full', model = DEFAULT_DASHBOARD_MODEL) {
+  const dashboardModel = model || DEFAULT_DASHBOARD_MODEL;
+  console.log(`[Dashboard] Generating dashboard for patient ${patientId} with model: ${dashboardModel}`);
+
+  try {
+    const langMap = {
+      'es': 'Genera todo el texto del dashboard en español.',
+      'en': 'Generate all dashboard text in English.',
+      'fr': 'Generez tout le texte du dashboard en francais.',
+      'de': 'Erstellen Sie den gesamten Dashboard-Text auf Deutsch.',
+      'it': 'Genera tutto il testo della dashboard in italiano.',
+      'pt': 'Gere todo o texto do dashboard em portugues.'
+    };
+    const langInstruction = langMap[lang] || `Generate all dashboard text in language code "${lang}".`;
+
+    const prompt = `You are a senior frontend and clinical data visualization assistant.
+
+Generate a SINGLE-PAGE patient-specific clinical dashboard as JSON with this exact structure:
+{
+  "title": "string",
+  "schemaVersion": "1.0.0",
+  "html": "string",
+  "css": "string",
+  "js": "string"
+}
+
+Context:
+- This dashboard is embedded directly inside Nav29 (Angular app modal), not in an iframe.
+- Make it visually outstanding, practical, and patient-friendly while clinically useful.
+- Active UI theme preference for this user: ${theme}.
+- If theme is "dark", use a dark dashboard palette with good contrast.
+- If theme is "light", use a light dashboard palette.
+- Context mode used to build data: ${contextMode} (summary | full | auto). 
+- If mode is "full", assume richer source data and build deeper, more complete views.
+
+Hard requirements:
+1) The dashboard must adapt to this patient's disease profile and clinical context (e.g., Dravet vs Duchenne vs diabetes must look/behave differently).
+2) Build a REAL interactive dashboard UI, not a plain report/article.
+3) The HTML must include a root container with id="dashboard-root".
+4) Include navigation controls/tabs/sections if useful for usability, and ensure tabs are fully functional with plain JavaScript (no external bootstrap.js dependency).
+5) Required core areas: overview KPIs, clinical evolution/timeline, treatments/medications, alerts/priorities, next steps.
+6) CRITICAL CSS ISOLATION: This dashboard is injected into an Angular app that has Bootstrap 5 loaded globally. You MUST NOT use standard Bootstrap class names that will collide with the host app styles. Specifically:
+   - Do NOT use: .nav, .nav-tabs, .nav-link, .nav-item, .card, .btn, .alert, .badge, .table, .list-group, .form-control, .input-group, .dropdown, .modal, .container, .row, .col-*
+   - Instead, use custom prefixed classes for all elements. Example: .dash-tab-nav, .dash-tab-btn, .dash-card, .dash-alert, .dash-kpi, .dash-timeline, etc.
+   - All your CSS selectors MUST be scoped under #dashboard-root to avoid leaking styles.
+   - Write ALL styles yourself in the css field. Do not rely on Bootstrap utility classes.
+7) If charts improve utility, use canvas with Chart.js via global "Chart". IMPORTANT: Always wrap the canvas in a container with explicit height (e.g., height: 350px) and set maintainAspectRatio: true in Chart.js options to prevent infinite canvas growth.
+8) External links are allowed only when useful; they must be clearly external.
+9) Keep CSS and JS reasonably compact and production-like.
+10) Do not duplicate title text at the top.
+11) Output strictly valid, well-formed HTML (all tags properly closed).
+12) Do NOT rely only on document.addEventListener('DOMContentLoaded', ...) for initialization; initialize immediately too (use an IIFE that runs at the end).
+13) Return ONLY valid JSON without markdown fences.
+14) CRITICAL DATA INTEGRITY: This is a medical dashboard. You MUST NEVER fabricate, invent, or hallucinate numerical data, measurements, dates, lab values, or statistics that are not explicitly present in the PATIENT CONTEXT below. 
+   - Only display data points, numbers, frequencies, lab results, or trends that are explicitly stated in the patient context.
+   - If the context says "~4 crisis/month" you may display that single KPI, but do NOT invent a 12-month or 24-month time series of crisis counts.
+   - If you do not have enough data points to build a meaningful chart, do NOT create a chart. Instead, use a qualitative timeline, a summary card, or a text-based trend description (e.g., "Decreasing trend from ~10/month in 2021 to ~4/month in 2024").
+   - Charts are ONLY allowed when the patient context provides at least 3 explicit, distinct data points with dates/values.
+   - For KPIs, only show values directly extracted from the context. If a value is approximate, mark it clearly (e.g., "~4/mes").
+   - When in doubt, prefer text over charts. A factual text summary is always better than a fabricated chart.
+
+${langInstruction}
+
+PATIENT CONTEXT:
+${patientContext}`;
+
+    let responseTextRaw;
+
+    if (dashboardModel === 'gpt-5.2-codex') {
+      responseTextRaw = await invokeResponsesAPI(prompt, 'gpt-5.2-codex');
+    } else if (dashboardModel === 'claude-sonnet-45') {
+      responseTextRaw = await invokeAnthropicAPI(prompt, 'claude-sonnet-45');
+    } else {
+      const projectName = `Dashboard - ${patientId}`;
+      const llm = createModels(projectName, dashboardModel)[dashboardModel];
+      const response = await llm.invoke(prompt);
+      responseTextRaw = String(response?.content || '').trim();
+    }
+
+    const responseText = responseTextRaw
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(responseText);
+    } catch (jsonError) {
+      console.warn(`[Dashboard] JSON.parse failed: ${jsonError.message}. Response length: ${responseText.length}, first 500 chars: ${responseText.substring(0, 500)}`);
+      // Fallback 1: parser robusto compartido
+      parsed = await parseJson(responseText, JSON_TYPES.GENERIC_OBJECT, {
+        useGptFallback: true,
+        context: 'generatePatientDashboard'
+      });
+
+      // Fallback 2: extraer campos individualmente con regex
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        console.log('[Dashboard] JSON.parse failed, attempting field-level extraction...');
+        parsed = extractDashboardFields(responseText);
+        if (!parsed) {
+          throw new Error('Dashboard generation returned non-JSON content');
+        }
+      }
+    }
+
+    if (!parsed?.html || !parsed?.css) {
+      const extracted = extractDashboardFields(responseText);
+      if (extracted) {
+        parsed = { ...parsed, ...extracted };
+      }
+    }
+
+    const dashboard = {
+      title: String(parsed.title || 'Patient Dashboard').trim(),
+      schemaVersion: String(parsed.schemaVersion || '1.0.0').trim(),
+      html: String(parsed.html || '').trim(),
+      css: String(parsed.css || '').trim(),
+      js: String(parsed.js || '').trim()
+    };
+
+    if (!dashboard.html || !dashboard.css) {
+      throw new Error('Dashboard payload missing required html/css');
+    }
+
+    return { success: true, dashboard };
+  } catch (error) {
+    console.error('[Dashboard] Error generating dashboard:', error.message);
+    insights.error({ message: '[Dashboard] Error generating dashboard', error: error.message, patientId });
+    return { success: false, error: error.message || 'Error generating dashboard' };
   }
 }
 
@@ -2111,6 +2388,7 @@ module.exports = {
   createModels,
   embeddings,
   generatePatientInfographic,
+  generatePatientDashboard,
   generateSoapQuestions,
   generateSoapReport,
   diarizeConversation,

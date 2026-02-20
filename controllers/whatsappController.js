@@ -11,6 +11,7 @@ const crypt = require('../services/crypt')
 const emailService = require('../services/email')
 const f29azureService = require('../services/f29azure')
 const bookService = require('../services/books')
+const config = require('../config')
 
 /**
  * WhatsApp Integration Controller
@@ -904,11 +905,8 @@ async function getInfographic(req, res) {
             
             // Generate a proxy token for the image
             const proxyToken = generateInfographicToken(infographicResult.imageUrl)
-            // Build proxy URL - use request host or fallback to nav29.org
-            const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'https'
-            const host = req.headers['x-forwarded-host'] || req.headers.host || 'nav29.org'
-            const baseUrl = `${protocol}://${host}/api`
-            const proxyUrl = `${baseUrl}/whatsapp/infographic/view/${proxyToken}`
+            const clientServer = (config.client_server || 'https://nav29.org').replace(/\/+$/, '')
+            const proxyUrl = `${clientServer}/api/whatsapp/infographic/view/${proxyToken}`
             
             console.log('[WhatsApp] getInfographic - Proxy URL generated:', proxyUrl)
             

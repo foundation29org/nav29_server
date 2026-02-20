@@ -19,6 +19,7 @@ const RarescopeSchema = Schema({
   additionalNeeds: [{ 
     type: String 
   }],
+  role: { type: String, default: null }, // 'Clinical' | paciente, etc.; con qué perspectiva se generó/guardó
   updatedAt: { 
     type: Date, 
     default: Date.now 
@@ -29,7 +30,8 @@ const RarescopeSchema = Schema({
   }
 })
 
-// Índice compuesto para búsquedas eficientes
+// Índice para cargar por (patientId, role) — puede haber uno para Clinical y otro para paciente
+RarescopeSchema.index({ patientId: 1, role: 1 })
 RarescopeSchema.index({ patientId: 1, updatedAt: -1 })
 
 module.exports = conndbdata.model('Rarescope', RarescopeSchema)

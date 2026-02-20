@@ -2,7 +2,6 @@
 
 const crypt = require('./crypt')
 const config = require('../config')
-const request = require('request')
 const storage = require("@azure/storage-blob")
 const insights = require('../services/insights')
 const accountname = config.BLOB.NAMEBLOB;
@@ -14,31 +13,42 @@ const blobServiceClientGenomics = new storage.BlobServiceClient(
   sharedKeyCredentialGenomics
 );
 
-var azure = require('azure-storage');
-
 const User = require('../models/user')
 const Patient = require('../models/patient')
-
-var blobService = azure
-  .createBlobService(accountname, key);
 
 async function deleteContainer(containerName) {
   const containerClient = await blobServiceClientGenomics.getContainerClient(containerName);
   containerClient.delete();
 }
 
-async function createContainers(containerName) {
-  return new Promise(async (resolve, reject) => {
-    // Create a container
-    const containerClient = blobServiceClientGenomics.getContainerClient(containerName);
+const CONTAINER_BEING_DELETED_RETRY_MS = 6000;  // Azure puede tardar ~30s en liberar el nombre
+const CONTAINER_BEING_DELETED_MAX_RETRIES = 6;
 
-    const createContainerResponse = await containerClient.createIfNotExists();
-    if (createContainerResponse.succeeded) {
-      resolve(true);
-    } else {
-      resolve(false);
+function isContainerBeingDeletedError(err) {
+  const code = err?.code ?? err?.details?.errorCode ?? err?.parsedBody?.code ?? err?.body?.Code;
+  return String(code || '').toLowerCase() === 'containerbeingdeleted';
+}
+
+async function createContainers(containerName) {
+  const containerClient = blobServiceClientGenomics.getContainerClient(containerName);
+  for (let attempt = 1; attempt <= CONTAINER_BEING_DELETED_MAX_RETRIES; attempt++) {
+    try {
+      const createContainerResponse = await containerClient.createIfNotExists();
+      if (createContainerResponse.succeeded) {
+        return true;
+      }
+      return false;
+    } catch (err) {
+      if (isContainerBeingDeletedError(err) && attempt < CONTAINER_BEING_DELETED_MAX_RETRIES) {
+        console.warn(`[createContainers] ContainerBeingDeleted, retry ${attempt}/${CONTAINER_BEING_DELETED_MAX_RETRIES} in ${CONTAINER_BEING_DELETED_RETRY_MS}ms`, containerName);
+        await new Promise(r => setTimeout(r, CONTAINER_BEING_DELETED_RETRY_MS));
+        continue;
+      }
+      insights.error({ message: 'createContainers failed', containerName, error: err?.message || err, code: err?.code ?? err?.details?.errorCode });
+      throw err;
     }
-  });
+  }
+  return false;
 }
 
 async function checkBlobExists(containerName, blobName) {
@@ -97,21 +107,21 @@ async function createBlobMeta(containerName, url, data, metadata) {
 }
 
 async function createBlobSimple(containerName, url, data) {
-  return new Promise((resolve, reject) => {
-    blobService.createBlockBlobFromText(
-      containerName, 
-      url,
-      JSON.stringify(data),
-      function onResponse(error, result) {
-        if(error){
-          insights.error(error);
-          console.log(error);
-          resolve(false)
-        }
-          resolve(true);
-      });
-  });
-  
+  try {
+    const containerClient = blobServiceClientGenomics.getContainerClient(containerName);
+    let haveContainer = await containerClient.exists();
+    if (!haveContainer) {
+      await createContainers(containerName);
+    }
+    const content = JSON.stringify(data);
+    const blockBlobClient = containerClient.getBlockBlobClient(url);
+    await blockBlobClient.upload(content, content.length);
+    return true;
+  } catch (error) {
+    insights.error(error);
+    console.log(error);
+    return false;
+  }
 }
 
 
@@ -167,15 +177,15 @@ async function deleteSummaryFilesBlobsInFolder(containerName) {
 
 
 async function deleteBlob(containerName, blobName) {
-  return new Promise((resolve, reject) => {
-    blobService.deleteBlobIfExists(containerName,blobName,function(error){
-      if (error != null) {
-        resolve(false)
-      } else {
-        resolve(true)
-      }
-    })
-  });
+  try {
+    const containerClient = blobServiceClientGenomics.getContainerClient(containerName);
+    const blobClient = containerClient.getBlobClient(blobName);
+    await blobClient.deleteIfExists();
+    return true;
+  } catch (error) {
+    console.log(error);
+    return false;
+  }
 }
 
 async function downloadBlob(containerName, blobName) {
@@ -366,6 +376,7 @@ async function renameBlob(containerName, oldUrl, newUrl) {
 module.exports = {
   deleteContainer,
   createContainers,
+  isContainerBeingDeletedError,
   checkBlobExists,
   createBlob,
   createBlobMeta,

@@ -11,7 +11,7 @@ const Rarescope = require('../../../models/rarescope')
 const saveRarescopeData = async (req, res) => {
   try {
     const { patientId } = req.params
-    const { mainNeed, additionalNeeds } = req.body
+    const { mainNeed, additionalNeeds, role } = req.body
 
     // Validar datos requeridos
     if (!patientId) {
@@ -28,20 +28,20 @@ const saveRarescopeData = async (req, res) => {
       })
     }
 
-    // Buscar si ya existe un registro para este paciente
-    let rarescopeData = await Rarescope.findOne({ patientId })
+    const roleValue = role !== undefined && role !== null ? String(role) : null
+    // Un registro por (patientId, role): clínico y paciente pueden tener su propia lista guardada
+    let rarescopeData = await Rarescope.findOne({ patientId, role: roleValue })
 
     if (rarescopeData) {
-      // Actualizar registro existente
       rarescopeData.mainNeed = mainNeed || rarescopeData.mainNeed
-      rarescopeData.additionalNeeds = additionalNeeds || rarescopeData.additionalNeeds
+      rarescopeData.additionalNeeds = Array.isArray(additionalNeeds) ? additionalNeeds : rarescopeData.additionalNeeds
       rarescopeData.updatedAt = new Date()
     } else {
-      // Crear nuevo registro
       rarescopeData = new Rarescope({
         patientId,
         mainNeed: mainNeed || '',
-        additionalNeeds: additionalNeeds || [],
+        additionalNeeds: Array.isArray(additionalNeeds) ? additionalNeeds : [],
+        role: roleValue,
         updatedAt: new Date()
       })
     }
@@ -71,6 +71,7 @@ const saveRarescopeData = async (req, res) => {
 const loadRarescopeData = async (req, res) => {
   try {
     const { patientId } = req.params
+    const role = req.query.role !== undefined ? String(req.query.role) : null
 
     if (!patientId) {
       return res.status(400).json({
@@ -79,14 +80,13 @@ const loadRarescopeData = async (req, res) => {
       })
     }
 
-    // Buscar datos de Rarescope para el paciente
-    const rarescopeData = await Rarescope.findOne({ patientId })
-      .sort({ updatedAt: -1 })
+    // Cargar el guardado para este paciente Y este role (Clinical vs paciente = listas distintas)
+    const rarescopeData = await Rarescope.findOne({ patientId, role: role || null })
 
     if (!rarescopeData) {
       return res.status(200).json({
         success: true,
-        message: 'No se encontraron datos de Rarescope para este paciente',
+        message: 'No se encontraron datos de Rarescope para este paciente y rol',
         data: null
       })
     }

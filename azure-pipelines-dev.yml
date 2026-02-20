@@ -1,0 +1,31 @@
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - task: AzureCLI@2
+    displayName: 'Build & push imagen a ACR (dev)'
+    inputs:
+      azureSubscription: 'Microsoft Azure Sponsorship'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az acr build \
+          --registry nav29acr \
+          --image nav29-server:dev \
+          .
+      workingDirectory: '$(Build.SourcesDirectory)/Server'
+
+  - task: AzureCLI@2
+    displayName: 'Deploy a Container App (dev)'
+    inputs:
+      azureSubscription: 'Microsoft Azure Sponsorship'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az extension add --name containerapp --upgrade --yes
+        az containerapp update \
+          --name nav29-server-dev \
+          --resource-group nav29 \
+          --image nav29acr.azurecr.io/nav29-server:dev

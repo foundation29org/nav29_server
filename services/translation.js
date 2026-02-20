@@ -1,14 +1,15 @@
 'use strict'
 
 const config = require('../config')
-const request = require('request')
+const axios = require('axios')
 const deepl = require('deepl-node');
 const insights = require('../services/insights')
 const deeplApiKey = config.DEEPL_API_KEY;
 
 // Configuración de retry
-const MAX_RETRIES = 2; // Número de reintentos por región
+const MAX_RETRIES = 3; // Número de reintentos
 const RETRY_DELAY = 1000; // Delay en ms entre reintentos
+const DEEPL_TIMEOUT = 30000; // 30 segundos timeout para DeepL (antes era 5s por defecto)
 
 // Helper function para hacer retry con delay
 function delay(ms) {
@@ -31,47 +32,39 @@ async function translateWithRetryAndFallback(url, body, options) {
           await delay(RETRY_DELAY * attempt); // Backoff exponencial
         }
 
-        const result = await new Promise((resolve, reject) => {
-          const headers = {
-            'Ocp-Apim-Subscription-Key': regionConfig.key,
-            'Ocp-Apim-Subscription-Region': regionConfig.region,
-            ...options.headers
-          };
+        const headers = {
+          'Ocp-Apim-Subscription-Key': regionConfig.key,
+          'Ocp-Apim-Subscription-Region': regionConfig.region,
+          'Content-Type': 'application/json',
+          ...options.headers
+        };
 
-          request.post({
-            url: url,
-            json: true,
-            headers: headers,
-            body: body
-          }, (error, response, responseBody) => {
-            if (error) {
-              reject(error);
-            } else if (responseBody === 'Missing authentication token.') {
-              // Si es error de autenticación, rechazar inmediatamente sin retry
-              reject(new Error('Missing authentication token'));
-            } else if (response && response.statusCode >= 400) {
-              reject(new Error(`HTTP ${response.statusCode}: ${JSON.stringify(responseBody)}`));
-            } else if (responseBody && typeof responseBody === 'object' && responseBody.error) {
-              // Si la respuesta tiene un error, rechazar
-              reject(new Error(responseBody.error.message || JSON.stringify(responseBody.error)));
-            } else {
-              resolve(responseBody);
-            }
-          });
-        });
+        const response = await axios.post(url, body, { headers });
+        const responseBody = response.data;
+
+        if (responseBody === 'Missing authentication token.') {
+          throw new Error('Missing authentication token');
+        }
+        
+        if (responseBody && typeof responseBody === 'object' && responseBody.error) {
+          throw new Error(responseBody.error.message || JSON.stringify(responseBody.error));
+        }
 
         // Si llegamos aquí, la petición fue exitosa
-        return result;
+        return responseBody;
       } catch (error) {
         lastError = error;
         const regionName = regionConfig.region;
         const attemptNum = attempt + 1;
         
+        // Extraer mensaje de error de axios o error normal
+        const errorMessage = error.response?.data?.error?.message || error.message;
+        
         // Si es un error de autenticación, no hacer retry ni cambiar de región
-        if (error.message && error.message.includes('Missing authentication token')) {
+        if (errorMessage && errorMessage.includes('Missing authentication token')) {
           insights.error({ 
             message: `Authentication error for region ${regionName}, skipping retries and fallback`, 
-            error: error.message 
+            error: errorMessage 
           });
           throw error; // Lanzar inmediatamente sin intentar otras regiones
         }
@@ -79,12 +72,12 @@ async function translateWithRetryAndFallback(url, body, options) {
         if (attempt < MAX_RETRIES) {
           insights.error({ 
             message: `Translation attempt ${attemptNum}/${MAX_RETRIES + 1} failed for region ${regionName}, retrying...`, 
-            error: error.message 
+            error: errorMessage 
           });
         } else {
           insights.error({ 
             message: `All retries exhausted for region ${regionName}, trying next region...`, 
-            error: error.message 
+            error: errorMessage 
           });
         }
       }
@@ -134,6 +127,9 @@ async function getTranslationDictionaryInvert (req, res){
   try {
     const lang = req.body.lang;
     const info = req.body.info;
+    if (!lang || lang === 'undefined') {
+      return res.status(400).send({ error: 'Missing or invalid target language (lang)' });
+    }
     const url = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to=${lang}`;
     const result = await translateWithRetryAndFallback(url, info, { headers: {} });
     res.status(200).send(result);
@@ -338,7 +334,11 @@ async function deepLtranslate(text, target) {
     if(text == null || text == undefined || text == ''){
       return '';
     }else{
-      const translator = new deepl.Translator(deeplApiKey);
+      // Translator con timeout aumentado (30s en lugar del default de 5s)
+      const translator = new deepl.Translator(deeplApiKey, {
+        maxRetries: 0, // Manejamos los retries manualmente
+        minTimeout: DEEPL_TIMEOUT
+      });
       
       /*const options = isHTML(text) ? { 
         tagHandling: 'html', 
@@ -352,48 +352,96 @@ async function deepLtranslate(text, target) {
     const options = isHTML(text) ? { 
       tagHandling: 'html', 
       preserveFormatting: true, 
-      splitSentences: 'on' // O 'off' según lo que necesites
+      splitSentences: 'on'
   } : { 
       preserveFormatting: true,
-      splitSentences: 'off' // O 'on' según lo que necesites
+      splitSentences: 'off'
   };
  
-      const result = await translator.translateText(text, null, target, options);
-      /*console.log({
-        sourceText: text,
-        detectedLanguage: result.detectedSourceLang,
-        targetLanguage: target,
-        translatedText: result.text
-      });*/
-      return result.text;
+      // Retry logic para DeepL
+      let lastError = null;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`[DeepL] Retry attempt ${attempt}/${MAX_RETRIES}...`);
+            await delay(RETRY_DELAY * Math.pow(2, attempt - 1)); // Backoff exponencial
+          }
+          const result = await translator.translateText(text, null, target, options);
+          return result.text;
+        } catch (retryError) {
+          lastError = retryError;
+          const isRetryable = retryError.code === 'ECONNRESET' || 
+                              retryError.code === 'ETIMEDOUT' ||
+                              retryError.code === 'ENOTFOUND' ||
+                              retryError.message?.includes('socket hang up') ||
+                              retryError.error?.code === 'ECONNRESET';
+          
+          if (!isRetryable || attempt === MAX_RETRIES) {
+            throw retryError;
+          }
+          console.log(`[DeepL] Connection error (${retryError.code || 'unknown'}), retrying...`);
+        }
+      }
+      throw lastError;
     }
   }catch(e){
-    console.log(e)
-    console.log(text)
-    console.log(target)
-    return text;
+    console.log('[DeepL] Translation failed after retries:', e.message || e);
+    insights.error({ message: '[DeepL] Translation failed', error: e.message, target: target });
+    return text; // Fallback: devolver texto original
   }
     
 }
 
 async function deepLtranslate2(text, target) {
-  if(text == null || text == undefined || text == ''){
-    return '';
-  }else{
-    const translator = new deepl.Translator(deeplApiKey);
+  try {
+    if(text == null || text == undefined || text == ''){
+      return '';
+    }else{
+      const translator = new deepl.Translator(deeplApiKey, {
+        maxRetries: 0,
+        minTimeout: DEEPL_TIMEOUT
+      });
 
-     const options = isHTML(text) ? { 
-        tagHandling: 'html', 
-        preserveFormatting: true, 
-        splitSentences: 'on' // O 'off' según lo que necesites
-    } : { 
-        preserveFormatting: false,
-        splitSentences: 'off' // O 'on' según lo que necesites
-    };
-      const result = await translator.translateText(text, null, target, options);
-    return result.text;
+      const options = isHTML(text) ? { 
+          tagHandling: 'html', 
+          preserveFormatting: true, 
+          splitSentences: 'on'
+      } : { 
+          preserveFormatting: false,
+          splitSentences: 'off'
+      };
+
+      // Retry logic para DeepL
+      let lastError = null;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`[DeepL2] Retry attempt ${attempt}/${MAX_RETRIES}...`);
+            await delay(RETRY_DELAY * Math.pow(2, attempt - 1));
+          }
+          const result = await translator.translateText(text, null, target, options);
+          return result.text;
+        } catch (retryError) {
+          lastError = retryError;
+          const isRetryable = retryError.code === 'ECONNRESET' || 
+                              retryError.code === 'ETIMEDOUT' ||
+                              retryError.code === 'ENOTFOUND' ||
+                              retryError.message?.includes('socket hang up') ||
+                              retryError.error?.code === 'ECONNRESET';
+          
+          if (!isRetryable || attempt === MAX_RETRIES) {
+            throw retryError;
+          }
+          console.log(`[DeepL2] Connection error (${retryError.code || 'unknown'}), retrying...`);
+        }
+      }
+      throw lastError;
+    }
+  } catch(e) {
+    console.log('[DeepL2] Translation failed after retries:', e.message || e);
+    insights.error({ message: '[DeepL2] Translation failed', error: e.message, target: target });
+    return text;
   }
- 
 }
 
 /**

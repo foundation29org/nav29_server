@@ -440,21 +440,15 @@ async function getOrGenerateTimeline(patientId, userLang = 'es', forceRegenerate
   const containerName = crypt.getContainerName(patientId);
   const cachePath = `timeline_consolidated_${userLang}.json`;
 
-  // Intentar obtener del caché
+  // Intentar obtener del caché (se invalida al cambiar docs/eventos del paciente, no por tiempo)
   if (!forceRegenerate) {
     try {
       const cached = await azure_blobs.downloadBlob(containerName, cachePath);
       if (cached) {
         const timeline = JSON.parse(cached);
-        // Verificar que no sea muy antiguo (más de 24 horas)
-        const generatedAt = new Date(timeline.generatedAt);
-        const hoursSinceGeneration = (Date.now() - generatedAt.getTime()) / (1000 * 60 * 60);
-        
-        if (hoursSinceGeneration < 24) {
-          console.log('[Timeline] Usando timeline cacheado');
-          timeline.fromCache = true;
-          return timeline;
-        }
+        console.log('[Timeline] Usando timeline cacheado');
+        timeline.fromCache = true;
+        return timeline;
       }
     } catch {
       // No hay caché o error al leer, generar nuevo
@@ -476,7 +470,9 @@ async function getOrGenerateTimeline(patientId, userLang = 'es', forceRegenerate
 }
 
 /**
- * Invalida el caché del timeline (llamar cuando se suban nuevos documentos)
+ * Invalida el caché del timeline. Debe llamarse cuando cambien datos del paciente:
+ * - Subida, borrado o actualización de documentos (p. ej. fecha)
+ * - Creación, edición o borrado de eventos
  */
 async function invalidateTimelineCache(patientId) {
   const containerName = crypt.getContainerName(patientId);
