@@ -21,7 +21,7 @@ steps:
           --image nav29-server:latest \
           --image nav29-server:${{ parameters.imageVersion }} \
           .
-      workingDirectory: '$(Build.SourcesDirectory)/Server'
+      workingDirectory: '$(Build.SourcesDirectory)'
 
   - task: AzureCLI@2
     displayName: 'Deploy a Container App (prod)'
