@@ -157,14 +157,6 @@ function createModels(projectName, modelType = null) {
               callbacks: tracer ? [tracer] : undefined
             });
             break;
-        case 'claude-sonnet-45':
-          model = new AzureChatOpenAI({
-            azureOpenAIApiKey: O_A_K_ADVANCED,
-            azureOpenAIApiVersion: '20250929',
-            azureOpenAIApiInstanceName: OPENAI_API_BASE_ADVANCED,
-            azureOpenAIApiDeploymentName: "claude-sonnet-45",
-          });
-          break;
           case 'gpt-5.2-codex':
             model = new AzureChatOpenAI({
               azureOpenAIApiKey: O_A_K_ADVANCED,
@@ -214,16 +206,6 @@ function createModels(projectName, modelType = null) {
             model: "gemini-flash-latest",
             apiKey: config.GOOGLE_API_KEY,
             temperature: 0,
-            timeout: 140000,
-            callbacks: tracer ? [tracer] : undefined
-          });
-          break;
-        case 'deepseek-r1':
-          model = new AzureChatOpenAI({
-            azureOpenAIApiKey: O_A_K_ADVANCED,
-            azureOpenAIApiVersion: '2024-05-01-preview',
-            azureOpenAIApiInstanceName: OPENAI_API_BASE_ADVANCED,
-            azureOpenAIApiDeploymentName: "DeepSeek-R1",
             timeout: 140000,
             callbacks: tracer ? [tracer] : undefined
           });

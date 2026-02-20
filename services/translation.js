@@ -127,6 +127,9 @@ async function getTranslationDictionaryInvert (req, res){
   try {
     const lang = req.body.lang;
     const info = req.body.info;
+    if (!lang || lang === 'undefined') {
+      return res.status(400).send({ error: 'Missing or invalid target language (lang)' });
+    }
     const url = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to=${lang}`;
     const result = await translateWithRetryAndFallback(url, info, { headers: {} });
     res.status(200).send(result);

@@ -16,15 +16,19 @@ const jwt = require('jwt-simple')
 
 // Helper function para obtener opciones de cookie según el entorno
 function getCookieOptions() {
-	const isProduction = process.env.NODE_ENV === 'production' || process.env.NODE_ENV !== 'development';
-	return {
+	const isDevelopment = process.env.NODE_ENV === 'development';
+	const clientServer = process.env.CLIENT_SERVER || '';
+	const cookieOpts = {
 		httpOnly: true,
-		secure: isProduction, // Solo HTTPS en producción
-		sameSite: isProduction ? 'strict' : 'lax', // Strict en producción, Lax en desarrollo
-		// En producción, comparte cookies entre apex y www
-		...(isProduction ? { domain: '.nav29.org' } : {}),
-		maxAge: 30 * 24 * 60 * 60 * 1000 // 30 días para refresh token
+		secure: !isDevelopment,
+		sameSite: 'lax',
+		path: '/',
+		maxAge: 30 * 24 * 60 * 60 * 1000
 	};
+	if (clientServer.includes('nav29.org')) {
+		cookieOpts.domain = '.nav29.org';
+	}
+	return cookieOpts;
 }
 
 // Helper function para establecer cookies de autenticación
@@ -582,9 +586,13 @@ function refreshToken(req, res) {
 
 // Endpoint para obtener información de la sesión actual
 async function getSession(req, res) {
-	// Solo leer de cookie - más seguro para datos médicos
-	const token = req.cookies?.access_token;
-	
+	let token = req.cookies?.access_token;
+	if (!token) {
+		const authHeader = req.headers.authorization;
+		if (authHeader && authHeader.startsWith('Bearer ')) {
+			token = authHeader.substring(7);
+		}
+	}
 	if (!token) {
 		return res.status(401).send({ message: 'No token provided' });
 	}

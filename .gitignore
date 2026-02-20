@@ -5,3 +5,16 @@ config_dev.js
 
 /scripts
 /docs
+
+# Secrets & credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*-service-account*.json
+*firebase-adminsdk*.json
+/deploy
+/azure-pipelines-dev.yml
+/azure-pipelines-prod.yml

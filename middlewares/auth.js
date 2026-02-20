@@ -3,12 +3,14 @@
 const serviceAuth = require('../services/auth')
 const insights = require('../services/insights')
 
-// Función helper para extraer token SOLO de cookie (más seguro)
-// Las cookies HttpOnly no son accesibles desde JavaScript, protegiendo contra XSS
+// Extraer token de cookie o header Authorization (fallback para SWA proxy)
 function extractToken(req) {
-	// Solo leer de cookie - más seguro para datos médicos
 	if (req.cookies && req.cookies.access_token) {
 		return req.cookies.access_token;
+	}
+	const authHeader = req.headers.authorization;
+	if (authHeader && authHeader.startsWith('Bearer ')) {
+		return authHeader.substring(7);
 	}
 	return null;
 }

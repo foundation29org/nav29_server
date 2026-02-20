@@ -12,6 +12,7 @@ const { MediSearchClient } = require('./medisearch');
 const pubsubClient = require('../services/pubsub');
 const { LangGraphRunnableConfig } = require("@langchain/langgraph");
 const insights = require('./insights');
+const path = require('path');
 const { createIndexIfNone, createChunksIndex } = require('./vectorStoreService');
 
 const PERPLEXITY_API_KEY = config.PERPLEXITY_API_KEY;
@@ -264,20 +265,27 @@ const clinicalTrialsTool = new DynamicStructuredTool({
   },
 });
 
+
 async function suggestionsFromConversation(messages) {
-  const fallbackModels = ['deepseek-r1', 'gemini3propreview', 'gpt-5.2'];
-  const suggestionsTemplate = await pull('foundation29/conv_suggestions_base_v1');
+  const fallbackModels = [ 'gpt-5.2', 'gpt-4.1-mini' ];
+  //const suggestionsTemplate = await pull('foundation29/conv_suggestions_base_v1');
+  const promptData = require(path.join(__dirname, '..', 'prompts', 'suggestions.json'));
+  const prompt = ChatPromptTemplate.fromMessages([
+    ["system", promptData.system],
+    ["human", promptData.human]
+  ]);
 
   for (const modelName of fallbackModels) {
     try {
       const models = createModels('default', modelName);
       const model = models[modelName];
-      const runnable = suggestionsTemplate.pipe(model);
-      const suggestions = await runnable.invoke({
-        chat_history: messages
-      });
-      let suggestionsArray = JSON.parse(suggestions.suggestions);
-      return suggestionsArray.suggestions;
+      const runnable = prompt.pipe(model);
+      const response = await runnable.invoke({ chat_history: messages });
+      const content = typeof response.content === 'string' ? response.content : response.content[0]?.text || '';
+      const jsonMatch = content.match(/\{[\s\S]*"suggestions"\s*:\s*\[[\s\S]*\]\s*\}/);
+      if (!jsonMatch) throw new Error('No valid JSON found in response');
+      const parsed = JSON.parse(jsonMatch[0]);
+      return parsed.suggestions;
     } catch (error) {
       console.error(`[suggestionsFromConversation] Error with ${modelName}:`, error.message);
       insights.error({ message: `[suggestionsFromConversation] Error with ${modelName}`, error: error.message, stack: error.stack });

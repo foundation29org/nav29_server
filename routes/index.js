@@ -315,7 +315,7 @@ api.post('/gocertius/generatereport/:caseFileId', checkApiKey, gocertiusCtrl.gen
 api.get('/gocertius/getreportpdfurl/:reportId', checkApiKey, gocertiusCtrl.getReportPdfUrl)
 api.get('/gocertius/getreportzip/:reportId', checkApiKey, gocertiusCtrl.getReportZip)
 
-api.post('/vote', feedbackCtrl.vote)
+api.post('/vote', auth.isAuth(roles.All), feedbackCtrl.vote)
 
 // WhatsApp integration routes (from app - user authenticated)
 api.get('/whatsapp/status', auth.isAuth(roles.All), whatsappCtrl.getStatus)

@@ -1246,7 +1246,7 @@ async function handleDiseaseInfoRequest(req, res) {
     const body = {
       questionType,
       disease,
-      lang,
+      detectedLang: lang,
       myuuid: generatePatientUUID(patientId),
       timezone: req.body.timezone || 'UTC',
       ...(description ? { medicalDescription: description } : {})
