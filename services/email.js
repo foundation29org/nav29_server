@@ -3,7 +3,7 @@
 const { TRANSPORTER_OPTIONS, client_server, blobAccessToken } = require('../config')
 const insights = require('../services/insights')
 const nodemailer = require('nodemailer')
-var hbs = require('nodemailer-express-handlebars')
+var hbs = require('nodemailer-express-handlebars').default || require('nodemailer-express-handlebars')
 
 var options = {
      viewEngine: {
