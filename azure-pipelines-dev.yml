@@ -15,7 +15,7 @@ steps:
           --registry nav29acr \
           --image nav29-server:dev \
           .
-      workingDirectory: '$(Build.SourcesDirectory)/Server'
+      workingDirectory: '$(Build.SourcesDirectory)'
 
   - task: AzureCLI@2
     displayName: 'Deploy a Container App (dev)'
