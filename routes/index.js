@@ -182,7 +182,7 @@ api.get('/langs/',  langCtrl.getLangs)
 //Support
 api.post('/support/', auth.isAuth(roles.All), checkApiKey, supportCtrl.sendMsgSupport)
 api.post('/homesupport/', supportCtrl.sendMsgLogoutSupport)
-api.get('/support/:userId', auth.isAuth(roles.All), checkApiKey, supportCtrl.getUserMsgs)
+// api.get('/support/:userId', auth.isAuth(roles.All), checkApiKey, supportCtrl.getUserMsgs) // Removed: support replies via email
 api.post('/generalfeedback/set/:patientId', auth.isAuthPatient(roles.All), checkApiKey, supportCtrl.sendGeneralFeedback)
 api.post('/generalfeedback/get/:patientId', auth.isAuthPatient(roles.All), checkApiKey, supportCtrl.getGeneralFeedback)
 
