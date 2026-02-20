@@ -767,11 +767,15 @@ async function getSummary(req, res) {
                 // Set status to inProcess
                 await Patient.findByIdAndUpdate(patientId, { summary: 'inProcess', summaryDate: new Date() })
                 
-                // Trigger async generation (fire and forget)
+                // Get user preferences for summary generation
+                const medicalLevel = user.medicalLevel || '1'
+                const preferredLang = user.preferredResponseLanguage || user.lang || 'es'
+                
                 const langchainService = require('../services/langchain')
                 setImmediate(async () => {
                     try {
-                        await langchainService.createPatientSummary(patientId, user._id.toString(), null)
+                        await langchainService.summarizePatientBrute(patientId, null, medicalLevel, preferredLang)
+                        await Patient.findByIdAndUpdate(patientId, { summary: 'true', summaryDate: new Date() })
                         console.log('[WhatsApp] getSummary - Summary generation completed for patient:', patientId)
                     } catch (genError) {
                         console.error('[WhatsApp] getSummary - Summary generation failed:', genError.message)
